@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Secrets and local configuration — never commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local runtime state
+*.log
+*.sqlite
+*.sqlite-journal
+*.db
+data/
+state/
+
+# Editor / OS
+.DS_Store
+.idea/
+*.swp
