@@ -1,0 +1,40 @@
+{
+  "name": "tether",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-hosted control plane for persistent coding-agent sessions",
+  "license": "MIT",
+  "author": "galawaydude",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/galawaydude/tether.git"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "workspaces": [
+    "shared",
+    "server",
+    "web"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit -p shared && tsc --noEmit -p server && tsc --noEmit -p web",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "node --test",
+    "build": "npm run build --workspaces --if-present"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.13.3",
+    "eslint": "^10.8.0",
+    "prettier": "^3.9.6",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.65.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true
+  }
+}
