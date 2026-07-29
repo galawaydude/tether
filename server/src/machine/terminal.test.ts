@@ -31,6 +31,7 @@ import { createTerminals } from './terminal.ts';
 import type { Terminals } from './terminal.ts';
 import {
   killServer,
+  killSession,
   newSession,
   paneSize,
   pasteText,
@@ -297,4 +298,54 @@ test('input is applied once: replays and out-of-order sequences are dropped', as
     'first line\nsecond line\nthird line\nfourth line\n',
     'multi-line input arrives whole, once, in order',
   );
+});
+
+test('two viewers of one session cannot interleave their input', async (t) => {
+  const socket = socketFor(t);
+  const terminals = terminalsFor(t, socket);
+  const cwd = await mkdtemp(join(tmpdir(), 'tether-term-'));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+
+  const out = join(cwd, 'out.txt');
+  await newSession(socket, {
+    name: 's1',
+    cwd,
+    command: ['/bin/sh', '-c', `cat > ${out}`],
+    roots: [cwd],
+  });
+  const detach = await terminals.attach('s1', () => {});
+  t.after(() => detach());
+
+  // Two viewers submitting at once. Serialized per socket rather than per
+  // session, the second paste lands inside the first's submit delay: one line
+  // arrives holding both messages and the other arrives empty.
+  await Promise.all([
+    terminals.input('s1', 'phone', 1, 'from the phone'),
+    terminals.input('s1', 'laptop', 1, 'from the laptop'),
+  ]);
+  await waitFor(
+    async () => (await readFile(out, 'utf8')).split('\n').filter(Boolean).length === 2,
+    'both messages to reach the pane',
+  );
+  assert.deepEqual(
+    (await readFile(out, 'utf8')).split('\n').filter(Boolean).sort(),
+    ['from the laptop', 'from the phone'],
+    'each message is submitted whole and on its own line',
+  );
+});
+
+test('a killed session ends its viewers instead of freezing them', async (t) => {
+  const socket = socketFor(t);
+  const terminals = terminalsFor(t, socket);
+  await startSession(t, socket, 's1');
+
+  // A viewer that is never told sits on a terminal that will never move again,
+  // and cannot recover even if the session name comes back.
+  let ended!: () => void;
+  const whenEnded = new Promise<void>((resolve) => (ended = resolve));
+  const detach = await terminals.attach('s1', () => {}, ended);
+  t.after(() => detach());
+
+  await killSession(socket, 's1');
+  await whenEnded;
 });

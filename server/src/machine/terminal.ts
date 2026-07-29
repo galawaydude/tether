@@ -74,21 +74,28 @@ export async function loadPty(): Promise<typeof import('node-pty')> {
 
 interface Attached {
   pty: IPty;
-  viewers: Set<Viewer>;
+  /** Each viewer with the callback that tells it the session is gone. */
+  viewers: Map<Viewer, () => void>;
 }
 
 /**
- * One attach at a time per session: two viewers opening the same session at once
- * must not each spawn a PTY, and a detach must not race the spawn it cancels.
+ * One tmux conversation at a time per session: two viewers opening the same
+ * session at once must not each spawn a PTY, a detach must not race the spawn it
+ * cancels, and one viewer's paste-then-Enter pair must not land inside another's.
+ *
+ * The chain is dropped once it settles and nothing has queued behind it, so a
+ * session name that was only ever attached to — including one that does not
+ * exist — leaves nothing behind.
  */
 function serializer(): <T>(key: string, fn: () => Promise<T>) => Promise<T> {
   const queues = new Map<string, Promise<unknown>>();
   return (key, fn) => {
     const next = (queues.get(key) ?? Promise.resolve()).then(fn, fn);
-    queues.set(
-      key,
-      next.catch(() => {}),
-    );
+    const prune = () => {
+      if (queues.get(key) === settled) queues.delete(key);
+    };
+    const settled = next.then(prune, prune);
+    queues.set(key, settled);
     return next;
   };
 }
@@ -96,9 +103,11 @@ function serializer(): <T>(key: string, fn: () => Promise<T>) => Promise<T> {
 export interface Terminals {
   /**
    * Replay the session into `viewer`, then stream it live. Resolves to the
-   * detach function; calling it twice is harmless.
+   * detach function; calling it twice is harmless. `onEnd` fires when the attach
+   * dies — the tmux session was killed, or its server went away — because a
+   * viewer that is never told sits on a terminal that will never move again.
    */
-  attach(session: string, viewer: Viewer): Promise<() => void>;
+  attach(session: string, viewer: Viewer, onEnd?: () => void): Promise<() => void>;
   /** Last viewer's dimensions win. */
   resize(session: string, cols: number, rows: number): Promise<void>;
   /** Message text: pasted (newline-safe), then submitted. Returns false if replayed. */
@@ -130,6 +139,13 @@ export function createTerminals(socket: string, historyLines = DEFAULT_HISTORY_L
     entry.pty.kill();
   }
 
+  /** Tell every remaining viewer the attach is over, exactly once. */
+  function end(entry: Attached): void {
+    const callbacks = [...entry.viewers.values()];
+    entry.viewers.clear();
+    for (const each of callbacks) each();
+  }
+
   /**
    * The replay recipe, report section 3 with both corrections from the spike:
    * the trailing newline is stripped *before* the `\r\n` expansion (one extra row
@@ -156,7 +172,7 @@ export function createTerminals(socket: string, historyLines = DEFAULT_HISTORY_L
     };
   }
 
-  async function open(session: string, viewer: Viewer): Promise<Attached> {
+  async function open(session: string, viewer: Viewer, onEnd: () => void): Promise<Attached> {
     const { spawn } = await loadPty();
     const size = await paneSize(socket, session);
     // Captured before the attach exists, so the repaint the attach emits lands
@@ -171,7 +187,7 @@ export function createTerminals(socket: string, historyLines = DEFAULT_HISTORY_L
       // corrupts silently the moment anything in this path decodes.
       encoding: null,
     });
-    const entry: Attached = { pty, viewers: new Set([viewer]) };
+    const entry: Attached = { pty, viewers: new Map([[viewer, onEnd]]) };
     attached.set(session, entry);
 
     const filter = createEscapeFilter();
@@ -179,18 +195,21 @@ export function createTerminals(socket: string, historyLines = DEFAULT_HISTORY_L
       // node-pty's typings only describe the decoded-string case; `encoding: null`
       // makes it emit Buffers, and keeping them as bytes is the whole point.
       const bytes = filter(chunk as unknown as Buffer);
-      for (const each of entry.viewers) each(bytes);
+      for (const each of entry.viewers.keys()) each(bytes);
     });
-    pty.onExit(() => drop(session, entry));
+    pty.onExit(() => {
+      drop(session, entry);
+      end(entry);
+    });
     return entry;
   }
 
   return {
-    attach(session, viewer) {
+    attach(session, viewer, onEnd = () => {}) {
       return serialize(session, async () => {
         const existing = attached.get(session);
         if (existing === undefined) {
-          return detacher(session, await open(session, viewer), viewer);
+          return detacher(session, await open(session, viewer, onEnd), viewer);
         }
         const size = await paneSize(socket, session);
         const head = await replay(session, size.rows);
@@ -199,10 +218,10 @@ export function createTerminals(socket: string, historyLines = DEFAULT_HISTORY_L
         // the last viewer can leave and take the PTY with it while we capture.
         // Joining that corpse would leave this viewer permanently blank.
         if (attached.get(session) !== existing) {
-          return detacher(session, await open(session, viewer), viewer);
+          return detacher(session, await open(session, viewer, onEnd), viewer);
         }
         viewer(head);
-        existing.viewers.add(viewer);
+        existing.viewers.set(viewer, onEnd);
         // The first viewer's repaint came free with `attach-session`; a later one
         // has to ask for the same absolutely-positioned redraw.
         await refreshClients(socket, session);
@@ -210,31 +229,41 @@ export function createTerminals(socket: string, historyLines = DEFAULT_HISTORY_L
       });
     },
 
-    async resize(session, cols, rows) {
-      // The window first: with `window-size manual` the PTY's size alone changes
-      // nothing, which is exactly what keeps one viewer off another's pane.
-      await resizeWindow(socket, session, cols, rows);
-      attached.get(session)?.pty.resize(cols, rows);
+    resize(session, cols, rows) {
+      return serialize(session, async () => {
+        // The window first: with `window-size manual` the PTY's size alone changes
+        // nothing, which is exactly what keeps one viewer off another's pane.
+        await resizeWindow(socket, session, cols, rows);
+        attached.get(session)?.pty.resize(cols, rows);
+      });
     },
 
-    async input(session, clientId, seq, text) {
-      if (!accept(applied, session, clientId, seq)) return false;
-      await pasteText(socket, session, text);
-      await new Promise((r) => setTimeout(r, SUBMIT_DELAY_MS));
-      await sendKeys(socket, session, ['Enter']);
-      return true;
+    input(session, clientId, seq, text) {
+      // Through the same per-session boundary as everything else: the paste and
+      // the Enter that submits it are one operation, and a second viewer's paste
+      // arriving between them would be submitted as part of the first viewer's
+      // message and leave the second submitting an empty line.
+      return serialize(session, async () => {
+        if (!accept(applied, session, clientId, seq)) return false;
+        await pasteText(socket, session, text);
+        await new Promise((r) => setTimeout(r, SUBMIT_DELAY_MS));
+        await sendKeys(socket, session, ['Enter']);
+        return true;
+      });
     },
 
-    async key(session, clientId, seq, keys) {
-      if (!accept(applied, session, clientId, seq)) return false;
-      await sendKeys(socket, session, keys);
-      return true;
+    key(session, clientId, seq, keys) {
+      return serialize(session, async () => {
+        if (!accept(applied, session, clientId, seq)) return false;
+        await sendKeys(socket, session, keys);
+        return true;
+      });
     },
 
     closeAll() {
       for (const [session, entry] of [...attached]) {
-        entry.viewers.clear();
         drop(session, entry);
+        end(entry);
       }
     },
   };

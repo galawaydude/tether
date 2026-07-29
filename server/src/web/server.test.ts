@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import { applyRegistrySchema } from '../machine/registry.ts';
 import type { Terminals } from '../machine/terminal.ts';
@@ -8,6 +9,7 @@ import { createAuthStore } from './auth.ts';
 import { defaultAllowedHosts } from './guards.ts';
 import { SESSION_COOKIE, buildServer } from './server.ts';
 import type { ServerOptions } from './server.ts';
+import { CLOSE_SESSION_ENDED } from './term-socket.ts';
 
 const PASSWORD = 'correct horse battery staple';
 const HOST = 'localhost:8787';
@@ -20,11 +22,13 @@ const HOST = 'localhost:8787';
 function recordingTerminals() {
   const calls: string[] = [];
   let emit: ((bytes: Uint8Array) => void) | undefined;
+  let ended: (() => void) | undefined;
   const terminals: Terminals = {
-    async attach(session, viewer) {
+    async attach(session, viewer, onEnd) {
       if (session === 'missing') throw new Error('no such session');
       calls.push(`attach ${session}`);
       emit = viewer;
+      ended = onEnd;
       viewer(Buffer.from('replay-héllo', 'utf8'));
       return () => calls.push(`detach ${session}`);
     },
@@ -41,7 +45,12 @@ function recordingTerminals() {
     },
     closeAll() {},
   };
-  return { terminals, calls, push: (bytes: Uint8Array) => emit?.(bytes) };
+  return {
+    terminals,
+    calls,
+    push: (bytes: Uint8Array) => emit?.(bytes),
+    end: () => ended?.(),
+  };
 }
 
 async function harness(overrides: Partial<ServerOptions> = {}) {
@@ -575,4 +584,88 @@ test('a malformed session name or missing client id never reaches tmux', async (
   await assert.rejects(openTerm(app, cookie, '/api/sessions/a:b/term?client=phone').socket, /400/);
   await assert.rejects(openTerm(app, cookie, '/api/sessions/s1/term').socket, /400/);
   assert.deepEqual(terminal.calls, []);
+});
+
+test('an out-of-range resize is one dropped frame, not a lost terminal', async (t) => {
+  const { app, terminal } = await harness();
+  t.after(() => app.close());
+  await app.ready();
+
+  const term = openTerm(app, { cookie: `${SESSION_COOKIE}=${await sessionToken(app)}` });
+  const socket = await term.socket;
+  t.after(() => socket.close());
+  await term.next();
+
+  // xterm.js reports 0x0 before it has been laid out, and a hidden tab reports
+  // it again. Tearing the socket down over that loses the view for good.
+  for (const bad of [
+    { cols: 0, rows: 0 },
+    { cols: 80, rows: 100_000 },
+    { cols: -1, rows: 24 },
+  ]) {
+    socket.send(JSON.stringify({ c: 'resize', ...bad }));
+  }
+  socket.send(JSON.stringify({ c: 'key', seq: 1, keys: ['C-c'] }));
+  assert.deepEqual(JSON.parse((await term.next()).data.toString('utf8')), { c: 'ack', seq: 1 });
+  assert.deepEqual(terminal.calls, ['attach s1', 'key s1 phone 1 C-c'], 'no resize reached tmux');
+});
+
+test('a session that ends closes the socket with a defined code', async (t) => {
+  const { app, terminal } = await harness();
+  t.after(() => app.close());
+  await app.ready();
+
+  const term = openTerm(app, { cookie: `${SESSION_COOKIE}=${await sessionToken(app)}` });
+  const socket = await term.socket;
+  await term.next();
+
+  // Without this the viewer sits forever on a terminal that will never receive
+  // another byte and never hears why.
+  const closed = new Promise<number>((resolve) => socket.on('close', resolve));
+  terminal.end();
+  assert.equal(await closed, CLOSE_SESSION_ENDED);
+});
+
+test('a socket that closes during the attach still detaches', async (t) => {
+  const db = new DatabaseSync(':memory:');
+  applyRegistrySchema(db);
+  const auth = createAuthStore(db);
+  await auth.setPassword(PASSWORD);
+  const calls: string[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const terminals: Terminals = {
+    // An attach is two tmux spawns and a PTY spawn; a client can give up inside
+    // that window, and the viewer and its PTY would then leak for good.
+    async attach(session) {
+      await gate;
+      return () => calls.push(`detach ${session}`);
+    },
+    async resize() {},
+    async input() {
+      return true;
+    },
+    async key() {
+      return true;
+    },
+    closeAll() {},
+  };
+  const app = buildServer({
+    auth,
+    db,
+    terminals,
+    allowedHosts: defaultAllowedHosts('127.0.0.1'),
+    loginDelayMs: 0,
+  });
+  t.after(() => app.close());
+  await app.ready();
+
+  const term = openTerm(app, { cookie: `${SESSION_COOKIE}=${await sessionToken(app)}` });
+  const socket = await term.socket;
+  socket.close();
+  await new Promise<void>((resolve) => socket.on('close', () => resolve()));
+  release();
+
+  for (let i = 0; i < 100 && calls.length === 0; i += 1) await delay(10);
+  assert.deepEqual(calls, ['detach s1']);
 });
