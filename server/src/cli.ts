@@ -1,10 +1,24 @@
 #!/usr/bin/env node
+import { randomUUID } from 'node:crypto';
+import { basename } from 'node:path';
 import { createInterface } from 'node:readline';
+import type { DatabaseSync } from 'node:sqlite';
 import { Writable } from 'node:stream';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 
 import { databasePath, openDatabase } from './db.ts';
+import {
+  DEFAULT_PROVIDER,
+  type Session,
+  createSession,
+  getSession,
+  listSessions,
+  markDead,
+  openRegistry,
+  reconcileWithTmux,
+} from './machine/registry.ts';
+import { DEFAULT_SOCKET, TmuxError, killSession, newSession, resolveCwd } from './machine/tmux.ts';
 import { MIN_PASSWORD_LENGTH, createAuthStore } from './web/auth.ts';
 import type { AuthStore } from './web/auth.ts';
 import { defaultAllowedHosts, isLoopbackHost } from './web/guards.ts';
@@ -20,6 +34,9 @@ const USAGE = `tether — self-hosted control plane for coding-agent sessions
 Usage:
   tether set-password              Set the single account's password (prompts; never echoes)
   tether serve [options]           Run the server
+  tether ls                        List this machine's sessions, live and dead
+  tether new <dir> [options]       Start a session in <dir>
+  tether kill <id>                 Kill a session; <id> is any unambiguous id prefix
 
 Options for serve:
   --port <n>                       Port to listen on (default ${DEFAULT_PORT})
@@ -28,6 +45,11 @@ Options for serve:
   --allowed-host <name>            Extra hostname accepted in the Host header; repeatable.
                                    Needed for a Tailscale name or a reverse proxy.
   --trusted-proxy <ip|cidr>        Believe X-Forwarded-* from this peer; repeatable.
+
+Options for new:
+  --title <title>                  Session title (default: the directory's name)
+  --provider <name>                Provider to start (default ${DEFAULT_PROVIDER})
+  -- <command> [args...]           Run this instead of the provider's own command
 `;
 
 export type ServeConfig = {
@@ -172,11 +194,127 @@ async function serve(auth: AuthStore, args: ServeArgs): Promise<number> {
   return 0;
 }
 
+// ── ls | new | kill: tether from a terminal, before any web UI exists ──
+
+/** Tests point this at their own tmux server; nothing else sets it. */
+const socket = process.env['TETHER_TMUX_SOCKET'] || DEFAULT_SOCKET;
+
+/** What `tether new` starts when no explicit command is given. */
+const PROVIDER_COMMANDS: Record<string, readonly string[]> = { [DEFAULT_PROVIDER]: ['claude'] };
+
+function fixed(value: string, width: number): string {
+  return value.length > width ? `${value.slice(0, width - 1)}…` : value.padEnd(width);
+}
+
+function format(sessions: readonly Session[]): string {
+  const header = `${fixed('ID', 10)}${fixed('STATE', 6)}${fixed('PROVIDER', 14)}${fixed('TITLE', 24)}DIR`;
+  const lines = sessions.map(
+    (s) =>
+      `${fixed(s.id.slice(0, 8), 10)}${fixed(s.deadAt === null ? 'live' : 'dead', 6)}` +
+      `${fixed(s.provider, 14)}${fixed(s.title, 24)}${s.cwd}`,
+  );
+  return [header, ...lines].join('\n');
+}
+
+/**
+ * Split the command to run off the front-matter. `parseArgs` folds everything past
+ * `--` into positionals, which would make `tether new /dir -- sleep 300` and
+ * `tether new /dir sleep 300` indistinguishable.
+ */
+function splitCommand(argv: readonly string[]): { args: string[]; command: string[] | null } {
+  const at = argv.indexOf('--');
+  if (at === -1) return { args: [...argv], command: null };
+  return { args: argv.slice(0, at), command: argv.slice(at + 1) };
+}
+
+/**
+ * `serve` parses its own flags with `allowPositionals: false`; `new` takes a
+ * directory, its own options and a `--` terminator, so it parses its own slice.
+ */
+async function newCommand(db: DatabaseSync, argv: readonly string[]): Promise<string> {
+  const { args, command } = splitCommand(argv);
+  const { values, positionals } = parseArgs({
+    args,
+    options: { title: { type: 'string' }, provider: { type: 'string' } },
+    allowPositionals: true,
+  });
+  const dir = positionals[0];
+  if (dir === undefined || positionals.length > 1) throw new Error(USAGE);
+
+  const provider = values.provider ?? DEFAULT_PROVIDER;
+  const run = command?.length ? command : PROVIDER_COMMANDS[provider];
+  if (run === undefined) {
+    throw new Error(`unknown provider ${provider} — pass the command after \`--\``);
+  }
+
+  // The one cwd validation in tether lives in the tmux driver; this is a call to
+  // it, not a second copy. Doing it before anything is created means a bad
+  // directory leaves no tmux session and no row.
+  const cwd = await resolveCwd(dir);
+  const id = randomUUID();
+  const tmuxName = `tether-${id.slice(0, 8)}`;
+
+  await newSession(socket, { name: tmuxName, cwd, command: run });
+  try {
+    // Provisional from spawn: provider_session_id is null here and is back-filled
+    // once the provider creates its own session identity.
+    createSession(db, { id, provider, cwd, title: values.title ?? basename(cwd), tmuxName });
+  } catch (error) {
+    // A session tmux is running that the registry does not know about is invisible
+    // garbage — nothing would ever list it, let alone kill it.
+    await killSession(socket, tmuxName).catch(() => {});
+    throw error;
+  }
+  return `${id}\t${tmuxName}\t${cwd}`;
+}
+
+async function killCommand(db: DatabaseSync, argv: readonly string[]): Promise<string> {
+  const id = argv[0];
+  if (id === undefined || argv.length > 1) throw new Error(USAGE);
+  const session = getSession(db, id);
+  if (session === undefined) throw new Error(`no such session: ${id}`);
+  // Already-dead is the postcondition, not an error.
+  await killSession(socket, session.tmuxName).catch((error: unknown) => {
+    if (!(error instanceof TmuxError)) throw error;
+  });
+  markDead(db, session.id);
+  return `killed ${session.id}`;
+}
+
+/**
+ * `ls` and `kill` reconcile against real tmux first, so neither ever reports a
+ * session that died while tether was not running. `new` has nothing to reconcile.
+ */
+async function registryCommand(command: string, argv: readonly string[]): Promise<number> {
+  const db = openRegistry();
+  try {
+    if (command === 'new') {
+      process.stdout.write(`${await newCommand(db, argv)}\n`);
+      return 0;
+    }
+    await reconcileWithTmux(db, socket);
+    const output = command === 'ls' ? format(listSessions(db)) : await killCommand(db, argv);
+    process.stdout.write(`${output}\n`);
+    return 0;
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  } finally {
+    db.close();
+  }
+}
+
 export async function main(argv: readonly string[]): Promise<number> {
   const [command, ...rest] = argv;
   if (command === undefined || command === '--help' || command === '-h' || command === 'help') {
     process.stdout.write(USAGE);
     return command === undefined ? 1 : 0;
+  }
+
+  // Before the serve flag parsing below: these three take positionals, and `new`
+  // needs a `--` terminator that `allowPositionals: false` would reject.
+  if (command === 'ls' || command === 'new' || command === 'kill') {
+    return registryCommand(command, rest);
   }
 
   let values;

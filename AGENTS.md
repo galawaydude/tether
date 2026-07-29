@@ -42,6 +42,17 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `new-session` dies with `server exited unexpectedly`. Ubuntu 24.04 ships 3.4, hence
   the source build in `.github/workflows/ci.yml`. That message from any tmux command
   means the tmux on `PATH` is too old, not that the argv was wrong.
+- **All persistent state is one SQLite file outside the repo**, opened by
+  `server/src/db.ts` — `~/.local/state/tether/tether.sqlite`, file `0600` in a `0700`
+  directory (`$XDG_STATE_HOME`, or `$TETHER_STATE_DIR`, which tests and any manual run
+  must set rather than touch the real one). Never write runtime state into the repo; a
+  path that is not in the repo cannot be committed by accident. `db.ts` owns the path
+  and the mode bits — `machine/registry.ts` only adds its schema on top, applied on
+  every open (`CREATE TABLE IF NOT EXISTS`). There is no migration framework, so a
+  column added later must be added compatibly. `provider_session_id` is deliberately
+  nullable: Codex has no session identity until the first user message, so the row is
+  provisional from spawn and back-filled. Rows are marked dead, never deleted — PR #12
+  resumes from them.
 - **Tests run straight from TypeScript** via `node --test` and Node's built-in type
   stripping. There is no test build step; relative imports carry the `.ts` extension.
 - **HTTP routes are default-deny.** A `preParsing` hook in `server/src/web/server.ts` rejects
@@ -56,9 +67,6 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `coerceTypes` are on): `additionalProperties: false` strips instead of rejecting, and
   `{"password": 123}` arrives as `"123"`. `buildServer` turns both off. Do not remove that
   `ajv.customOptions` block, and do not assume stock Fastify behaviour when reading the tests.
-- **Runtime state is outside the repo**: `~/.local/state/tether/tether.sqlite`, opened by
-  `server/src/db.ts` at mode `0600` in a `0700` directory. Tests and any manual run must set
-  `TETHER_STATE_DIR` rather than touch the real one.
 
 ## Maintaining this file
 
