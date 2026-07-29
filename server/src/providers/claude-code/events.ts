@@ -30,11 +30,15 @@
 import type { ConversationEvent } from '@tether/shared';
 
 /**
- * A tool result can be a whole file. The terminal is the full-fidelity view, so
- * a card in the conversation is capped rather than allowed to put megabytes in
- * the replay buffer and on the wire.
+ * A tool result can be a whole file, and so can a tool call's input — a `Write`
+ * or an `Edit` carries the file body in it. The terminal is the full-fidelity
+ * view, so a card in the conversation is capped rather than allowed to put
+ * megabytes in the replay buffer and on the wire. The same number for both:
+ * asymmetric caps are the uncapped one wearing a hat.
  */
 export const MAX_OUTPUT = 16_000;
+
+const TRUNCATED = '\n…[truncated by tether]';
 
 export type Mapped = {
   events: ConversationEvent[];
@@ -91,7 +95,32 @@ function output(content: unknown): string {
             .filter((part) => part !== '')
             .join('\n')
         : JSON.stringify(content ?? null);
-  return text.length > MAX_OUTPUT ? `${text.slice(0, MAX_OUTPUT)}\n…[truncated by tether]` : text;
+  return text.length > MAX_OUTPUT ? `${text.slice(0, MAX_OUTPUT)}${TRUNCATED}` : text;
+}
+
+/**
+ * The same cap for a `tool_use` input, sharing one budget across the whole
+ * value. The shape is kept rather than the value stringified or fields dropped —
+ * it is structured, the UI renders it as fields, and it is the strings inside it
+ * that are long — and the cut carries the marker a tool result's does.
+ */
+export function capInput(value: unknown, budget = { left: MAX_OUTPUT }): unknown {
+  if (typeof value === 'string') {
+    if (value.length <= budget.left) {
+      budget.left -= value.length;
+      return value;
+    }
+    const kept = `${value.slice(0, budget.left)}${TRUNCATED}`;
+    budget.left = 0;
+    return kept;
+  }
+  if (Array.isArray(value)) return value.map((item) => capInput(item, budget));
+  if (isObject(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, capInput(item, budget)]),
+    );
+  }
+  return value;
 }
 
 function assistantBlocks(
@@ -123,7 +152,7 @@ function assistantBlocks(
           warn(`assistant tool_use without name or id in ${uuid}`);
           return;
         }
-        events.push({ kind: 'tool_call', id, at, tool, input: block['input'], callId });
+        events.push({ kind: 'tool_call', id, at, tool, input: capInput(block['input']), callId });
         return;
       }
       default:

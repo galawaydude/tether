@@ -13,7 +13,7 @@ import { DatabaseSync } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 
 import { projectDir } from '../providers/claude-code/transcript.ts';
-import { Conversations, TAIL_EVENTS } from './conversations.ts';
+import { Conversations, stderrWarn, TAIL_EVENTS } from './conversations.ts';
 import { applyRegistrySchema, createSession, getSession, type Session } from './registry.ts';
 
 const PROVIDER_SESSION = '11111111-2222-4333-8444-555555555555';
@@ -155,11 +155,41 @@ test('a `since` older than the tail is told to refetch, not sent half a history'
     Array.from({ length: TAIL_EVENTS }, (_, i) => last - TAIL_EVENTS + 1 + i),
     'the whole tail, contiguous',
   );
+});
 
-  // A `since` from the future is a client that cannot be caught up either.
-  const ahead = sink();
-  await h.conversations.subscribe(h.session, 10_000, ahead.send);
-  assert.deepEqual(ahead.frames, [{ c: 'refetch' }]);
+test('a `since` ahead of the tailer is caught up, not told to refetch', async (t) => {
+  const h = await harness(t);
+  await writeFile(h.transcript, userRecord(1) + userRecord(2));
+
+  // The race the documented handshake produces: `history()` reads the file
+  // itself, the tailer only moves when its watch or its poll fires, so a client
+  // arrives holding a `seq` past what the tailer has ingested. `seq` is
+  // absolute, so it subscribes and the stream catches up — refetching it would
+  // just lose the same race again, for as long as the session keeps talking.
+  const history = await h.conversations.history(h.session);
+  assert.equal(history.seq, 2);
+
+  const client = sink();
+  await h.conversations.subscribe(h.session, history.seq + 2, client.send);
+  assert.deepEqual(client.frames, [], 'no refetch, and nothing it already holds');
+
+  await appendFile(h.transcript, userRecord(3) + userRecord(4) + userRecord(5));
+  await client.waitFor(3);
+  assert.deepEqual(seqs(client.frames), [3, 4, 5], 'the client drops 3 and 4 as duplicates');
+});
+
+test('a transcript that exists and cannot be read is a failure, not an empty history', async (t) => {
+  const h = await harness(t);
+  await writeFile(h.transcript, userRecord(1));
+  await rm(h.transcript);
+  // A directory in its place: it exists for `findTranscript`, and reading it fails.
+  await mkdir(h.transcript);
+
+  await assert.rejects(() => h.conversations.history(h.session));
+  assert.ok(
+    h.warnings.some((w) => w.startsWith('cannot read ')),
+    `expected a warning, got ${JSON.stringify(h.warnings)}`,
+  );
 });
 
 test('a transcript that does not exist yet is waited for, not failed', async (t) => {
@@ -172,6 +202,25 @@ test('a transcript that does not exist yet is waited for, not failed', async (t)
   await writeFile(h.transcript, userRecord(1));
   await client.waitFor(1);
   assert.deepEqual(seqs(client.frames), [1]);
+});
+
+test('a warning with nowhere else to go reaches the operator, once per complaint', (t) => {
+  const written: string[] = [];
+  t.mock.method(process.stderr, 'write', (chunk: unknown) => {
+    written.push(String(chunk));
+    return true;
+  });
+
+  const warn = stderrWarn();
+  warn('unknown transcript record type weather-forecast');
+  warn('unknown transcript record type weather-forecast');
+  // The same complaint about a different record is still the same complaint —
+  // a session full of an unknown type must not be a session full of stderr.
+  warn(`user record ${PROVIDER_SESSION} has no usable content`);
+  warn('user record 99999999-8888-4777-8666-555555555555 has no usable content');
+
+  assert.equal(written.length, 2, written.join(''));
+  assert.match(written[0] ?? '', /weather-forecast/);
 });
 
 test('the last viewer leaving stops the tailer', async (t) => {

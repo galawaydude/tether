@@ -69,7 +69,11 @@ export function registerConversationRoutes(
     async (request, reply) => {
       const session = getSession(db, request.params.id);
       if (session === undefined) return reply.code(404).send({ error: 'no_such_session' });
-      return reply.send(await conversations.history(session));
+      // A transcript that exists and cannot be read is a fault, not an empty
+      // conversation; the reason is on the server's stderr, not in this reply.
+      const history = await conversations.history(session).catch(() => undefined);
+      if (history === undefined) return reply.code(500).send({ error: 'transcript_unreadable' });
+      return reply.send(history);
     },
   );
 }

@@ -137,6 +137,10 @@ export async function tailLines(
     try {
       for (;;) {
         const { size } = await handle.stat();
+        // `stop()` waits for an in-flight operation to settle before it closes
+        // the handle, so without this the loop resumes onto a closed one and
+        // reports an EBADF that means nothing but "the viewer left".
+        if (closed) return;
         if (size < offset) {
           // The file shrank, so it is not the one we were reading. Claude Code
           // appends and never rewrites, so this is a replaced file; start over
@@ -148,6 +152,7 @@ export async function tailLines(
 
         const buffer = Buffer.allocUnsafe(size - offset);
         const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
+        if (closed) return;
         if (bytesRead === 0) return;
         offset += bytesRead;
 

@@ -49,6 +49,29 @@ export type ConversationsOptions = {
   warn?: (message: string) => void;
 };
 
+/** Session ids inside a warning; folded out so the key is the complaint itself. */
+const ID_IN_MESSAGE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+
+/** Past this many distinct complaints the format has moved far enough to notice. */
+const MAX_WARNINGS = 100;
+
+/**
+ * Where a tolerant-parse warning goes when the caller names no sink. Ignoring an
+ * unknown record is only half the rule — the other half is that the operator
+ * finds out that Claude Code's on-disk format moved, and the server runs Fastify
+ * with `logger: false`, so stderr is the only place left. Each distinct message
+ * is written once: one unknown record type must not become one line per record.
+ */
+export function stderrWarn(): (message: string) => void {
+  const seen = new Set<string>();
+  return (message) => {
+    const key = message.replace(ID_IN_MESSAGE, '<id>');
+    if (seen.has(key) || seen.size >= MAX_WARNINGS) return;
+    seen.add(key);
+    process.stderr.write(`tether: ${message}\n`);
+  };
+}
+
 type Live = {
   refs: number;
   seq: number;
@@ -65,14 +88,16 @@ export class Conversations {
   readonly #db: DatabaseSync;
   readonly #options: ConversationsOptions;
   readonly #live = new Map<string, Live>();
+  readonly #warnTo: (message: string) => void;
 
   constructor(db: DatabaseSync, options: ConversationsOptions = {}) {
     this.#db = db;
     this.#options = options;
+    this.#warnTo = options.warn ?? stderrWarn();
   }
 
   #warn(message: string): void {
-    this.#options.warn?.(message);
+    this.#warnTo(message);
   }
 
   async #find(session: Session) {
@@ -99,7 +124,14 @@ export class Conversations {
   async history(session: Session): Promise<ConversationHistory> {
     const found = await this.#find(session);
     if (found === undefined) return { seq: 0, events: [] };
-    const text = await readFile(found.path, 'utf8').catch(() => '');
+    // `findTranscript` has just stat'd this file, so a read that fails here is a
+    // real fault — EACCES, a file that vanished, a transcript past the maximum
+    // string length. An empty conversation is a lie the caller cannot tell apart
+    // from a session that has not said anything yet, so this one is raised.
+    const text = await readFile(found.path, 'utf8').catch((error: unknown) => {
+      this.#warn(`cannot read ${found.path}: ${String(error)}`);
+      throw error;
+    });
     const lines = text.split('\n');
     // A file being appended to right now ends mid-line; that line is not there yet.
     if (!text.endsWith('\n')) lines.pop();
@@ -116,6 +148,13 @@ export class Conversations {
    * Follow a session. `since` is the last `seq` the client holds; 0 means it
    * holds nothing. The client is either replayed the events it missed, in order
    * and exactly once, or told to refetch — never sent a partial history.
+   *
+   * A `since` *ahead* of the tailer is not a gap: `history()` reads the file
+   * itself while the tailer only moves when its watch or its poll fires, so the
+   * documented handshake produces one routinely. Because `seq` is absolute and
+   * the tailer emits every event from 1 upward, such a client can simply
+   * subscribe — it drops what it already holds and the stream catches up.
+   * Refetching it instead loses the same race again on the next attempt.
    */
   async subscribe(session: Session, since: number, send: Send): Promise<() => void> {
     const live = this.#open(session);
@@ -123,7 +162,7 @@ export class Conversations {
     await live.ready;
 
     const oldest = live.tail[0]?.seq ?? live.seq + 1;
-    if (since > live.seq || since < oldest - 1) {
+    if (since < oldest - 1) {
       send({ c: 'refetch' });
     } else {
       for (const entry of live.tail) {

@@ -125,6 +125,31 @@ test('a huge tool result is capped rather than replayed in full', () => {
   assert.match(output, /truncated by tether]$/);
 });
 
+test('a huge tool call input is capped the same way, with its shape kept', () => {
+  const { events } = mapLines([
+    JSON.stringify({
+      type: 'assistant',
+      uuid: 'u1',
+      timestamp: '2026-07-29T04:53:44.000Z',
+      message: {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 't1',
+            name: 'Write',
+            input: { file_path: '/tmp/big.txt', content: 'x'.repeat(MAX_OUTPUT * 2) },
+          },
+        ],
+      },
+    }),
+  ]);
+  const input = events[0]?.kind === 'tool_call' ? (events[0].input as Record<string, string>) : {};
+  assert.equal(input['file_path'], '/tmp/big.txt', 'the short fields are still there, unchanged');
+  assert.ok(JSON.stringify(input).length < MAX_OUTPUT * 1.1);
+  assert.match(input['content'] ?? '', /truncated by tether]$/);
+});
+
 test('a subagent’s own thread stays out of the main conversation', () => {
   const { events } = mapLines([
     JSON.stringify({
