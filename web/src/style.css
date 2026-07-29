@@ -260,7 +260,8 @@ label {
   border-color: #ffd479;
 }
 
-.chip-ended {
+.chip-ended,
+.chip-signedOut {
   color: var(--danger);
   border-color: var(--danger);
 }

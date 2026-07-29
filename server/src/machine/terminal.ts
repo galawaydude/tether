@@ -268,11 +268,13 @@ export function createTerminals(socket: string, historyLines = DEFAULT_HISTORY_L
         // `send-keys -l` is one spawn and covers everything a keyboard produces
         // except two cases, both of which the paste buffer handles because it
         // reaches tmux on stdin and so never becomes an argv element: a line break
-        // (`send-keys -l` silently drops it — report §3), and the three strings
-        // tmux's own lexer eats as command separators before send-keys ever sees
-        // them. `;` is a key a phone user really does press; `{` and `}` are keys a
-        // developer presses constantly. Neither the argv guard nor `sendText`'s own
-        // rule is relaxed here — the delivery mechanism is chosen to suit the text.
+        // (`send-keys -l` silently drops it — report §3), and any text tmux's own
+        // lexer would eat before send-keys ever saw it — a standalone `;`, `{` or
+        // `}`, or anything ending in `;`, which `isSeparatorArgument` is the single
+        // definition of. `;` is a key a phone user really does press; `{` and `}`
+        // are keys a developer presses constantly; `git status;` is a whole pasted
+        // line. Neither the argv guard nor `sendText`'s own rule is relaxed here —
+        // the delivery mechanism is chosen to suit the text.
         if (isSeparatorArgument(text) || /[\n\r]/.test(text)) {
           await pasteText(socket, session, text);
         } else {

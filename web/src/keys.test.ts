@@ -65,12 +65,41 @@ test('runs coalesce and stay in order', () => {
   ]);
 });
 
-test('bracketed-paste markers are consumed, their contents are not', () => {
-  assert.deepEqual(encodeInput('\x1b[200~one\ntwo\x1b[201~'), [
-    { c: 'text', text: 'one' },
+test('a bracketed paste is one text frame, newlines and all', () => {
+  // The markers are consumed and the body is not: `Terminals.text` sends anything
+  // with a line break through tmux's paste buffer, which does not submit. Splitting
+  // on the newlines here would send the first line of a pasted prompt to the agent
+  // and type the remainder into a fresh one.
+  assert.deepEqual(encodeInput('\x1b[200~one\ntwo\x1b[201~'), [{ c: 'text', text: 'one\ntwo' }]);
+  // Paste mode ends with the closing marker: the Enter after it is a keypress
+  // again, and is the only thing in the payload that submits anything.
+  assert.deepEqual(encodeInput('\x1b[200~x\ny\x1b[201~\r'), [
+    { c: 'text', text: 'x\ny' },
     { c: 'key', keys: ['Enter'] },
-    { c: 'text', text: 'two' },
   ]);
+  // Text typed around a paste is literal too, so it coalesces with it — one
+  // `text` frame is one paste-buffer delivery, and neither part submits.
+  assert.deepEqual(encodeInput('a\x1b[200~x\ny\x1b[201~b'), [{ c: 'text', text: 'ax\nyb' }]);
+});
+
+test('a bare Enter outside a paste is still a key', () => {
+  assert.deepEqual(encodeInput('\r'), [{ c: 'key', keys: ['Enter'] }]);
+  assert.deepEqual(encodeInput('hi\r'), [
+    { c: 'text', text: 'hi' },
+    { c: 'key', keys: ['Enter'] },
+  ]);
+});
+
+test('modifier-encoded cursor and navigation keys are keys, not noise', () => {
+  assert.deepEqual(encodeInput('\x1b[1;5C'), [{ c: 'key', keys: ['C-Right'] }]);
+  assert.deepEqual(encodeInput('\x1b[1;5D'), [{ c: 'key', keys: ['C-Left'] }]);
+  assert.deepEqual(encodeInput('\x1b[1;2A'), [{ c: 'key', keys: ['S-Up'] }]);
+  assert.deepEqual(encodeInput('\x1b[1;3B'), [{ c: 'key', keys: ['M-Down'] }]);
+  assert.deepEqual(encodeInput('\x1b[1;6H'), [{ c: 'key', keys: ['C-S-Home'] }]);
+  assert.deepEqual(encodeInput('\x1b[3;5~'), [{ c: 'key', keys: ['C-DC'] }]);
+  assert.deepEqual(encodeInput('\x1b[5;3~'), [{ c: 'key', keys: ['M-PPage'] }]);
+  // The unmodified forms still resolve — a modified entry must not shadow them.
+  assert.deepEqual(encodeInput('\x1b[1~\x1b[C'), [{ c: 'key', keys: ['Home', 'Right'] }]);
 });
 
 test('nothing exceeds the limits the server enforces', () => {

@@ -19,7 +19,7 @@ import { Terminal } from '@xterm/xterm';
 import type { ClientFrame, Session } from '@tether/shared';
 import { useEffect, useRef, useState } from 'preact/hooks';
 
-import { termSocketUrl } from './api.ts';
+import { ApiError, checkSession, termSocketUrl } from './api.ts';
 import { encodeInput, withSeq } from './keys.ts';
 import type { InputFrame } from './keys.ts';
 
@@ -27,17 +27,24 @@ import type { InputFrame } from './keys.ts';
 const CLOSE_NO_SESSION = 4404;
 const CLOSE_SESSION_ENDED = 4410;
 
-const RECONNECT_MS = 1500;
+/**
+ * Backoff, not a fixed interval: this runs on a phone, and a server that is
+ * unreachable for an hour must not be asked every 1.5 seconds for that hour.
+ * The floor keeps the common case — a screen lock, a tunnel blip — instant.
+ */
+const RECONNECT_MIN_MS = 1000;
+const RECONNECT_MAX_MS = 30_000;
 /** Long enough to coalesce an orientation change, short enough not to be felt. */
 const RESIZE_DEBOUNCE_MS = 120;
 
-type Status = 'connecting' | 'live' | 'retrying' | 'ended';
+type Status = 'connecting' | 'live' | 'retrying' | 'ended' | 'signedOut';
 
 const STATUS_TEXT: Record<Status, string> = {
   connecting: 'Connecting…',
   live: 'Live',
   retrying: 'Reconnecting…',
   ended: 'Session ended',
+  signedOut: 'Signed out',
 };
 
 /**
@@ -55,11 +62,24 @@ const ACCESSORY: readonly { label: string; name: string; keys: string[] }[] = [
   { label: '⌃C', name: 'Control C', keys: ['C-c'] },
 ];
 
-export function TerminalView({ session, onBack }: { session: Session; onBack: () => void }) {
+export function TerminalView({
+  session,
+  onBack,
+  onSignedOut,
+}: {
+  session: Session;
+  onBack: () => void;
+  onSignedOut: () => void;
+}) {
   const host = useRef<HTMLDivElement>(null);
   const send = useRef<(frame: InputFrame) => void>(() => {});
   const focus = useRef<() => void>(() => {});
   const [status, setStatus] = useState<Status>('connecting');
+
+  // Through a ref, because the effect below owns the socket and the xterm instance
+  // and must not be torn down and replayed because a parent re-rendered.
+  const signOut = useRef(onSignedOut);
+  signOut.current = onSignedOut;
 
   useEffect(() => {
     const term = new Terminal({
@@ -85,6 +105,7 @@ export function TerminalView({ session, onBack }: { session: Session; onBack: ()
     let reconnect: ReturnType<typeof setTimeout> | undefined;
     let resizing: ReturnType<typeof setTimeout> | undefined;
     let closed = false;
+    let backoff = RECONNECT_MIN_MS;
 
     const post = (frame: ClientFrame) => {
       if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(frame));
@@ -112,6 +133,7 @@ export function TerminalView({ session, onBack }: { session: Session; onBack: ()
       socket = ws;
 
       ws.onopen = () => {
+        backoff = RECONNECT_MIN_MS;
         setStatus('live');
         sendSize();
       };
@@ -131,8 +153,29 @@ export function TerminalView({ session, onBack }: { session: Session; onBack: ()
         // A phone suspends its sockets the moment the screen locks, so a dropped
         // connection is the normal case, not the exceptional one.
         setStatus('retrying');
-        reconnect = setTimeout(connect, RECONNECT_MS);
+        void retry();
       };
+    };
+
+    /**
+     * The browser reports 1006 both for a lost network and for an upgrade the
+     * default-deny hook answered 401, so the close code alone cannot tell them
+     * apart — ask the API. An expired cookie is not something retrying fixes, and
+     * this view was otherwise the one screen that could not notice a lost session.
+     */
+    const retry = async () => {
+      const expired = await checkSession().then(
+        () => false,
+        (error: unknown) => error instanceof ApiError && error.status === 401,
+      );
+      if (closed) return;
+      if (expired) {
+        setStatus('signedOut');
+        signOut.current();
+        return;
+      }
+      reconnect = setTimeout(connect, backoff);
+      backoff = Math.min(backoff * 2, RECONNECT_MAX_MS);
     };
 
     term.onData((data) => {

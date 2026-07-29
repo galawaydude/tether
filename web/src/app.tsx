@@ -38,8 +38,11 @@ export function App() {
 
   if (authenticated === null) return <p class="centre muted">Loading tether…</p>;
   if (!authenticated) return <Login onDone={() => setAuthenticated(true)} />;
-  if (open !== null) return <TerminalView session={open} onBack={() => setOpen(null)} />;
-  return <Sessions onOpen={setOpen} onSignedOut={() => setAuthenticated(false)} />;
+  const signedOut = () => setAuthenticated(false);
+  if (open !== null) {
+    return <TerminalView session={open} onBack={() => setOpen(null)} onSignedOut={signedOut} />;
+  }
+  return <Sessions onOpen={setOpen} onSignedOut={signedOut} />;
 }
 
 function Login({ onDone }: { onDone: () => void }) {

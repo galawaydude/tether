@@ -316,11 +316,12 @@ test('typed text reaches the pane verbatim, separators included, and never submi
   const detach = await terminals.attach('s1', () => {});
   t.after(() => detach());
 
-  // A standalone `;`, `{` or `}` is a command separator to tmux's own lexer, so
-  // `send-keys` can never carry one — the driver's argv guard refuses it before
-  // tmux gets the chance to silently drop it. They are also characters a user
-  // types constantly, so each one has to arrive, and arrive as itself.
-  const typed = ['const x = 1', ';', ' ', '{', '}', ' héllo ✅'];
+  // A standalone `;`, `{` or `}` is a command separator to tmux's own lexer, and
+  // a trailing `;` is eaten by it too, so `send-keys` can never carry either —
+  // the driver's argv guard refuses them before tmux gets the chance to silently
+  // drop the character. They are also characters a user types constantly, so each
+  // one has to arrive, and arrive as itself.
+  const typed = ['const x = 1', ';', ' ', '{', '}', ' héllo ✅', ' git status;'];
   for (const [index, text] of typed.entries()) {
     assert.equal(await terminals.text('s1', 'phone', index + 1, text), true, text);
   }
@@ -335,7 +336,7 @@ test('typed text reaches the pane verbatim, separators included, and never submi
     async () => (await readFile(out, 'utf8')).includes('\n'),
     'the typed text to reach the pane',
   );
-  assert.equal(await readFile(out, 'utf8'), 'const x = 1; {} héllo ✅\n');
+  assert.equal(await readFile(out, 'utf8'), 'const x = 1; {} héllo ✅ git status;\n');
 });
 
 test('two viewers of one session cannot interleave their input', async (t) => {

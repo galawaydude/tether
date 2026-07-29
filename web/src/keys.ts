@@ -24,27 +24,52 @@ export type InputFrame = { c: 'text'; text: string } | { c: 'key'; keys: string[
 const MAX_TEXT = 64 * 1024;
 const MAX_KEYS = 64;
 
+/** The final byte of a cursor/navigation CSI, and the tmux key name it means. */
+const CURSOR: readonly (readonly [string, string])[] = [
+  ['A', 'Up'],
+  ['B', 'Down'],
+  ['C', 'Right'],
+  ['D', 'Left'],
+  ['F', 'End'],
+  ['H', 'Home'],
+];
+
+/** The numeric parameter of a `CSI <n> ~` navigation key, and its tmux name. */
+const TILDE: readonly (readonly [number, string])[] = [
+  [1, 'Home'],
+  [3, 'DC'],
+  [4, 'End'],
+  [5, 'PPage'],
+  [6, 'NPage'],
+];
+
+/**
+ * xterm's modifier encoding: the parameter is 1 + shift(1) + alt(2) + ctrl(4), so
+ * Ctrl-Right is `CSI 1;5C`. Word-wise cursor movement and history navigation in an
+ * agent TUI are all in here, which is why they are worth a table rather than being
+ * left to the drop-everything-unrecognised default.
+ */
+const MODIFIERS: readonly (readonly [number, string])[] = [
+  [2, 'S-'],
+  [3, 'M-'],
+  [4, 'M-S-'],
+  [5, 'C-'],
+  [6, 'C-S-'],
+  [7, 'C-M-'],
+  [8, 'C-M-S-'],
+];
+
 /** The escape sequences that are a key someone pressed. Everything else is not. */
 const ESCAPES: readonly (readonly [string, string])[] = [
-  ['\x1b[1~', 'Home'],
-  ['\x1b[3~', 'DC'],
-  ['\x1b[4~', 'End'],
-  ['\x1b[5~', 'PPage'],
-  ['\x1b[6~', 'NPage'],
-  ['\x1b[A', 'Up'],
-  ['\x1b[B', 'Down'],
-  ['\x1b[C', 'Right'],
-  ['\x1b[D', 'Left'],
-  ['\x1b[F', 'End'],
-  ['\x1b[H', 'Home'],
+  ...TILDE.map(([n, name]) => [`\x1b[${n}~`, name] as const),
+  ...CURSOR.map(([final, name]) => [`\x1b[${final}`, name] as const),
   ['\x1b[Z', 'BTab'],
   // Application cursor mode (DECCKM), which a full-screen TUI usually turns on.
-  ['\x1bOA', 'Up'],
-  ['\x1bOB', 'Down'],
-  ['\x1bOC', 'Right'],
-  ['\x1bOD', 'Left'],
-  ['\x1bOF', 'End'],
-  ['\x1bOH', 'Home'],
+  ...CURSOR.map(([final, name]) => [`\x1bO${final}`, name] as const),
+  ...MODIFIERS.flatMap(([param, prefix]) => [
+    ...CURSOR.map(([final, name]) => [`\x1b[1;${param}${final}`, prefix + name] as const),
+    ...TILDE.map(([n, name]) => [`\x1b[${n};${param}~`, prefix + name] as const),
+  ]),
 ];
 
 /** What one `\x1b` at `at` turns out to be. A `null` key means: consume, send nothing. */
@@ -61,7 +86,10 @@ type Escape = { length: number; key: string | null };
  * what it is given into a real pane, so treating one of those as an `Escape`
  * followed by literal text puts `;rgb:0000/0000/0000` in the agent's prompt and
  * an `Escape` it never asked for into its TUI. Observed, in a browser, against a
- * live Claude Code session; a keyboard cannot produce these and never misses them.
+ * live Claude Code session. The table above is what keeps that default honest: a
+ * sequence a keyboard really can produce — including the modifier-encoded cursor
+ * keys — has an entry, so what remains unmapped is what a keyboard cannot press
+ * and therefore never misses.
  */
 export function escapeAt(data: string, at: number): Escape {
   const known = ESCAPES.find(([sequence]) => data.startsWith(sequence, at));
@@ -114,8 +142,23 @@ export function controlKey(ch: string): string | null {
 }
 
 /**
+ * xterm brackets a paste whenever the application has asked for it (DECSET 2004,
+ * which `machine/escape.ts` deliberately leaves alone), and that is the only
+ * signal that separates a pasted line break from a pressed Enter.
+ */
+const PASTE_START = '\x1b[200~';
+const PASTE_END = '\x1b[201~';
+
+/**
  * Split one `onData` payload into frames, coalescing runs so that a paste is one
  * `text` frame and a key-repeat is one `key` frame.
+ *
+ * Between the paste markers everything is literal, newlines included: the body
+ * goes out as one `text` frame, which `Terminals.text` delivers through tmux's
+ * paste buffer without submitting. Unbracketing it here instead would submit the
+ * first line of a pasted prompt to the agent and type the rest into a fresh one.
+ * The markers themselves are dropped — `paste-buffer -p` re-adds them, and only
+ * if the application asked.
  */
 export function encodeInput(data: string): InputFrame[] {
   const frames: InputFrame[] = [];
@@ -140,6 +183,7 @@ export function encodeInput(data: string): InputFrame[] {
 
   let i = 0;
   let run = '';
+  let pasting = false;
   const flush = () => {
     if (run !== '') pushText(run);
     run = '';
@@ -147,6 +191,25 @@ export function encodeInput(data: string): InputFrame[] {
 
   while (i < data.length) {
     const ch = data.charAt(i);
+
+    if (pasting) {
+      if (data.startsWith(PASTE_END, i)) {
+        flush();
+        pasting = false;
+        i += PASTE_END.length;
+      } else {
+        run += ch;
+        i += 1;
+      }
+      continue;
+    }
+
+    if (data.startsWith(PASTE_START, i)) {
+      flush();
+      pasting = true;
+      i += PASTE_START.length;
+      continue;
+    }
 
     if (ch === '\x1b') {
       const escape = escapeAt(data, i);

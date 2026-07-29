@@ -320,6 +320,12 @@ test('tmux command separators in caller arguments are rejected, not executed', a
     () => newSession(socket, { name: ';', cwd: tmpdir(), command: IDLE_SHELL }),
     UnsafeArgumentError,
   );
+  // A *trailing* `;` is eaten just as silently and exits 0, so the guard has to
+  // refuse it rather than let tmux drop the character: `send-keys -l -- 'z;'`
+  // delivers `z`, `'y\;'` delivers `y;`, and the key name `M-;` types `M-`.
+  await assert.rejects(() => sendText(socket, 'g', 'git status;'), UnsafeArgumentError);
+  await assert.rejects(() => sendText(socket, 'g', 'y\\;'), UnsafeArgumentError);
+  await assert.rejects(() => sendKeys(socket, 'g', ['M-;']), UnsafeArgumentError);
 
   // Embedded separators and format strings are data, and must still go through.
   await sendText(socket, 'g', 'echo "a;b #{pane_id} $NOPE"');

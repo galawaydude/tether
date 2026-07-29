@@ -59,10 +59,10 @@ export class InvalidCwdError extends Error {
   }
 }
 
-/** An argument tmux's own lexer would read as a command separator rather than data. */
+/** An argument tmux's own lexer would consume rather than hand on as data. */
 export class UnsafeArgumentError extends Error {
   constructor(arg: string) {
-    super(`argument ${JSON.stringify(arg)} is a tmux command separator, not data`);
+    super(`argument ${JSON.stringify(arg)} is eaten by tmux's lexer, not passed as data`);
     this.name = 'UnsafeArgumentError';
   }
 }
@@ -70,27 +70,36 @@ export class UnsafeArgumentError extends Error {
 /**
  * tmux splits its argv on standalone `;`, `{` and `}` before any command sees them:
  * `new-session -- sleep 1 ';' kill-server` runs kill-server, and `send-keys -l -- ';'`
- * delivers nothing at all. Embedded separators (`a;b`, `$USER`, `#{pane_id}`) are
- * passed through literally and are safe.
+ * delivers nothing at all.
+ *
+ * A *trailing* unescaped `;` is swallowed the same way and is the case that is easy
+ * to miss, because nothing fails: tmux 3.7b exits 0 for `send-keys -l -- 'z;'` and
+ * delivers `z`, and for the key name `M-;` types the literal `M-`. `x;;` loses one
+ * `;` and `y\;` loses the backslash, so an escaped trailing `;` is refused too
+ * rather than reasoned about. Separators *inside* an argument (`a;b`, `$USER`,
+ * `#{pane_id}`) are passed through literally and are safe.
  *
  * The check lives in `run`, so it covers every argv this module builds — session
  * names, pane targets, keys, commands — rather than only the paths that remember
  * to ask for it.
  */
-const SEPARATORS = new Set([';', '{', '}']);
+function mangledByLexer(arg: string): boolean {
+  return arg === ';' || arg === '{' || arg === '}' || arg.endsWith(';');
+}
 
 /**
  * Whether `checkArgs` would refuse this exact string as an argument. Exported so a
  * caller that has another way to deliver the value — the paste buffer, which
  * reaches tmux on stdin and never becomes argv — can choose it *before* building a
- * command, rather than by catching the guard or by weakening it.
+ * command, rather than by catching the guard or by weakening it. There is one rule
+ * and this is it: `checkArgs` asks the same predicate, so the two cannot drift.
  */
 export function isSeparatorArgument(arg: string): boolean {
-  return SEPARATORS.has(arg);
+  return mangledByLexer(arg);
 }
 
 function checkArgs(args: readonly string[]): void {
-  for (const arg of args) if (SEPARATORS.has(arg)) throw new UnsafeArgumentError(arg);
+  for (const arg of args) if (mangledByLexer(arg)) throw new UnsafeArgumentError(arg);
 }
 
 /** tmux rejects `:` and `.` in session names — they are its target syntax. */
