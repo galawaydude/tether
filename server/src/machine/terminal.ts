@@ -222,10 +222,16 @@ export function createTerminals(socket: string, historyLines = DEFAULT_HISTORY_L
         }
         viewer(head);
         existing.viewers.set(viewer, onEnd);
+        const detach = detacher(session, existing, viewer);
         // The first viewer's repaint came free with `attach-session`; a later one
         // has to ask for the same absolutely-positioned redraw.
-        await refreshClients(socket, session);
-        return detacher(session, existing, viewer);
+        try {
+          await refreshClients(socket, session);
+        } catch (error) {
+          detach();
+          throw error;
+        }
+        return detach;
       });
     },
 

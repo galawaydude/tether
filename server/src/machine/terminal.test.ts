@@ -341,11 +341,14 @@ test('a killed session ends its viewers instead of freezing them', async (t) => 
 
   // A viewer that is never told sits on a terminal that will never move again,
   // and cannot recover even if the session name comes back.
-  let ended!: () => void;
-  const whenEnded = new Promise<void>((resolve) => (ended = resolve));
-  const detach = await terminals.attach('s1', () => {}, ended);
+  let ended = false;
+  const detach = await terminals.attach(
+    's1',
+    () => {},
+    () => (ended = true),
+  );
   t.after(() => detach());
 
   await killSession(socket, 's1');
-  await whenEnded;
+  await waitFor(async () => ended, 'the viewer to be told the session ended');
 });
