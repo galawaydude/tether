@@ -18,9 +18,9 @@ import { join } from 'node:path';
 const dir = join(realpathSync(tmpdir()), 'tether-e2e');
 const port = '8788';
 
-// Read by both halves: `e2e/serve.ts` sets it, and the spec logs in with it.
-// This config is evaluated in the runner and in every worker, so setting the
-// environment here is what carries them to the spec.
+// Read by both halves: `e2e/serve.ts` sets the password, and the spec logs in
+// with it. This config is evaluated in the runner and in every worker, so the
+// environment is what carries these to the spec.
 const password = process.env['TETHER_E2E_PASSWORD'] ?? 'a throwaway password for the e2e run';
 process.env['TETHER_E2E_DIR'] = dir;
 process.env['TETHER_E2E_PASSWORD'] = password;

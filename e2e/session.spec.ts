@@ -13,9 +13,9 @@
  */
 
 import { expect, test, type Locator } from '@playwright/test';
-import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
+/** The one directory inside the sandbox a session may be started in; `serve.ts` makes it. */
 const project = join(process.env['TETHER_E2E_DIR'] as string, 'project');
 
 /** What `e2e/stub-agent.ts` prints and records; the reload counts them. */
@@ -42,8 +42,6 @@ async function screen(rows: Locator): Promise<string> {
 test('a reload loses nothing: scrollback and conversation come back intact and once', async ({
   page,
 }) => {
-  mkdirSync(project, { recursive: true });
-
   await page.goto('/');
   await page.getByLabel('Password').fill(process.env['TETHER_E2E_PASSWORD'] as string);
   await page.getByRole('button', { name: 'Sign in' }).click();

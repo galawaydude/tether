@@ -3,8 +3,8 @@
  *
  * CI must never run a real agent (report §8): it would need real credentials and
  * it would cost money on every run. So this is the smallest thing that behaves
- * like one from tether's side — it prints, it prompts, and it writes a
- * Claude-Code-shaped transcript where the real one writes its own.
+ * like one from tether's side — it prints, it echoes what is typed at it, and
+ * it writes a Claude-Code-shaped transcript where the real one writes its own.
  *
  * `e2e/serve.ts` puts a `claude` shim on `PATH` pointing here, so the session is
  * created through exactly the production path: `POST /sessions` →

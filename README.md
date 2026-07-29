@@ -273,16 +273,17 @@ client could set that header itself, so tether ignores it.
 
 ## Known risks
 
-**The conversation view is built on a file format that is not a public API.**
-Claude Code writes its transcript to `~/.claude/projects/`, ships frequently, and
-owes tether nothing. A release can change the record shapes, and when it does the
-conversation view loses detail — a tool card, a message, at worst the whole view.
-tether parses it tolerantly for that reason: an unrecognised record is logged to
-stderr and ignored, never thrown.
+**The conversation view is built on file formats that are not public APIs.**
+Claude Code writes its transcript to `~/.claude/projects/` and Codex writes its
+rollout to `~/.codex/sessions/`. Both ship frequently and owe tether nothing. A
+release can change the record shapes, and when it does the conversation view
+loses detail — a tool card, a message, at worst the whole view. tether parses
+them tolerantly for that reason: an unrecognised record is logged to stderr and
+ignored, never thrown.
 
 **The terminal view depends on none of it.** It is the real TUI over tmux, it is
 always correct, and it is a complete fallback. If the conversation ever looks
-wrong or empty after a Claude Code upgrade, that is the failure to expect, the
+wrong or empty after a provider upgrade, that is the failure to expect, the
 terminal tab is the answer, and the session itself was never at risk.
 
 ## Development
