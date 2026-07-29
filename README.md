@@ -39,11 +39,28 @@ targets, session sharing, usage dashboards, a mobile app.
 
 ## Status
 
-Toolchain, CI, the tmux driver and authentication. Nothing runs end to end yet —
-this milestone is being built one focused PR at a time; the server currently
-serves login, logout and a session check, and there is no route that can reach a
-terminal yet — auth deliberately lands before there is anything behind it to
-protect.
+Toolchain, CI, the tmux driver, authentication and the session registry. There is
+no web UI yet — the server serves login, logout and a session check, and no route
+can reach a terminal, auth deliberately landing before there is anything behind it
+to protect — but tether is already usable from a terminal, see below. This
+milestone is being built one focused PR at a time.
+
+## Using it from a terminal
+
+```sh
+npm ci                            # also builds the CLI, so `npx tether` works
+
+npx tether new ~/src/project      # starts Claude Code in a durable tmux session
+npx tether ls                     # every session, live or dead
+npx tether kill 1a2b3c4d          # any unambiguous id prefix
+```
+
+`tether new` takes `--title` and, after `--`, a command to run instead of the
+provider's own (`npx tether new ~/src/project -- /bin/sh`).
+
+`ls` and `kill` reconcile the registry against real tmux first, so a session that
+died while tether was not running shows as **dead** rather than live. Dead rows are
+kept, not deleted: they are what a later _Resume_ needs.
 
 ## Access and security
 
@@ -75,9 +92,10 @@ npm run tether -- serve          # binds 127.0.0.1:8787
   `X-Forwarded-For` are believed. Without it a client cannot spoof the `Secure`
   cookie flag or its own address.
 
-State — the SQLite file holding the password hash and the live sessions — lives
-in `~/.local/state/tether/` (`$XDG_STATE_HOME`, or `$TETHER_STATE_DIR` to
-override), at mode `0600`. Nothing secret is ever written inside the repository.
+State — the one SQLite file, holding the password hash and the session registry —
+lives in `~/.local/state/tether/tether.sqlite` (`$XDG_STATE_HOME`, or
+`$TETHER_STATE_DIR` to override), at mode `0600`. Nothing secret, and no runtime
+state, is ever written inside the repository.
 
 ## Development
 
@@ -87,9 +105,9 @@ mock, and older tmux crashes on the `window-size manual` that `tether.conf` sets
 (so does tether itself; 3.7 is a hard floor, not just a test one).
 
 ```sh
-npm ci        # installs all workspaces; builds shared/ declarations
+npm ci        # installs all workspaces; builds shared/ declarations and server/ (the CLI)
 npm test      # node:test across every package
-npm run build # server (tsc) and web (vite)
+npm run build # server (tsc) and web (vite) — rerun after editing server sources
 ```
 
 Other checks, all of which CI runs on every pull request:

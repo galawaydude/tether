@@ -130,6 +130,22 @@ function emptyIfNoServer(error: unknown): string {
   throw error;
 }
 
+/** tmux 3.7b's wording when the server is up but the target session is not. */
+const NO_SESSION = /can't find session/;
+
+/**
+ * True only for the two ways tmux says the session is genuinely already gone: no
+ * server at all, or no session by that name. It lives next to `NO_SERVER` so both
+ * stderr matchers stay in the one module that talks to tmux. A caller treating
+ * "gone" as success must ask this rather than catching every `TmuxError`, or a
+ * permission error reads as a successful kill.
+ */
+export function isSessionGone(error: unknown): boolean {
+  return (
+    error instanceof TmuxError && (NO_SERVER.test(error.stderr) || NO_SESSION.test(error.stderr))
+  );
+}
+
 /**
  * Resolve a caller-supplied working directory and require it to be an existing
  * directory. Returns the real path — symlinks resolved — which is what gets passed
