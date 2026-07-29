@@ -156,24 +156,46 @@ export function markDead(db: DatabaseSync, id: string): void {
  * One UPDATE rather than a read, a filter and a write per row: the whole reason
  * the design chose SQLite over a JSON file was atomic update, and a
  * read-modify-write here would hand that back.
+ *
+ * `snapshotAt` is when `liveTmuxNames` was read, and only rows that already
+ * existed then are judged. Atomicity covers the database, not the tmux snapshot
+ * the verdict is derived from: without this, a `tether new` that lands between
+ * another process's pane read and its UPDATE has its brand-new row marked dead
+ * while its agent runs. Nothing ever clears `dead_at` — that is deliberate, and
+ * it is exactly why a false positive has to be impossible.
  */
-export function reconcile(db: DatabaseSync, liveTmuxNames: readonly string[]): number {
+export function reconcile(
+  db: DatabaseSync,
+  liveTmuxNames: readonly string[],
+  snapshotAt: number,
+): number {
   const alive = liveTmuxNames.length
     ? `AND tmux_name NOT IN (${liveTmuxNames.map(() => '?').join(',')})`
     : '';
   const now = Date.now();
   const result = db
-    .prepare(`UPDATE sessions SET dead_at = ?, updated_at = ? WHERE dead_at IS NULL ${alive}`)
-    .run(now, now, ...liveTmuxNames);
+    .prepare(
+      `UPDATE sessions SET dead_at = ?, updated_at = ?
+       WHERE dead_at IS NULL AND created_at <= ? ${alive}`,
+    )
+    .run(now, now, snapshotAt, ...liveTmuxNames);
   return Number(result.changes);
 }
 
 /**
  * Reconcile against what tmux actually has right now. A session counts as live
- * only while it still has a pane that is not dead — with `remain-on-exit` a pane
- * outlives its process, and a shell of a session is not a running agent.
+ * only while it still has a pane that is not dead.
+ *
+ * The `!p.dead` filter is defensive: `tether.conf` does not set `remain-on-exit`
+ * and tmux's default is off, so a pane normally dies with its process and no dead
+ * pane is ever reported. It is what keeps the answer right if that changes — a
+ * pane outliving its process is a shell of a session, not a running agent.
+ *
+ * The timestamp is taken before the read, so a session created while tmux is being
+ * asked is out of scope rather than a false death.
  */
 export async function reconcileWithTmux(db: DatabaseSync, socket: string): Promise<number> {
+  const snapshotAt = Date.now();
   const live = (await listPanes(socket)).filter((p) => !p.dead).map((p) => p.session);
-  return reconcile(db, live);
+  return reconcile(db, live, snapshotAt);
 }

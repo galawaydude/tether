@@ -18,7 +18,13 @@ import {
   openRegistry,
   reconcileWithTmux,
 } from './machine/registry.ts';
-import { DEFAULT_SOCKET, TmuxError, killSession, newSession, resolveCwd } from './machine/tmux.ts';
+import {
+  DEFAULT_SOCKET,
+  isSessionGone,
+  killSession,
+  newSession,
+  resolveCwd,
+} from './machine/tmux.ts';
 import { MIN_PASSWORD_LENGTH, createAuthStore } from './web/auth.ts';
 import type { AuthStore } from './web/auth.ts';
 import { defaultAllowedHosts, isLoopbackHost } from './web/guards.ts';
@@ -199,8 +205,12 @@ async function serve(auth: AuthStore, args: ServeArgs): Promise<number> {
 /** Tests point this at their own tmux server; nothing else sets it. */
 const socket = process.env['TETHER_TMUX_SOCKET'] || DEFAULT_SOCKET;
 
-/** What `tether new` starts when no explicit command is given. */
-const PROVIDER_COMMANDS: Record<string, readonly string[]> = { [DEFAULT_PROVIDER]: ['claude'] };
+/**
+ * What `tether new` starts when no explicit command is given. A `Map` rather than
+ * an object literal so `--provider constructor` is an unknown provider and not
+ * `Object.prototype`'s member.
+ */
+const PROVIDER_COMMANDS = new Map<string, readonly string[]>([[DEFAULT_PROVIDER, ['claude']]]);
 
 function fixed(value: string, width: number): string {
   return value.length > width ? `${value.slice(0, width - 1)}…` : value.padEnd(width);
@@ -242,7 +252,7 @@ async function newCommand(db: DatabaseSync, argv: readonly string[]): Promise<st
   if (dir === undefined || positionals.length > 1) throw new Error(USAGE);
 
   const provider = values.provider ?? DEFAULT_PROVIDER;
-  const run = command?.length ? command : PROVIDER_COMMANDS[provider];
+  const run = command?.length ? command : PROVIDER_COMMANDS.get(provider);
   if (run === undefined) {
     throw new Error(`unknown provider ${provider} — pass the command after \`--\``);
   }
@@ -273,9 +283,11 @@ async function killCommand(db: DatabaseSync, argv: readonly string[]): Promise<s
   if (id === undefined || argv.length > 1) throw new Error(USAGE);
   const session = getSession(db, id);
   if (session === undefined) throw new Error(`no such session: ${id}`);
-  // Already-dead is the postcondition, not an error.
+  // Already-gone is the postcondition, not an error — but only already-gone. Any
+  // other tmux failure leaves the pane running, so it must not be reported as a
+  // kill and must not record a row dead that nothing ever revives.
   await killSession(socket, session.tmuxName).catch((error: unknown) => {
-    if (!(error instanceof TmuxError)) throw error;
+    if (!isSessionGone(error)) throw error;
   });
   markDead(db, session.id);
   return `killed ${session.id}`;

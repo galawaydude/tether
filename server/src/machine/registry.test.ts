@@ -166,7 +166,20 @@ test('reconcile against no live sessions at all marks every live row dead', asyn
   const alreadyDead = getSession(db, b.id)!;
 
   // The empty-list case is its own SQL path — `NOT IN ()` is a syntax error.
-  assert.equal(reconcile(db, []), 1);
+  assert.equal(reconcile(db, [], Date.now()), 1);
   assert.ok(getSession(db, a.id)!.deadAt !== null);
   assert.deepEqual(getSession(db, b.id), alreadyDead);
+});
+
+test('reconcile never judges a row created after the snapshot it is judging against', async (t) => {
+  const db = openRegistry(await dbPathFor(t));
+  t.after(() => db.close());
+
+  const snapshotAt = Date.now();
+  // The race `tether ls` loses without this: a `tether new` that lands after the
+  // pane read has no pane in the snapshot and would otherwise be marked dead.
+  const fresh = createSession(db, sample({ now: snapshotAt + 1 }));
+
+  assert.equal(reconcile(db, [], snapshotAt), 0);
+  assert.equal(getSession(db, fresh.id)!.deadAt, null);
 });
