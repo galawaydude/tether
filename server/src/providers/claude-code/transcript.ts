@@ -165,19 +165,17 @@ async function beganAt(candidate: Candidate, memo?: StartMemo): Promise<number |
  * A candidate with nothing timestamped in its prefix is unverifiable rather than
  * disqualified: it is skipped, and `Conversations`' existing retry loop looks
  * again once more has been flushed — the same path a session with no transcript
- * at all already takes. Erring towards waiting is the point, because the binding
- * is permanent: the registry row is back-filled on the first hit and never
- * re-checked, so adopting a neighbour's transcript would show its conversation
- * under this session's name for good.
+ * at all already takes.
  *
- * ponytail: the window left is two sessions started in the same directory within
- * `START_SLACK_MS` of each other while *neither* has been back-filled yet, so
- * neither is claimed and both files qualify on time alone; mtime order picks.
- * The hook receiver narrows it — a row back-filled from a `PreToolUse` payload
- * (`web/hooks.ts`, confirmed against the pane's own session file) is claimed and
- * drops out of the guess — but does not close it, since a session that has run
- * no tool yet has fired no hook. Reading `status.ts`'s `readSessionId` off the
- * pane at discovery time would retire the guess outright.
+ * All of that is now the **fallback**. `Conversations` reads `status.ts`'s
+ * `readSessionId` off the session's own tmux pane first, and a pane that names
+ * its session takes the single-path branch above with nothing left to guess. Two
+ * things the guess never got right and no tuning here would have: two sessions
+ * started in one directory within `START_SLACK_MS` of each other, where both
+ * files qualify on time alone and mtime order picks; and a *resumed* session,
+ * whose transcript opens with the replayed history and so `began`s hours before
+ * the row was created, failing the check outright. This runs where the pane
+ * cannot say — no procfs, no registry file, a pane already gone.
  */
 export async function findTranscript(session: {
   cwd: string;

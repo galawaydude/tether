@@ -150,7 +150,13 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   every open (`CREATE TABLE IF NOT EXISTS`). There is no migration framework, so a
   column added later must be added compatibly. `provider_session_id` is deliberately
   nullable: Codex has no session identity until the first user message, so the row is
-  provisional from spawn and back-filled. Rows are marked dead, never deleted: a dead row
+  provisional from spawn and back-filled. It is also **not stable for the life of a
+  session** — `/resume` and `--continue` move Claude Code to a different session id and
+  a different transcript, verified live on 2.1.220 — so it is what the pane is running
+  _now_, re-read from `~/.claude/sessions/<pane_pid>.json` rather than settled once.
+  `Conversations` is the only writer: `#bind` records it and, for a session anyone is
+  watching, restarts the tailer and sends `{c:'refetch'}` so the view follows.
+  Rows are marked dead, never deleted: a dead row
   is what `resumeSession` (`machine/sessions.ts`) restarts through the provider's own
   resume, and `revive` is the only thing that clears `dead_at`. A row whose
   `provider_session_id` is still null has no conversation to restore, and resume refuses
@@ -174,7 +180,11 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   is shared and only the paths and record vocabularies differ:
   `claude-code/transcript.ts` finds `~/.claude/projects/<sanitised cwd>/<id>.jsonl`,
   `codex/rollout.ts` finds `$CODEX_HOME/sessions/<Y>/<M>/<D>/rollout-<ts>-<uuid>.jsonl`,
-  and each directory's `events.ts` maps records to `ConversationEvent`. These
+  and each directory's `events.ts` maps records to `ConversationEvent`. Which `<id>`
+  comes from the pane, not from a scan — see `provider_session_id` above; the
+  timestamp-and-mtime search in `findTranscript` is only what runs where the pane
+  cannot say, and it is documented there as unable to settle either of the two cases
+  that produced this bug. These
   formats are internal to tools that ship weekly, so **an unknown record type,
   block or shape is warned about and ignored, never thrown** — a mapper that
   throws loses the user's session, and the terminal is a complete fallback for
@@ -306,13 +316,15 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   authorisation lives at the endpoint instead**: loopback checked against the
   real peer address (never `request.ip`, which `trustProxy` lets a header
   forge), constant-time secret compare, then a payload accepted only for a live
-  registry row. A hook whose `session_id` is unknown may adopt the one unclaimed
-  row in its `cwd` — which is how the _first_ tool call of a session is not
-  lost — but the `cwd` alone never binds it: an agent run by hand in that
-  directory posts the same one, and a row bound to a foreign transcript is a
-  `resume` that hands back somebody else's conversation. The pane tether spawned
-  has to confirm it is running that session (`Conversations.ownsProviderSession`,
-  via `readSessionId`); unconfirmed is dropped as unknown.
+  registry row. A hook whose `session_id` no row holds is bound by
+  `Conversations.bindProviderSession` — which is how the _first_ tool call of a
+  session is not lost, and how the first after a `/resume` is not either. The
+  payload's `cwd` is **not** consulted: a `cwd` can only ever say "one of
+  these", since an agent run by hand in that directory posts the same one and
+  two tether sessions in one directory post it identically. The join is the
+  pane, whose `readSessionId` states which session it is running; no pane
+  naming it means nothing is bound, which is what keeps a foreign transcript —
+  a `resume` that hands back somebody else's conversation — out of a row.
 - **`~/.claude/sessions/<pid>.json` outlives its process, so both guards in
   `providers/claude-code/status.ts` are mandatory.** It is deleted on a graceful
   exit and left behind by a `SIGKILL` or a reboot, and pids are reused — so
@@ -414,14 +426,19 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `coerceTypes` are on): `additionalProperties: false` strips instead of rejecting, and
   `{"password": 123}` arrives as `"123"`. `buildServer` turns both off. Do not remove that
   `ajv.customOptions` block, and do not assume stock Fastify behaviour when reading the tests.
-- **`e2e/` is three Playwright specs and they assert counts and geometry, not presence.**
+- **`e2e/` is four Playwright specs and they assert counts and geometry, not presence.**
   They drive the real `tether serve` (`e2e/serve.ts` calls the CLI's own `main`) inside a
   scratch `HOME`/state dir/tmux socket, with `e2e/stub-agent.ts` on `PATH` as `claude` — so
   the session is created through the production path and **CI still never runs a live
   agent**. What `session.spec.ts` checks that nothing else can is the reload, what
-  `permission.spec.ts` checks is the hook chain end to end, and what `composer.spec.ts`
+  `permission.spec.ts` checks is the hook chain end to end, what `composer.spec.ts`
   checks is the compose chain end to end plus the Enter rule the composer entry above
-  describes, which has no handler to unit-test: `toContainText` passes just as happily
+  describes, which has no handler to unit-test, and what `identity.spec.ts` checks is that
+  each session shows _its own_ conversation and keeps it — two sessions in one directory,
+  then a `/resume` typed at one pane (which the stub acts out by moving to a new session
+  id and a new transcript, announcing it only through its registry file). That last claim
+  is the one found in live use rather than by a test.
+  `toContainText` passes just as happily
   on a view that replayed itself twice, on two cards for one tool call, and on an echo
   still standing beside its own record.
   `session.spec.ts` also measures the New session sheet's box against short viewports and
@@ -430,8 +447,10 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `.conv` and `.xterm-rows` because both panes stay mounted; the terminal comparison is of
   the **rendered screen** before versus after — the buffer above it legitimately holds the
   capture _under_ tmux's repaint, and byte-exactness of the recipe is
-  `terminal.test.ts`'s job; and the three specs share one server and one session list, so
-  each takes its own directory and reopens its session **by name**, never `.row-open`.
+  `terminal.test.ts`'s job; and the four specs share one server and one session list, so
+  each takes its own directory and reopens its session **by name**, never `.row-open` —
+  which is why `identity.spec.ts`, the one spec that deliberately puts two sessions in one
+  directory, gives both a title.
   The stub knows nothing about where tether's shim, secret or endpoint are — it runs
   whatever `.claude/settings.local.json` lists — so a broken installer fails the test
   rather than quietly proving nothing. A typed ask only **arms** the stub and a

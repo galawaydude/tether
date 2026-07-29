@@ -112,39 +112,65 @@ async function readRecord(pid: number, home: string): Promise<Record<string, unk
 }
 
 /**
+ * Both facts the file carries about `pid`, from **one** read: which session it is
+ * running and what that session is doing.
+ *
+ * One snapshot rather than two, because the two are read together and a
+ * `/resume` rewrites both at once — a status taken from a later read than the id
+ * it is filed under is a status filed under the wrong session.
+ *
+ * Either field is absent where the file does not carry it in a shape this build
+ * recognises; the whole result is `undefined` where the file cannot be believed
+ * at all.
+ */
+export async function readSession(
+  pid: number,
+  options: { home?: string } = {},
+): Promise<{ sessionId?: string; state?: SessionState } | undefined> {
+  const fields = await readRecord(pid, options.home ?? homedir());
+  if (fields === undefined) return undefined;
+  const sessionId = fields['sessionId'];
+  const state = fields['status'];
+  return {
+    ...(typeof sessionId === 'string' && sessionId !== '' ? { sessionId } : {}),
+    ...(typeof state === 'string' && STATES.has(state) ? { state: state as SessionState } : {}),
+  };
+}
+
+/**
  * What the session on `pid` is doing, or `undefined` if that cannot be
  * established.
  *
  * `expectSessionId` is the registry row's `provider_session_id` where tether
  * has one. It is the last guard — a pid that is alive, whose start time matches
  * and whose file names a *different* session is not this session's status.
+ * Callers that can *react* to the file naming a different session — the
+ * conversation poller, which re-binds the row and follows the new transcript —
+ * read `readSession` instead and compare the id themselves.
  */
 export async function readSessionStatus(
   pid: number,
   options: { home?: string; expectSessionId?: string | null } = {},
 ): Promise<SessionState | undefined> {
-  const fields = await readRecord(pid, options.home ?? homedir());
-  if (fields === undefined) return undefined;
+  const record = await readSession(pid, options);
+  if (record === undefined) return undefined;
 
   const expected = options.expectSessionId;
-  if (expected != null && fields['sessionId'] !== expected) return undefined;
+  if (expected != null && record.sessionId !== expected) return undefined;
 
-  const state = fields['status'];
-  if (typeof state !== 'string' || !STATES.has(state)) return undefined;
-  return state as SessionState;
+  return record.state;
 }
 
 /**
  * Which session Claude Code says is running on `pid` — the same guards asked the
  * other way round, and the only evidence tether has about *which process* a hook
  * payload came from. A hook carries a `cwd`, and a `cwd` is not proof: an agent
- * a user started by hand in a directory tether once managed posts the same one.
+ * a user started by hand in a directory tether once managed posts the same one,
+ * and two tether sessions started in one directory post it identically.
  */
 export async function readSessionId(
   pid: number,
   options: { home?: string } = {},
 ): Promise<string | undefined> {
-  const fields = await readRecord(pid, options.home ?? homedir());
-  const sessionId = fields?.['sessionId'];
-  return typeof sessionId === 'string' && sessionId !== '' ? sessionId : undefined;
+  return (await readSession(pid, options))?.sessionId;
 }

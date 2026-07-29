@@ -88,6 +88,11 @@ export interface Session {
    * The provider's own session id. Null until the provider has one: Codex creates
    * no session identity until the first user message, so tether holds a
    * provisional row from spawn and back-fills it later.
+   *
+   * **Not stable for the life of a tether session.** `/resume` and `--continue`
+   * typed into the terminal move Claude Code to a different session id and a
+   * different transcript, so this is what the pane is running *now*, re-read from
+   * the pane rather than settled once at spawn.
    */
   providerSessionId: string | null;
   cwd: string;
