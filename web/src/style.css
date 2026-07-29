@@ -266,6 +266,231 @@ label {
   border-color: var(--danger);
 }
 
+/* ── tabs and panes ─────────────────────────────────────────────────────── */
+
+.tabs {
+  display: flex;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+.tab {
+  flex: 1;
+  font-size: 15px;
+}
+
+.tab-on {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* The two panes are stacked, both always laid out at full size. Hiding the
+   inactive one with `visibility` is what keeps its scroll position, keeps xterm
+   correctly sized, and takes it out of the tab order and the accessibility tree
+   — all three of which `display: none` would cost. */
+.panes {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.pane {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.pane-off {
+  visibility: hidden;
+}
+
+/* ── conversation ───────────────────────────────────────────────────────── */
+
+.conv {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  /* Nothing in here may widen the page: a file path, a stack trace or a line of
+     minified JS is routine, and sideways scrolling the whole app to read one is
+     the difference between usable and unusable on a phone. */
+  overflow-x: hidden;
+}
+
+/* `flex: none` is load-bearing, not tidiness: a column flex container shrinks its
+   items to fit rather than overflowing, and a collapsed tool card has no text
+   holding it open — every card in a long conversation renders as a 6px stripe
+   without this. `min-width: 0` is what lets the clipping inside a card work. */
+.conv > * {
+  flex: none;
+  min-width: 0;
+}
+
+.msg {
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+/* The user's own messages sit apart from the agent's — indented and accented,
+   because scanning back for "what did I ask" is the commonest thing you do. */
+.msg-user {
+  border-color: var(--accent);
+  background: #101c2c;
+  margin-left: 16px;
+}
+
+.msg-who {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.msg-text {
+  margin: 0;
+  /* The agent's own line breaks are meaningful; a long unbroken token wraps
+     rather than pushing the card wider. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.thinking,
+.note,
+.divider {
+  margin: 0;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.thinking {
+  padding-left: 4px;
+}
+
+.divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.divider::before,
+.divider::after {
+  content: '';
+  flex: 1;
+  border-top: 1px solid var(--line);
+}
+
+.note {
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px dashed var(--line);
+}
+
+/* ── tool cards ─────────────────────────────────────────────────────────── */
+
+.tool {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.tool-failed {
+  border-color: var(--danger);
+}
+
+.tool > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* The whole header is the hit target, and on a phone that has to be a thumb. */
+  min-height: var(--tap);
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+/* `display: flex` above stops the UA generating a `::marker`, so the disclosure
+   affordance is drawn here instead — decorative, hence the empty alt text: the
+   `<details>` element announces its own open state. */
+.tool > summary::before {
+  content: '\25b8' / '';
+  flex: none;
+  color: var(--muted);
+  transition: transform 120ms ease;
+}
+
+.tool[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+/* Safari still lays its legacy marker out as a flex item, which would double it. */
+.tool > summary::-webkit-details-marker {
+  display: none;
+}
+
+.tool-name {
+  flex: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* One line, clipped: the collapsed card says what ran, not how much of it. */
+.tool-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.tool-state {
+  flex: none;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.tool-failed .tool-state {
+  color: var(--danger);
+}
+
+.tool-label {
+  margin: 8px 12px 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Long output scrolls inside its own box, in both directions: code is wrapped at
+   the width its author chose and re-wrapping it makes it harder to read, so this
+   is the one place that scrolls sideways — and the page still does not. */
+.tool-body {
+  max-height: 40vh;
+  margin: 0 12px 12px;
+  padding: 8px 10px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border-radius: 8px;
+  background: #0f141b;
+  font-size: 13px;
+  line-height: 1.4;
+  tab-size: 2;
+}
+
 /* ── terminal ───────────────────────────────────────────────────────────── */
 
 .term {

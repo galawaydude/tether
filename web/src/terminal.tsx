@@ -1,5 +1,7 @@
 /**
- * The terminal view: xterm.js on one end, the `term` WebSocket on the other.
+ * The terminal pane: xterm.js on one end, the `term` WebSocket on the other.
+ * It is one of the two panes inside the session screen (`app.tsx`), which owns
+ * the header, the tabs and the status chip this reports up through `onStatus`.
  *
  * Two properties this file exists to keep:
  *
@@ -17,7 +19,7 @@
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import type { ClientFrame, Session } from '@tether/shared';
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useRef } from 'preact/hooks';
 
 import { ApiError, checkSession, termSocketUrl } from './api.ts';
 import { encodeInput, withSeq } from './keys.ts';
@@ -37,9 +39,10 @@ const RECONNECT_MAX_MS = 30_000;
 /** Long enough to coalesce an orientation change, short enough not to be felt. */
 const RESIZE_DEBOUNCE_MS = 120;
 
-type Status = 'connecting' | 'live' | 'retrying' | 'ended' | 'signedOut';
+/** Shared with the conversation channel, which reaches a subset of these. */
+export type Status = 'connecting' | 'live' | 'retrying' | 'ended' | 'signedOut';
 
-const STATUS_TEXT: Record<Status, string> = {
+export const STATUS_TEXT: Record<Status, string> = {
   connecting: 'Connecting…',
   live: 'Live',
   retrying: 'Reconnecting…',
@@ -64,22 +67,23 @@ const ACCESSORY: readonly { label: string; name: string; keys: string[] }[] = [
 
 export function TerminalView({
   session,
-  onBack,
+  onStatus,
   onSignedOut,
 }: {
   session: Session;
-  onBack: () => void;
+  onStatus: (status: Status) => void;
   onSignedOut: () => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const send = useRef<(frame: InputFrame) => void>(() => {});
   const focus = useRef<() => void>(() => {});
-  const [status, setStatus] = useState<Status>('connecting');
 
-  // Through a ref, because the effect below owns the socket and the xterm instance
+  // Through refs, because the effect below owns the socket and the xterm instance
   // and must not be torn down and replayed because a parent re-rendered.
   const signOut = useRef(onSignedOut);
   signOut.current = onSignedOut;
+  const setStatus = useRef(onStatus);
+  setStatus.current = onStatus;
 
   useEffect(() => {
     const term = new Terminal({
@@ -134,7 +138,7 @@ export function TerminalView({
 
       ws.onopen = () => {
         backoff = RECONNECT_MIN_MS;
-        setStatus('live');
+        setStatus.current('live');
         sendSize();
       };
       ws.onmessage = (event: MessageEvent) => {
@@ -147,12 +151,12 @@ export function TerminalView({
         socket = null;
         if (closed) return;
         if (event.code === CLOSE_NO_SESSION || event.code === CLOSE_SESSION_ENDED) {
-          setStatus('ended');
+          setStatus.current('ended');
           return;
         }
         // A phone suspends its sockets the moment the screen locks, so a dropped
         // connection is the normal case, not the exceptional one.
-        setStatus('retrying');
+        setStatus.current('retrying');
         void retry();
       };
     };
@@ -170,7 +174,7 @@ export function TerminalView({
       );
       if (closed) return;
       if (expired) {
-        setStatus('signedOut');
+        setStatus.current('signedOut');
         signOut.current();
         return;
       }
@@ -207,20 +211,7 @@ export function TerminalView({
   }, [session.tmuxName]);
 
   return (
-    <div class="screen">
-      <header class="bar">
-        <button class="ghost" onClick={onBack} aria-label="Back to sessions">
-          ‹ Sessions
-        </button>
-        <div class="bar-title">
-          <strong>{session.title}</strong>
-          <span class="muted">{session.cwd}</span>
-        </div>
-        <span class={`chip chip-${status}`} role="status">
-          {STATUS_TEXT[status]}
-        </span>
-      </header>
-
+    <>
       <div class="term" ref={host} />
 
       <nav class="keys" aria-label="Terminal keys">
@@ -243,6 +234,6 @@ export function TerminalView({
           ⌨
         </button>
       </nav>
-    </div>
+    </>
   );
 }

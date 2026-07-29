@@ -1,7 +1,7 @@
 /**
  * The whole shell: log in, list sessions, open one. No router — there are three
  * screens and one of them is a modal, so a URL scheme would be state to keep in
- * sync for nothing. PR #9 adds a conversation tab inside the session screen.
+ * sync for nothing.
  */
 
 import type { Session } from '@tether/shared';
@@ -9,7 +9,8 @@ import { useCallback, useEffect, useState } from 'preact/hooks';
 
 import * as api from './api.ts';
 import { ApiError } from './api.ts';
-import { TerminalView } from './terminal.tsx';
+import { ConversationView } from './conversation.tsx';
+import { STATUS_TEXT, TerminalView, type Status } from './terminal.tsx';
 
 /** How often the list refreshes. tmux reconciliation happens server-side per read. */
 const POLL_MS = 5000;
@@ -40,9 +41,102 @@ export function App() {
   if (!authenticated) return <Login onDone={() => setAuthenticated(true)} />;
   const signedOut = () => setAuthenticated(false);
   if (open !== null) {
-    return <TerminalView session={open} onBack={() => setOpen(null)} onSignedOut={signedOut} />;
+    return <SessionScreen session={open} onBack={() => setOpen(null)} onSignedOut={signedOut} />;
   }
   return <Sessions onOpen={setOpen} onSignedOut={signedOut} />;
+}
+
+const TABS = [
+  { id: 'conversation', label: 'Conversation' },
+  { id: 'terminal', label: 'Terminal' },
+] as const;
+
+type Tab = (typeof TABS)[number]['id'];
+
+/**
+ * The session screen: one header, two tabs, two panes.
+ *
+ * Both panes stay mounted and the inactive one is hidden with
+ * `visibility: hidden` rather than `display: none` or an unmount. That is the
+ * whole of "switching tabs preserves both scroll positions": a laid-out element
+ * keeps its `scrollTop`, so neither view needs to save and restore one, and
+ * xterm keeps a real size instead of being fitted to 0×0 and back on every
+ * switch. Unmounting the terminal would additionally cost a full tmux replay per
+ * tap, and unmounting the conversation a refetch.
+ *
+ * The two views share nothing but this frame. They are two renderings of one
+ * process from two independent sources (report §3) — there is no cursor between
+ * them to get out of sync, and nothing here tries to reconcile them.
+ */
+function SessionScreen({
+  session,
+  onBack,
+  onSignedOut,
+}: {
+  session: Session;
+  onBack: () => void;
+  onSignedOut: () => void;
+}) {
+  const [tab, setTab] = useState<Tab>('conversation');
+  // One chip, two channels: it reports on whichever pane is in front, because
+  // "Reconnecting…" is only actionable about the thing being looked at. PR #10
+  // adds the agent's own busy/idle/waiting badge beside it.
+  const [status, setStatus] = useState<Record<Tab, Status>>({
+    conversation: 'connecting',
+    terminal: 'connecting',
+  });
+  const report = (id: Tab) => (next: Status) =>
+    setStatus((current) => (current[id] === next ? current : { ...current, [id]: next }));
+
+  return (
+    <div class="screen">
+      <header class="bar">
+        <button class="ghost" onClick={onBack} aria-label="Back to sessions">
+          ‹ Sessions
+        </button>
+        <div class="bar-title">
+          <strong>{session.title}</strong>
+          <span class="muted">{session.cwd}</span>
+        </div>
+        <span class={`chip chip-${status[tab]}`} role="status">
+          {STATUS_TEXT[status[tab]]}
+        </span>
+      </header>
+
+      {/* Toggle buttons rather than an ARIA tablist: a tablist owes a screen
+          reader roving tabindex and arrow-key navigation, and two pressed-state
+          buttons are correct as they stand and need neither. */}
+      <nav class="tabs" aria-label="Views">
+        {TABS.map(({ id, label }) => (
+          <button
+            key={id}
+            type="button"
+            class={id === tab ? 'tab tab-on' : 'tab'}
+            aria-pressed={id === tab}
+            onClick={() => setTab(id)}
+          >
+            {label}
+          </button>
+        ))}
+      </nav>
+
+      <div class="panes">
+        {TABS.map(({ id }) => (
+          <div key={id} class={id === tab ? 'pane' : 'pane pane-off'}>
+            {id === 'conversation' ? (
+              <ConversationView sessionId={session.id} onStatus={report('conversation')} />
+            ) : (
+              <TerminalView
+                session={session}
+                onStatus={report('terminal')}
+                onSignedOut={onSignedOut}
+              />
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function Login({ onDone }: { onDone: () => void }) {

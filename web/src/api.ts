@@ -10,6 +10,8 @@
 
 import type { Session } from '@tether/shared';
 
+import type { SeqEvent } from './conversation.ts';
+
 export type { Session };
 
 /** The only machine there is in M1; the API is addressed by machine regardless. */
@@ -102,13 +104,39 @@ export function killSession(id: string): Promise<{ session: Session }> {
 }
 
 /**
- * The terminal channel. Built from `location` so it follows whatever host and
- * scheme the page was served over — the server's Origin guard compares the two,
- * and a tunnel or reverse proxy changes both together.
+ * The whole conversation, and the `seq` to follow it from. Step 1 of the `conv`
+ * handshake, and the only correct answer to a `refetch`.
+ */
+export function fetchConversation(id: string): Promise<ConversationHistory> {
+  return request(`/api/sessions/${id}/conversation`);
+}
+
+export type ConversationHistory = {
+  seq: number;
+  events: SeqEvent[];
+  title?: string;
+  version?: string;
+};
+
+/**
+ * The terminal and conversation channels. Both built from `location` so they
+ * follow whatever host and scheme the page was served over — the server's Origin
+ * guard compares the two, and a tunnel or reverse proxy changes both together.
+ *
+ * The terminal is addressed by tmux name and the conversation by registry id;
+ * that is the server's split, not a slip.
  */
 export function termSocketUrl(tmuxName: string, clientId: string): string {
-  const url = new URL(`api/sessions/${tmuxName}/term`, location.href);
+  return socketUrl(`api/sessions/${tmuxName}/term`, { client: clientId });
+}
+
+export function convSocketUrl(id: string, since: number): string {
+  return socketUrl(`api/sessions/${id}/conv`, { since: String(since) });
+}
+
+function socketUrl(path: string, query: Record<string, string>): string {
+  const url = new URL(path, location.href);
   url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  url.searchParams.set('client', clientId);
+  for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value);
   return url.href;
 }

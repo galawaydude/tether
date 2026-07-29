@@ -156,6 +156,29 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   history route and a live tailer agree without either persisting anything. A
   `since` older than the in-memory tail is answered with `refetch`, never with a
   partial history.
+- **The conversation view decides nothing in its JSX.** Web tests run under
+  `node --test`, which strips types but cannot compile JSX, so anything decided
+  inside a `.tsx` is untestable. `web/src/conversation.ts` therefore turns events
+  into rows — including what a collapsed tool card shows versus an expanded one —
+  and `conversation.tsx` only picks elements. Put a rendering decision in the
+  `.tsx` and it silently leaves the test suite. `addEvents` is append-only and
+  drops any `seq` at or below the highest applied, which is what makes the
+  `since` replay after a reconnect free of duplicates. The mirror of the data
+  layer's rule holds here too: an **unknown event kind becomes a grey note, never
+  a throw** — one uncaught kind would blank the whole page.
+- **The session screen keeps both panes mounted and hides one with
+  `visibility: hidden`** (`app.tsx`, `.pane-off` in `style.css`). That one
+  property is the whole of "switching tabs preserves both scroll positions", and
+  it also keeps the hidden pane out of the tab order and the accessibility tree.
+  `display: none` resets `scrollTop` and refits xterm to 0×0 and back on every
+  tap; unmounting costs a full tmux replay or a conversation refetch. Note the
+  consequence: nothing inside a hidden pane is focusable, so anything driving
+  xterm's textarea has to switch tabs first. The two views share nothing else —
+  they are two renderings of one process from two independent sources (report
+  §3), and there is no cursor between them to reconcile.
+- **A `.conv` child needs `flex: none`.** The list is a column flex container,
+  which shrinks its items to fit rather than overflowing; a collapsed tool card
+  has no text holding it open, so every card renders as a 6px stripe without it.
 - **Fastify's schema defaults silently repair a bad body** (`removeAdditional` and
   `coerceTypes` are on): `additionalProperties: false` strips instead of rejecting, and
   `{"password": 123}` arrives as `"123"`. `buildServer` turns both off. Do not remove that
