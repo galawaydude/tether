@@ -25,3 +25,6 @@ state/
 .DS_Store
 .idea/
 *.swp
+
+# Agent-local settings
+.claude/settings.local.json
