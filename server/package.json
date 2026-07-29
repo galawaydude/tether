@@ -8,6 +8,8 @@
     "build": "tsc -p tsconfig.build.json && cp src/machine/tether.conf dist/machine/tether.conf"
   },
   "dependencies": {
-    "@tether/shared": "*"
+    "@fastify/cookie": "^11.1.2",
+    "@tether/shared": "*",
+    "fastify": "^5.10.0"
   }
 }

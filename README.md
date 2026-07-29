@@ -39,8 +39,45 @@ targets, session sharing, usage dashboards, a mobile app.
 
 ## Status
 
-Toolchain, CI and the tmux driver. Nothing runs end to end yet — this milestone
-is being built one focused PR at a time.
+Toolchain, CI, the tmux driver and authentication. Nothing runs end to end yet —
+this milestone is being built one focused PR at a time; the server currently
+serves login, logout and a session check, and there is no route that can reach a
+terminal yet — auth deliberately lands before there is anything behind it to
+protect.
+
+## Access and security
+
+**Reaching tether's web interface is equivalent to having a shell on the machine
+it runs on.** A coding-agent session accepts arbitrary prompts and can run
+commands, and the terminal view is a real terminal. Everything below follows from
+that, and none of it is optional.
+
+Set the password before anything else. There is one account, it is never
+defaulted, and it can only be set from a terminal on the machine itself:
+
+```sh
+npm run tether -- set-password   # prompts; never echoes, never logs, never printed
+npm run tether -- serve          # binds 127.0.0.1:8787
+```
+
+- **Loopback by default.** `--host` is the explicit opt-out, and it refuses to
+  start unless a password is set.
+- **No TLS inside tether**, by design. For remote access use Tailscale, an SSH
+  tunnel (`ssh -L 8787:localhost:8787 you@box`), or a reverse proxy that already
+  terminates TLS for you. Each of those also gives a second factor stronger than
+  the password. An off-loopback bind warns about this at startup and keeps
+  warning.
+- **`--allowed-host <name>`** adds a hostname to the `Host` allowlist, which is
+  what stops a malicious page from reaching the server by resolving its own
+  hostname to `127.0.0.1`. A Tailscale name or a reverse-proxy name needs to be
+  listed here; loopback names always are.
+- **`--trusted-proxy <ip|cidr>`** is the only way `X-Forwarded-Proto` and
+  `X-Forwarded-For` are believed. Without it a client cannot spoof the `Secure`
+  cookie flag or its own address.
+
+State — the SQLite file holding the password hash and the live sessions — lives
+in `~/.local/state/tether/` (`$XDG_STATE_HOME`, or `$TETHER_STATE_DIR` to
+override), at mode `0600`. Nothing secret is ever written inside the repository.
 
 ## Development
 
@@ -70,6 +107,11 @@ npm run format:check # prettier --check   (npm run format to fix)
 | `shared/` | Types both sides import: `ConversationEvent`, the WebSocket frame shapes |
 | `server/` | The single Node process: HTTP, WebSockets, tmux, provider adapters       |
 | `web/`    | The browser app                                                          |
+
+Inside `server/src/`, `web/` is the HTTP and WebSocket layer and `machine/` (from
+PR #2) drives tmux. `machine/` and `providers/` never import from `web/` — that
+one rule is what makes the eventual remote-agent split a split rather than a
+rewrite.
 
 `shared/` is types only and emits declarations, no JavaScript. Import from it
 with `import type` — `verbatimModuleSyntax` enforces this.
