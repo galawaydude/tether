@@ -24,6 +24,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "node --test",
+    "tether": "node --disable-warning=ExperimentalWarning server/src/cli.ts",
     "build": "npm run build --workspaces --if-present"
   },
   "devDependencies": {

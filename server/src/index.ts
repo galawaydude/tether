@@ -1,9 +1,9 @@
 import type { ServerFrame } from '@tether/shared';
 
 /**
- * Placeholder entry point. The real server (Fastify, auth, tmux) arrives in
- * PR #4 onwards — see report section 9. This exists so the build, the test
- * harness and CI are proven end to end before there is anything to break.
+ * Placeholder module. The process entry point is `cli.ts`, the Fastify server
+ * lives in `web/`, and the tmux driver in `machine/` — see report section 9.
+ * This exists so the build, the test harness and CI are proven end to end.
  */
 export const SERVER_NAME = 'tether-server';
 
