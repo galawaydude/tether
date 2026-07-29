@@ -18,7 +18,7 @@
  * degrade to one grey line and keep rendering the rest.
  */
 
-import type { ConversationEvent } from '@tether/shared';
+import type { ConversationEvent, ToolCallEvent } from '@tether/shared';
 
 /** An event with its position in the session's stream, as the server sends it. */
 export type SeqEvent = { seq: number; e: ConversationEvent };
@@ -33,6 +33,12 @@ export type ToolRow = {
   /** Expanded: the call's input and what came back. `null` until it returns. */
   input: unknown;
   result: string | null;
+  /**
+   * The card was built from the provider's pre-tool hook and the transcript has
+   * not caught up. It is the same card either way — this only lets the view say
+   * "asking to run this" rather than "running this".
+   */
+  pending: boolean;
 };
 
 export type Row =
@@ -117,6 +123,36 @@ export function noRows(): Rows {
  * dropped: after a reconnect the server replays from `since`, and a client that
  * asked twice, or asked while its own request was in flight, gets the overlap.
  */
+/**
+ * A tool call the agent has proposed but not yet committed to its transcript —
+ * what the user is being asked to approve, arriving before the record does.
+ *
+ * **Replaced, never duplicated.** The card is keyed by `callId` in `byCall`,
+ * which is the same index a `tool_call` event consults, so whichever of the two
+ * arrives second updates the card the first one made. That is the whole of the
+ * reconciliation, and it works in both directions because neither source's
+ * ordering is guaranteed: on Claude Code 2.1.220 the transcript record was
+ * measured landing ~150ms *after* the hook, and nothing promises it stays there.
+ *
+ * Carries no `seq` and never moves one: `seq` is a position in the transcript's
+ * event stream and a proposal has no position in it.
+ */
+export function addPending(state: Rows, e: ToolCallEvent): Rows {
+  if (state.byCall.has(e.callId)) return state;
+  const row: ToolRow = {
+    key: `pending:${e.callId}`,
+    row: 'tool',
+    tool: e.tool,
+    summary: summarise(e.input),
+    failed: false,
+    input: e.input,
+    result: null,
+    pending: true,
+  };
+  state.byCall.set(e.callId, row);
+  return { ...state, rows: [...state.rows, row] };
+}
+
 export function addEvents(state: Rows, incoming: readonly SeqEvent[]): Rows {
   let rows: Row[] | undefined;
   let seq = state.seq;
@@ -139,8 +175,9 @@ export function toRows(events: readonly SeqEvent[]): readonly Row[] {
 
 /**
  * One event to one row, or to none. Returning `undefined` is how an event that
- * changes an existing row (a `tool_result`) and one this view deliberately does
- * not render (`status`, which is PR #10's badge) both say "no new row".
+ * changes an existing row (a `tool_result`, or the `tool_call` that supersedes a
+ * proposed one) and one this view deliberately does not render (`status`, which
+ * is the header badge, not a message) both say "no new row".
  */
 function toRow(key: string, e: ConversationEvent, byCall: Map<string, ToolRow>): Row | undefined {
   switch (e.kind) {
@@ -154,6 +191,15 @@ function toRow(key: string, e: ConversationEvent, byCall: Map<string, ToolRow>):
     case 'compaction':
       return { key, row: 'compaction' };
     case 'tool_call': {
+      // The transcript record for a call the pre-tool hook already proposed.
+      // It supersedes that card in place — same `callId`, same position in the
+      // list, no second card. Everything else about it is identical, so only
+      // `pending` changes.
+      const proposed = byCall.get(e.callId);
+      if (proposed !== undefined) {
+        proposed.pending = false;
+        return undefined;
+      }
       const row: ToolRow = {
         key,
         row: 'tool',
@@ -162,6 +208,7 @@ function toRow(key: string, e: ConversationEvent, byCall: Map<string, ToolRow>):
         failed: false,
         input: e.input,
         result: null,
+        pending: false,
       };
       byCall.set(e.callId, row);
       return row;
@@ -183,6 +230,7 @@ function toRow(key: string, e: ConversationEvent, byCall: Map<string, ToolRow>):
         failed: e.isError,
         input: undefined,
         result: e.output,
+        pending: false,
       };
     }
     case 'status':

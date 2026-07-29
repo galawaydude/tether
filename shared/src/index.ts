@@ -52,6 +52,13 @@ export type ConversationEvent =
   | { kind: 'compaction'; id: string; at: Timestamp; trigger?: string }
   | { kind: 'status'; at: Timestamp; state: SessionState; detail?: string };
 
+/**
+ * A proposed or recorded tool call. Named because it travels twice: once
+ * optimistically from the provider's own pre-tool hook, and again as the
+ * transcript record that supersedes it. `callId` is what joins the two.
+ */
+export type ToolCallEvent = Extract<ConversationEvent, { kind: 'tool_call' }>;
+
 /** What the session is doing, derived from whatever the provider publishes. */
 export type SessionState = 'busy' | 'idle' | 'waiting';
 
@@ -108,12 +115,23 @@ export type ServerFrame =
    * Deliberately *not* a `conv` frame, and this is the reason `status` is the
    * one `ConversationEvent` with no `id`: `seq` is a position in the mapped
    * event stream, and a state that some of its evidence comes from outside that
-   * stream — a Codex `PermissionRequest` arrives by hook, not in the rollout —
-   * has no position in it. State is the latest answer, not a record; giving it a
-   * `seq` would make the history route and a live tailer disagree about which
-   * event is number 12.
+   * stream — Claude Code's session registry file and its `Notification` hook, a
+   * Codex `PermissionRequest` — has no position in it. State is the latest
+   * answer, not a record; giving it a `seq` would make the history route and a
+   * live tailer disagree about which event is number 12.
    */
   | { c: 'state'; state: SessionState; detail?: string }
+  /**
+   * A tool call the provider has *proposed* but not yet committed to its
+   * transcript — the permission prompt the user is being asked to answer.
+   *
+   * Also outside the `seq` stream, and for the same reason: it is not a record,
+   * it is a claim that will be superseded. The transcript's own `tool_call`
+   * arrives later (or, on some builds, ~150ms earlier) with the same `callId`,
+   * and the client keys on that to *replace* rather than append. Order between
+   * the two is not guaranteed, so neither side may assume it.
+   */
+  | { c: 'pending'; e: ToolCallEvent }
   /** Input `seq` will not be applied again. The client stops retrying it. */
   | { c: 'ack'; seq: number };
 

@@ -13,13 +13,14 @@
  * is number 12 without either persisting anything.
  */
 
-import type { ConversationEvent, ServerFrame } from '@tether/shared';
+import type { ConversationEvent, ServerFrame, SessionState, ToolCallEvent } from '@tether/shared';
 import { mkdir, open, readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { stateDir as defaultStateDir } from '../db.ts';
-import { mapLines as mapClaudeLines } from '../providers/claude-code/events.ts';
+import { mapHook, mapLines as mapClaudeLines } from '../providers/claude-code/events.ts';
+import { readSessionStatus } from '../providers/claude-code/status.ts';
 import { findTranscript, type StartMemo } from '../providers/claude-code/transcript.ts';
 import { mapLines as mapCodexLines } from '../providers/codex/events.ts';
 import { hookLogPath } from '../providers/codex/hooks.ts';
@@ -36,6 +37,21 @@ import { DEFAULT_SOCKET, listPanes } from './tmux.ts';
  * is always correct and costs one request.
  */
 export const TAIL_EVENTS = 512;
+
+/**
+ * How long an unreconciled pending tool card is worth showing. A `PreToolUse`
+ * is superseded by the transcript record with the same `callId`, which arrives
+ * within a second in the normal case — but a session nobody is watching has no
+ * tailer running to notice, so this is the floor that stops a proposal from a
+ * turn an hour ago being presented as live.
+ */
+export const PENDING_TTL_MS = 10 * 60 * 1000;
+
+/** Simultaneous proposals in one turn; past this the oldest is dropped. */
+const MAX_PENDING = 8;
+
+/** How often the provider's own session registry file is re-read. */
+export const STATUS_POLL_MS = 1000;
 
 export type SeqEvent = { seq: number; e: ConversationEvent };
 
@@ -62,6 +78,10 @@ export type ConversationsOptions = {
   /** tmux socket, for the pane pid a Codex `SessionStart` is joined by. */
   socket?: string | undefined;
   warn?: (message: string) => void;
+  /** tmux socket, for the pane pid the provider's status file is keyed by. */
+  socket?: string | undefined;
+  /** How often that status file is re-read; 0 turns the poller off. */
+  statusPollMs?: number;
 };
 
 /**
@@ -121,11 +141,6 @@ export function stderrWarn(): (message: string) => void {
   };
 }
 
-function stateFrame(status: CodexStatus): ServerFrame {
-  const detail = status.detail;
-  return { c: 'state', state: status.state, ...(detail === undefined ? {} : { detail }) };
-}
-
 type Live = {
   refs: number;
   seq: number;
@@ -133,13 +148,26 @@ type Live = {
   lines: number;
   tail: SeqEvent[];
   subscribers: Set<Send>;
+  /** Every `callId` the transcript has produced, so a pending can be retired. */
+  seen: Set<string>;
+  /**
+   * The one state this session is in, whichever provider's evidence produced it.
+   * Both paths write it through `#setState`, so "has it changed" is asked once
+   * and a subscriber that has just arrived is answered from the same field.
+   */
+  state: SessionState;
+  detail?: string | undefined;
   /** Resolved once the transcript has been read to its end at least once. */
   ready: Promise<void>;
   /** Discovery's memory, so its once-a-second retry is not a re-read. */
   memo: StartMemo;
   tailer?: Tail | undefined;
+  /** Claude Code only: the poller over its own session registry file. */
+  statusPoll?: NodeJS.Timeout | undefined;
+  /** The tmux pane's pid, which is the provider's own. Resolved once. */
+  pid?: number | undefined;
   /** Codex only: the hook log, and the fold that turns it into a state. */
-  status?: CodexStatus | undefined;
+  codex?: CodexStatus | undefined;
   hookTailer?: Tail | undefined;
   retry?: NodeJS.Timeout | undefined;
   stopped: boolean;
@@ -150,6 +178,14 @@ export class Conversations {
   readonly #options: ConversationsOptions;
   readonly #live = new Map<string, Live>();
   readonly #warnTo: (message: string) => void;
+  /**
+   * Proposed tool calls, per session, outside `#live` on purpose: a permission
+   * prompt is exactly the moment a user opens the app, so the proposal has to
+   * have been kept while nobody was subscribed. Nothing here is persisted — a
+   * restarted server has no proposals, which is honest, since the prompt it
+   * would be describing is one the agent is still holding on screen.
+   */
+  readonly #pending = new Map<string, Map<string, { at: number; e: ToolCallEvent }>>();
 
   constructor(db: DatabaseSync, options: ConversationsOptions = {}) {
     this.#db = db;
@@ -271,7 +307,14 @@ export class Conversations {
     }
     // State is not replayed and not numbered — it is the latest answer, so a
     // client that has just arrived gets it once, here, and then on every change.
-    if (live.status !== undefined) send(stateFrame(live.status));
+    send({
+      c: 'state',
+      state: live.state,
+      ...(live.detail === undefined ? {} : { detail: live.detail }),
+    });
+    // After the replay, so a card the client is about to build from the
+    // transcript is already there when its proposal arrives to be ignored.
+    for (const e of this.#pendingFor(session.id, live)) send({ c: 'pending', e });
 
     live.subscribers.add(send);
     let released = false;
@@ -289,6 +332,89 @@ export class Conversations {
     await Promise.all([...this.#live.keys()].map((id) => this.#close(id)));
   }
 
+  /**
+   * A hook payload for a session — the low-latency edge the transcript cannot
+   * match (report §4). `PreToolUse` is the tool card during a permission prompt;
+   * `Notification` is the *waiting for you* state.
+   *
+   * Never throws and never rejects a payload it does not recognise: this is
+   * called from an HTTP route that the agent's own turn is blocked on.
+   */
+  hook(session: Session, payload: unknown): void {
+    const signal = mapHook(payload, (message) => this.#warn(message));
+    if (signal === undefined) return;
+    const live = this.#live.get(session.id);
+
+    if (signal.signal === 'waiting') {
+      if (live === undefined) return;
+      this.#setState(live, 'waiting', signal.detail);
+      return;
+    }
+
+    // The transcript can win this race — measured at ~150ms behind the hook on
+    // Claude Code 2.1.220, but nothing guarantees the order — and a proposal for
+    // a call that is already a real event is not a proposal.
+    if (live?.seen.has(signal.e.callId) === true) return;
+    const calls = this.#pending.get(session.id) ?? new Map();
+    this.#pending.set(session.id, calls);
+    calls.set(signal.e.callId, { at: Date.now(), e: signal.e });
+    while (calls.size > MAX_PENDING) calls.delete(calls.keys().next().value!);
+    if (live !== undefined) {
+      for (const send of live.subscribers) send({ c: 'pending', e: signal.e });
+    }
+  }
+
+  /** Live proposals for a session: not yet in the transcript, not yet stale. */
+  #pendingFor(id: string, live: Live): ToolCallEvent[] {
+    const calls = this.#pending.get(id);
+    if (calls === undefined) return [];
+    const floor = Date.now() - PENDING_TTL_MS;
+    const fresh: ToolCallEvent[] = [];
+    for (const [callId, entry] of calls) {
+      if (entry.at < floor || live.seen.has(callId)) calls.delete(callId);
+      else fresh.push(entry.e);
+    }
+    if (calls.size === 0) this.#pending.delete(id);
+    return fresh;
+  }
+
+  #setState(live: Live, state: SessionState, detail?: string | undefined): void {
+    if (live.state === state && live.detail === detail) return;
+    live.state = state;
+    live.detail = detail;
+    for (const send of live.subscribers) {
+      send({ c: 'state', state, ...(detail === undefined ? {} : { detail }) });
+    }
+  }
+
+  /**
+   * Follow the provider's own live session registry file, which is keyed by the
+   * tmux pane's pid — the join is free and there is nothing to keep in step
+   * (report §4e). The pid is resolved once: a pane's process does not change,
+   * and a session whose pane is gone has no status worth polling.
+   */
+  #startStatus(session: Session, live: Live): void {
+    const every = this.#options.statusPollMs ?? STATUS_POLL_MS;
+    if (every <= 0) return;
+    const tick = async () => {
+      if (live.stopped) return;
+      if (live.pid === undefined) {
+        live.pid = await this.#panePid(session);
+        if (live.pid === undefined) return;
+      }
+      const status = await readSessionStatus(live.pid, {
+        ...(this.#options.home === undefined ? {} : { home: this.#options.home }),
+      });
+      if (live.stopped) return;
+      // A stale or absent file says nothing, and `idle` is the honest reading of
+      // "this session is not doing anything tether can see".
+      this.#setState(live, status?.state ?? 'idle', status?.detail);
+    };
+    void tick();
+    live.statusPoll = setInterval(() => void tick(), every);
+    live.statusPoll.unref();
+  }
+
   #open(session: Session): Live {
     const existing = this.#live.get(session.id);
     if (existing !== undefined) return existing;
@@ -299,13 +425,18 @@ export class Conversations {
       lines: 0,
       tail: [],
       subscribers: new Set(),
+      seen: new Set(),
+      state: 'idle',
       ready: Promise.resolve(),
       memo: new Map(),
-      ...(session.provider === CODEX ? { status: new CodexStatus() } : {}),
+      ...(session.provider === CODEX ? { codex: new CodexStatus() } : {}),
       stopped: false,
     };
     this.#live.set(session.id, live);
     live.ready = this.#start(session, live);
+    // Claude Code only. Codex publishes no registry file of its own; its state
+    // comes from the rollout and its hook log, folded in `#ingest`/`#fold`.
+    if (live.codex === undefined) this.#startStatus(session, live);
     return live;
   }
 
@@ -343,14 +474,14 @@ export class Conversations {
     // handles all three without a second retry loop. Nothing warns, because a
     // hook that is not there is a supported configuration and not a fault: it
     // costs the `waiting` badge and nothing else.
-    if (live.status !== undefined && !live.stopped) {
-      const status = live.status;
+    if (live.codex !== undefined && !live.stopped) {
+      const codex = live.codex;
       const path = hookLogPath(this.#stateDir(), found.providerSessionId);
       live.hookTailer = await mkdir(dirname(path), { recursive: true, mode: 0o700 })
         .then(() => open(path, 'a', 0o600))
         .then((handle) => handle.close())
         .then(() =>
-          tailLines(path, (lines) => this.#fold(live, status, lines), {
+          tailLines(path, (lines) => this.#fold(live, codex, lines), {
             ...(this.#options.pollMs === undefined ? {} : { pollMs: this.#options.pollMs }),
             onError: () => {},
           }),
@@ -363,10 +494,13 @@ export class Conversations {
     // The rollout carries `task_started`/`task_complete` as well as conversation,
     // so a Codex session's `busy` and `idle` come from the same lines the events
     // do — which is what makes declining the hook cost only the `waiting` badge.
-    if (live.status !== undefined) this.#fold(live, live.status, lines);
+    if (live.codex !== undefined) this.#fold(live, live.codex, lines);
     const from = live.lines;
     live.lines += lines.length;
     for (const e of map(lines, (message) => this.#warn(message), from).events) {
+      // The record that supersedes a proposal. The client replaces the card it
+      // built by `callId`; all this has to do is stop re-sending the proposal.
+      if (e.kind === 'tool_call') live.seen.add(e.callId);
       live.seq += 1;
       const entry = { seq: live.seq, e };
       live.tail.push(entry);
@@ -376,19 +510,18 @@ export class Conversations {
   }
 
   /** Records of either vocabulary through the status fold, announced if it moved. */
-  #fold(live: Live, status: CodexStatus, lines: readonly string[]): void {
-    let changed = false;
+  #fold(live: Live, codex: CodexStatus, lines: readonly string[]): void {
     for (const line of lines) {
       if (line.trim() === '') continue;
       try {
-        if (status.apply(JSON.parse(line))) changed = true;
+        codex.apply(JSON.parse(line));
       } catch {
         // Not JSON: the same truncated write `map` reports. One warning is enough.
       }
     }
-    if (!changed) return;
-    const frame = stateFrame(status);
-    for (const send of live.subscribers) send(frame);
+    // `#setState` is the only announcer, so "did it move" is asked in one place
+    // rather than once per provider.
+    this.#setState(live, codex.state, codex.detail);
   }
 
   async #close(id: string): Promise<void> {
@@ -397,6 +530,7 @@ export class Conversations {
     this.#live.delete(id);
     live.stopped = true;
     if (live.retry !== undefined) clearTimeout(live.retry);
+    if (live.statusPoll !== undefined) clearInterval(live.statusPoll);
     await live.ready.catch(() => {});
     await live.tailer?.stop();
     await live.hookTailer?.stop();

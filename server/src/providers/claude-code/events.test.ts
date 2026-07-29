@@ -13,7 +13,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { MAX_OUTPUT } from '../cap.ts';
-import { mapLines, mapRecord } from './events.ts';
+import { mapHook, mapLines, mapRecord } from './events.ts';
 import { CAPTURED_VERSION } from './transcript.ts';
 
 function fixture(name: string): string[] {
@@ -199,4 +199,92 @@ test('a subagent’s own thread stays out of the main conversation', () => {
     }),
   ]);
   assert.deepEqual(events, []);
+});
+
+/**
+ * The hook payloads, from a real permission prompt. Captured while a `Write` was
+ * on screen waiting to be approved — the moment report §4 says the transcript
+ * cannot describe.
+ */
+const HOOKS = fixture(`hooks-${CAPTURED_VERSION}.ndjson`).map(
+  (line) => JSON.parse(line) as unknown,
+);
+
+function hooksOf(name: string): unknown[] {
+  return HOOKS.filter((h) => (h as { hook_event_name?: string }).hook_event_name === name);
+}
+
+test('a real PreToolUse becomes the tool card the transcript has not written yet', () => {
+  const warnings: string[] = [];
+  const signal = mapHook(hooksOf('PreToolUse')[1], (m) => warnings.push(m), 1234);
+
+  assert.deepEqual(warnings, []);
+  assert.deepEqual(signal, {
+    signal: 'pending',
+    e: {
+      kind: 'tool_call',
+      // Not a transcript uuid, and it must not look like one: this event never
+      // enters the `seq` stream.
+      id: 'pending:toolu_012hUcdAk6Z4RcnbNgrC7PH4',
+      at: 1234,
+      tool: 'Write',
+      input: {
+        file_path:
+          '/tmp/claude-1000/-home-galawaydude--treehouse-tether-0d5314-1-tether/24f38aca-700a-4da2-987d-18aebe4a0467/scratchpad/hookspike/out.txt',
+        content: 'hello\n',
+      },
+      callId: 'toolu_012hUcdAk6Z4RcnbNgrC7PH4',
+    },
+  });
+});
+
+test('a real Notification is the waiting state, in Claude Code’s own words', () => {
+  const warnings: string[] = [];
+  assert.deepEqual(
+    mapHook(hooksOf('Notification')[0], (m) => warnings.push(m)),
+    {
+      signal: 'waiting',
+      detail: 'Claude needs your permission',
+    },
+  );
+  assert.deepEqual(warnings, []);
+});
+
+test('a tool_use_id joins the hook to the transcript record that follows it', () => {
+  // The same call, from both sources. This is the whole reconciliation contract:
+  // if these two ever stop agreeing, the optimistic card duplicates instead of
+  // being replaced.
+  const hook = mapHook(hooksOf('PreToolUse')[1]);
+  assert.equal(hook?.signal, 'pending');
+  const fromTranscript = mapLines(SESSION).events.find((e) => e.kind === 'tool_call');
+  assert.ok(fromTranscript, 'the fixture session has a tool call to compare the shape against');
+  assert.deepEqual(Object.keys(hook.e).sort(), Object.keys(fromTranscript).sort());
+});
+
+test('a hook event this build does not know is one warning and nothing else', () => {
+  const warnings: string[] = [];
+  const warn = (m: string) => warnings.push(m);
+  assert.equal(mapHook({ hook_event_name: 'PreCompact' }, warn), undefined);
+  assert.equal(mapHook({ hook_event_name: 'PreToolUse', tool_name: 'Bash' }, warn), undefined);
+  assert.equal(mapHook('not an object', warn), undefined);
+  assert.equal(mapHook(null, warn), undefined);
+  assert.deepEqual(warnings, [
+    'unknown hook event PreCompact',
+    'PreToolUse hook without tool_name or tool_use_id',
+    'hook payload is not an object',
+    'hook payload is not an object',
+  ]);
+});
+
+test('a huge tool input is capped the same way the transcript’s is', () => {
+  const signal = mapHook({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'Write',
+    tool_use_id: 'toolu_x',
+    tool_input: { content: 'x'.repeat(MAX_OUTPUT * 2) },
+  });
+  assert.equal(signal?.signal, 'pending');
+  const input = signal.e.input as { content: string };
+  assert.ok(input.content.length < MAX_OUTPUT * 2);
+  assert.match(input.content, /truncated by tether/);
 });

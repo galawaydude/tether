@@ -27,7 +27,7 @@
  *   complains, and fix it by walking back from the last leaf.
  */
 
-import type { ConversationEvent } from '@tether/shared';
+import type { ConversationEvent, ToolCallEvent } from '@tether/shared';
 
 import { capInput, capOutput } from '../cap.ts';
 
@@ -229,6 +229,66 @@ export function mapRecord(record: unknown, warn: Warn = () => {}): Mapped {
   }
   warn(`${type} record ${uuid} has no usable content`);
   return mapped([]);
+}
+
+/**
+ * What a hook payload means to tether, if anything.
+ *
+ * Only the two events `installHook` registers produce one. Everything else —
+ * including an event a future Claude Code adds and a payload whose fields have
+ * moved — is `undefined` and one warning, by the same rule the transcript mapper
+ * follows: the hook is an accelerator, and losing one costs a card a moment of
+ * lateness, never the session.
+ */
+export type HookSignal =
+  /** A tool call proposed but not yet in the transcript. Superseded by `callId`. */
+  | { signal: 'pending'; e: ToolCallEvent }
+  /** The agent has stopped and is waiting on the user. */
+  | { signal: 'waiting'; detail?: string };
+
+export function mapHook(
+  payload: unknown,
+  warn: Warn = () => {},
+  now = Date.now(),
+): HookSignal | undefined {
+  if (!isObject(payload)) {
+    warn('hook payload is not an object');
+    return undefined;
+  }
+  const event = str(payload['hook_event_name']);
+  switch (event) {
+    case 'PreToolUse': {
+      const tool = str(payload['tool_name']);
+      const callId = str(payload['tool_use_id']);
+      if (tool === undefined || callId === undefined) {
+        warn('PreToolUse hook without tool_name or tool_use_id');
+        return undefined;
+      }
+      return {
+        signal: 'pending',
+        // `id` is not a transcript uuid and must not look like one: this event
+        // never enters the `seq` stream, and the client keys it by `callId`.
+        e: {
+          kind: 'tool_call',
+          id: `pending:${callId}`,
+          at: now,
+          tool,
+          input: capInput(payload['tool_input']),
+          callId,
+        },
+      };
+    }
+    case 'Notification': {
+      // Every Notification means the agent has stopped and wants the user —
+      // a permission prompt, or an idle nudge. Claude Code's own words are the
+      // detail; inventing a friendlier sentence would only be wrong later.
+      const detail = str(payload['message']);
+      return { signal: 'waiting', ...(detail === undefined || detail === '' ? {} : { detail }) };
+    }
+    default:
+      warn(`unknown hook event ${String(event)}`);
+      return undefined;
+  }
 }
 
 /**

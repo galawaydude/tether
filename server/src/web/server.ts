@@ -10,6 +10,7 @@ import type { Terminals } from '../machine/terminal.ts';
 import type { AuthStore } from './auth.ts';
 import { registerConvSocket, registerConversationRoutes } from './conversation.ts';
 import { isHostAllowed, isOriginAllowed, isStateChanging } from './guards.ts';
+import { registerHookRoute } from './hooks.ts';
 import { registerSessionRoutes } from './sessions.ts';
 import { registerStatic } from './static.ts';
 import { registerTermSocket } from './term-socket.ts';
@@ -39,6 +40,8 @@ export type ServerOptions = {
   allowedRoots?: readonly string[] | undefined;
   /** Where the built browser app lives; defaults to `WEB_DIST`. */
   webRoot?: string | undefined;
+  /** Where the hook secret lives; defaults to `stateDir()`. Tests point it away. */
+  stateDir?: string | undefined;
   /**
    * IPs/CIDRs whose `X-Forwarded-Proto` and `X-Forwarded-For` are believed. Empty
    * means believe nobody, so a client header can never spoof the `Secure` flag.
@@ -229,12 +232,15 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     allowedRoots: options.allowedRoots,
   });
 
-  // The same socket the session routes drive: a Codex `SessionStart` is joined
-  // to its registry row by the tmux pane's pid, so discovery has to be asking
-  // the same tmux the sessions were started on.
+  // The same socket the session routes drive: both providers join to a registry
+  // row by the tmux pane's pid — a Codex `SessionStart`, Claude Code's status
+  // file — so discovery has to be asking the same tmux the sessions started on.
   const conversations =
     options.conversations ?? new Conversations(options.db, { socket: options.socket });
   registerConversationRoutes(app, options.db, conversations);
+  registerHookRoute(app, options.db, conversations, {
+    ...(options.stateDir === undefined ? {} : { stateDir: options.stateDir }),
+  });
 
   // In `after`, not inline: `@fastify/websocket` upgrades a route through an
   // `onRoute` hook it only installs once its own registration has run, and a

@@ -12,6 +12,8 @@ import { randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 
+import { stateDir } from '../db.ts';
+import { installHook } from '../providers/claude-code/hooks.ts';
 import { CODEX, CODEX_COMMAND, codexResume } from '../providers/codex/spawn.ts';
 import {
   DEFAULT_PROVIDER,
@@ -45,6 +47,22 @@ export const PROVIDER_RESUME = new Map<string, (providerSessionId: string) => re
 ]);
 
 /**
+ * Put tether's hook in the project before the agent reads its settings.
+ *
+ * Best-effort on purpose, and this is the whole of its error policy: the hook
+ * only makes a pending tool card and a *waiting* badge appear sooner than the
+ * transcript can (report §4). A project whose `settings.local.json` tether
+ * refuses to rewrite, or a read-only checkout, must still get a session — it
+ * gets one without the accelerator, and the operator is told why once.
+ */
+async function installProviderHook(provider: string, cwd: string): Promise<void> {
+  if (provider !== DEFAULT_PROVIDER) return;
+  await installHook({ cwd, stateDir: stateDir() }).catch((error: unknown) => {
+    process.stderr.write(`tether: hook not installed — ${(error as Error).message}\n`);
+  });
+}
+
+/**
  * Start a provider in a fresh tmux session and record it.
  *
  * `command` overrides the provider's own and is a local-terminal affordance: the
@@ -75,6 +93,9 @@ export async function startSession(
   const id = randomUUID();
   const tmuxName = `tether-${id.slice(0, 8)}`;
 
+  // Before the pane exists: Claude Code reads `.claude/settings.local.json` at
+  // startup, so a hook installed afterwards would miss this session entirely.
+  await installProviderHook(provider, cwd);
   await newSession(socket, { name: tmuxName, cwd, command, roots: opts.roots });
   try {
     // Provisional from spawn: provider_session_id is null here and is back-filled
@@ -138,6 +159,7 @@ export async function resumeSession(
   const resume = PROVIDER_RESUME.get(current.provider);
   if (resume === undefined) throw new Error(`provider ${current.provider} cannot resume`);
 
+  await installProviderHook(current.provider, current.cwd);
   // The same tmux name: it is derived from the session id, the old session is gone,
   // and reusing it keeps that derivation true. A name that is somehow still taken
   // makes tmux refuse, which is the right answer — it means the row is not dead.

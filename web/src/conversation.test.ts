@@ -4,6 +4,7 @@ import test from 'node:test';
 
 import {
   addEvents,
+  addPending,
   noRows,
   summarise,
   toRows,
@@ -116,7 +117,7 @@ test('an unrecognised event kind degrades to a note and never throws', () => {
   ]);
 });
 
-test('a status event is left to the badge PR, not rendered as a message', () => {
+test('a status event is left to the header badge, not rendered as a message', () => {
   assert.deepEqual(toRows(stream({ kind: 'status', at: AT, state: 'busy' })), []);
 });
 
@@ -183,4 +184,89 @@ test('the collapsed summary says what ran, in one line', () => {
   // Nothing at all to say, which is a blank summary rather than "{}".
   assert.equal(summarise({}), '');
   assert.equal(summarise(undefined), '');
+});
+
+/**
+ * The optimistic card and the record that supersedes it.
+ *
+ * One rule, in both directions: **replaced, never duplicated**. The proposal
+ * arrives from the pre-tool hook, the record arrives from the transcript, and
+ * nothing guarantees the order — on Claude Code 2.1.220 the record was measured
+ * landing ~150ms *after* the hook, which is close enough that a build with a
+ * different flush timer could invert it.
+ */
+const PROPOSED: Extract<ConversationEvent, { kind: 'tool_call' }> = {
+  kind: 'tool_call',
+  id: 'pending:toolu_1',
+  at: AT,
+  tool: 'Write',
+  input: { file_path: '/tmp/out.txt', content: 'hello\n' },
+  callId: 'toolu_1',
+};
+
+test('a proposed tool call is a card of its own, marked pending', () => {
+  const state = addPending(noRows(), PROPOSED);
+  assert.deepEqual(state.rows.length, 1);
+  const row = state.rows[0] as ToolRow;
+  assert.equal(row.row, 'tool');
+  assert.equal(row.tool, 'Write');
+  assert.equal(row.pending, true);
+  assert.equal(row.summary, '/tmp/out.txt', 'summarised by the same rules as a real call');
+  assert.equal(row.result, null);
+  // It moved no cursor: a proposal has no position in the `seq` stream.
+  assert.equal(state.seq, 0);
+});
+
+test('the transcript record replaces the pending card rather than adding a second', () => {
+  const proposed = addPending(noRows(), PROPOSED);
+  const after = addEvents(proposed, [
+    {
+      seq: 1,
+      e: { ...PROPOSED, id: 'uuid-7#0', at: AT + 150 },
+    },
+  ]);
+
+  assert.equal(after.rows.length, 1, 'one card, not two');
+  const row = after.rows[0] as ToolRow;
+  assert.equal(row.pending, false, 'and it is no longer a proposal');
+  assert.equal(row.key, 'pending:toolu_1', 'the same row, so it does not jump in the list');
+  assert.equal(after.seq, 1, 'the record itself did move the cursor');
+
+  // And the result still folds into it, so nothing about the join is lost.
+  const done = addEvents(after, [
+    {
+      seq: 2,
+      e: { kind: 'tool_result', id: 'r1', at: AT, callId: 'toolu_1', output: 'ok', isError: false },
+    },
+  ]);
+  assert.equal(done.rows.length, 1);
+  assert.equal((done.rows[0] as ToolRow).result, 'ok');
+});
+
+test('a proposal for a call already on screen is ignored, not shown twice', () => {
+  const fromTranscript = addEvents(noRows(), [{ seq: 1, e: { ...PROPOSED, id: 'uuid-7#0' } }]);
+  const after = addPending(fromTranscript, PROPOSED);
+
+  assert.equal(after, fromTranscript, 'not even a re-render');
+  assert.equal(after.rows.length, 1);
+  assert.equal((after.rows[0] as ToolRow).pending, false);
+});
+
+test('two proposals in one turn are two cards, and each is replaced by its own record', () => {
+  let state = addPending(noRows(), PROPOSED);
+  state = addPending(state, {
+    ...PROPOSED,
+    id: 'pending:toolu_2',
+    callId: 'toolu_2',
+    tool: 'Bash',
+  });
+  assert.equal(state.rows.length, 2);
+
+  state = addEvents(state, [
+    { seq: 1, e: { ...PROPOSED, id: 'uuid-7#0', callId: 'toolu_2', tool: 'Bash' } },
+  ]);
+  assert.deepEqual(
+    state.rows.map((row) => (row as ToolRow).pending),
+    [true, false],
+  );
 });

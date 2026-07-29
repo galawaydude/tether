@@ -69,7 +69,8 @@ async function harness(t: TestContext) {
     db,
     // Never attached to here; `app.close()` takes it down either way.
     terminals: createTerminals(`tether-test-${ID.slice(0, 8)}`),
-    conversations: new Conversations(db, { home, pollMs: 15 }),
+    // No status poller: it would shell out to the real tmux on the default socket.
+    conversations: new Conversations(db, { home, pollMs: 15, statusPollMs: 0 }),
     allowedHosts: defaultAllowedHosts('127.0.0.1'),
     loginDelayMs: 0,
   });
@@ -134,7 +135,9 @@ async function connect(
   t.after(() => socket.close());
   const frames: ServerFrame[] = [];
   socket.addEventListener('message', (event) => {
-    frames.push(JSON.parse(String(event.data)) as ServerFrame);
+    const frame = JSON.parse(String(event.data)) as ServerFrame;
+    // `state` and `pending` carry no `seq`; this test is about the cursor.
+    if (frame.c !== 'state' && frame.c !== 'pending') frames.push(frame);
   });
   await new Promise<void>((resolve, reject) => {
     socket.addEventListener('open', () => resolve());

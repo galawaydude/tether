@@ -58,6 +58,9 @@ async function harness(t: TestContext) {
   const conversations = new Conversations(db, {
     home,
     pollMs: POLL,
+    // No status poller: it would shell out to the real tmux on the default
+    // socket. The registry file's own mapping is `status.test.ts`.
+    statusPollMs: 0,
     warn: (message) => warnings.push(message),
   });
   t.after(() => conversations.closeAll());
@@ -65,17 +68,37 @@ async function harness(t: TestContext) {
   return { db, session, conversations, transcript, warnings };
 }
 
-/** Collects frames, and waits for a given number of them to arrive. */
+/**
+ * Collects frames, and waits for a given number of them to arrive.
+ *
+ * `state` and `pending` are collected apart from `frames` on purpose: they carry
+ * no `seq` and are not part of the cursor contract most of these tests are
+ * about, so counting them in would make every assertion here a statement about
+ * the badge as well.
+ */
 function sink() {
   const frames: ServerFrame[] = [];
-  const send = (frame: ServerFrame) => frames.push(frame);
+  const states: Extract<ServerFrame, { c: 'state' }>[] = [];
+  const pendings: Extract<ServerFrame, { c: 'pending' }>[] = [];
+  const send = (frame: ServerFrame) => {
+    if (frame.c === 'state') states.push(frame);
+    else if (frame.c === 'pending') pendings.push(frame);
+    else frames.push(frame);
+  };
   const waitFor = async (count: number) => {
     for (let i = 0; i < 200 && frames.length < count; i += 1) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     assert.equal(frames.length, count, `expected ${count} frames, got ${JSON.stringify(frames)}`);
   };
-  return { frames, send, waitFor };
+  /** Waits for `count` frames of a kind that is not part of the `seq` stream. */
+  const waitForOther = async (list: readonly unknown[], count: number) => {
+    for (let i = 0; i < 200 && list.length < count; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(list.length, count, `expected ${count}, got ${JSON.stringify(list)}`);
+  };
+  return { frames, states, pendings, send, waitFor, waitForOther };
 }
 
 function seqs(frames: readonly ServerFrame[]): number[] {
@@ -397,4 +420,152 @@ test('a codex session with no hook log at all still works, and says nothing abou
   // Declining is a supported configuration, not an error state: nothing warns,
   // nothing retries, and there is nothing for the user to be nagged about.
   assert.deepEqual(warnings, []);
+});
+
+/**
+ * The hook edge (report §4, risk 2).
+ *
+ * A tool call proposed by `PreToolUse` and the transcript record that follows it
+ * are the same call twice. The contract these tests hold is that it is shown
+ * once: the proposal is retired the moment the record exists, whichever of the
+ * two the client learned about first.
+ */
+const CALL_ID = 'toolu_012hUcdAk6Z4RcnbNgrC7PH4';
+
+function preToolUse(callId = CALL_ID): Record<string, unknown> {
+  return {
+    hook_event_name: 'PreToolUse',
+    session_id: PROVIDER_SESSION,
+    tool_name: 'Write',
+    tool_use_id: callId,
+    tool_input: { file_path: '/tmp/out.txt', content: 'hello\n' },
+  };
+}
+
+function toolUseRecord(n: number, callId = CALL_ID): string {
+  return `${JSON.stringify({
+    type: 'assistant',
+    uuid: `uuid-${n}`,
+    timestamp: new Date(Date.now() + n).toISOString(),
+    version: '2.1.220',
+    message: {
+      role: 'assistant',
+      content: [
+        { type: 'tool_use', id: callId, name: 'Write', input: { file_path: '/tmp/out.txt' } },
+      ],
+    },
+  })}\n`;
+}
+
+test('PreToolUse reaches a watching client as a pending card, with no seq', async (t) => {
+  const h = await harness(t);
+  await writeFile(h.transcript, userRecord(1));
+  const client = sink();
+  await h.conversations.subscribe(h.session, 0, client.send);
+  await client.waitFor(1);
+
+  h.conversations.hook(h.session, preToolUse());
+  await client.waitForOther(client.pendings, 1);
+  assert.deepEqual(client.pendings[0]?.e.callId, CALL_ID);
+  assert.equal(client.pendings[0]?.e.tool, 'Write');
+  // The cursor did not move: a proposal is not a transcript event.
+  assert.deepEqual(seqs(client.frames), [1]);
+});
+
+test('a proposal made before anyone was watching is there when they arrive', async (t) => {
+  const h = await harness(t);
+  await writeFile(h.transcript, userRecord(1));
+  // Nobody subscribed: this is a phone that is still in a pocket, which is the
+  // normal case for a permission prompt.
+  h.conversations.hook(h.session, preToolUse());
+
+  const client = sink();
+  await h.conversations.subscribe(h.session, 0, client.send);
+  await client.waitForOther(client.pendings, 1);
+  assert.equal(client.pendings[0]?.e.callId, CALL_ID);
+});
+
+test('the transcript record retires the proposal rather than repeating it', async (t) => {
+  const h = await harness(t);
+  await writeFile(h.transcript, userRecord(1));
+  const first = sink();
+  const leave = await h.conversations.subscribe(h.session, 0, first.send);
+  await first.waitFor(1);
+
+  h.conversations.hook(h.session, preToolUse());
+  await first.waitForOther(first.pendings, 1);
+
+  // The turn commits and the same call lands in the transcript.
+  await appendFile(h.transcript, toolUseRecord(2));
+  await first.waitFor(2);
+  leave();
+
+  // A client arriving now is told about the call exactly once, as an event.
+  const second = sink();
+  await h.conversations.subscribe(h.session, 0, second.send);
+  await second.waitFor(2);
+  assert.deepEqual(second.pendings, [], 'the proposal is not replayed beside its own record');
+  assert.equal(second.frames.filter((f) => f.c === 'conv' && f.e.kind === 'tool_call').length, 1);
+});
+
+test('a proposal for a call the transcript already carries is never sent', async (t) => {
+  const h = await harness(t);
+  await writeFile(h.transcript, userRecord(1) + toolUseRecord(2));
+  const client = sink();
+  await h.conversations.subscribe(h.session, 0, client.send);
+  await client.waitFor(2);
+
+  // The other ordering: on Claude Code 2.1.220 the transcript was measured
+  // landing ~150ms *after* the hook, but nothing promises it stays there.
+  h.conversations.hook(h.session, preToolUse());
+  await new Promise((resolve) => setTimeout(resolve, POLL * 2));
+  assert.deepEqual(client.pendings, []);
+});
+
+test('Notification flips the session to waiting, and says what for', async (t) => {
+  const h = await harness(t);
+  await writeFile(h.transcript, userRecord(1));
+  const client = sink();
+  await h.conversations.subscribe(h.session, 0, client.send);
+  await client.waitForOther(client.states, 1);
+  assert.deepEqual(client.states[0], { c: 'state', state: 'idle' });
+
+  h.conversations.hook(h.session, {
+    hook_event_name: 'Notification',
+    session_id: PROVIDER_SESSION,
+    message: 'Claude needs your permission',
+  });
+  await client.waitForOther(client.states, 2);
+  assert.deepEqual(client.states[1], {
+    c: 'state',
+    state: 'waiting',
+    detail: 'Claude needs your permission',
+  });
+
+  // Said once, not once per repeat: the badge is a state, not a stream.
+  h.conversations.hook(h.session, {
+    hook_event_name: 'Notification',
+    session_id: PROVIDER_SESSION,
+    message: 'Claude needs your permission',
+  });
+  await new Promise((resolve) => setTimeout(resolve, POLL * 2));
+  assert.equal(client.states.length, 2);
+});
+
+test('a hook payload the mapper cannot use changes nothing and does not throw', async (t) => {
+  const h = await harness(t);
+  await writeFile(h.transcript, userRecord(1));
+  const client = sink();
+  await h.conversations.subscribe(h.session, 0, client.send);
+  await client.waitFor(1);
+
+  h.conversations.hook(h.session, { hook_event_name: 'SubagentStop' });
+  h.conversations.hook(h.session, 'not an object');
+  await new Promise((resolve) => setTimeout(resolve, POLL * 2));
+  assert.deepEqual(client.pendings, []);
+  assert.equal(client.states.length, 1);
+  assert.deepEqual(h.warnings, [
+    'unknown hook event SubagentStop',
+    'hook payload is not an object',
+  ]);
 });

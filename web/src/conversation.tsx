@@ -14,11 +14,18 @@
  *    in the diff — or, for a `tool_result`, one card's contents.
  */
 
-import type { ServerFrame } from '@tether/shared';
+import type { ServerFrame, SessionState } from '@tether/shared';
 import { useEffect, useRef, useState } from 'preact/hooks';
 
 import { convSocketUrl, fetchConversation } from './api.ts';
-import { addEvents, noRows, type Row, type Rows, type ToolRow } from './conversation.ts';
+import {
+  addEvents,
+  addPending,
+  noRows,
+  type Row,
+  type Rows,
+  type ToolRow,
+} from './conversation.ts';
 import type { Status } from './terminal.tsx';
 
 /** Same shape of backoff as the terminal channel, and for the same phone. */
@@ -31,9 +38,16 @@ const STICK_PX = 80;
 export function ConversationView({
   sessionId,
   onStatus,
+  onState,
 }: {
   sessionId: string;
   onStatus: (status: Status) => void;
+  /**
+   * What the agent is doing, straight off the `state` frame. Reported up rather
+   * than rendered here: the *waiting for you* banner belongs above both panes,
+   * since a user staring at the terminal tab needs it just as much.
+   */
+  onState: (state: SessionState, detail?: string) => void;
 }) {
   const [state, setState] = useState<Rows>(noRows);
   const [failed, setFailed] = useState(false);
@@ -43,6 +57,8 @@ export function ConversationView({
   // and must not be torn down because a parent re-rendered.
   const status = useRef(onStatus);
   status.current = onStatus;
+  const reportState = useRef(onState);
+  reportState.current = onState;
 
   useEffect(() => {
     let socket: WebSocket | null = null;
@@ -103,6 +119,17 @@ export function ConversationView({
           ws.close();
           socket = null;
           void load();
+          return;
+        }
+        if (frame.c === 'state') {
+          reportState.current(frame.state, frame.detail);
+          return;
+        }
+        if (frame.c === 'pending') {
+          // No `since` move: a proposal is not a transcript event and has no
+          // position in the `seq` stream. `addPending` is a no-op if the record
+          // already arrived, which is how the two orderings both come out right.
+          setState((current) => addPending(current, frame.e));
           return;
         }
         if (frame.c !== 'conv') return;
@@ -221,11 +248,13 @@ function RowView({ row }: { row: Row }) {
  */
 function ToolCard({ row }: { row: ToolRow }) {
   return (
-    <details class={`tool${row.failed ? ' tool-failed' : ''}`}>
+    <details class={`tool${row.failed ? ' tool-failed' : ''}${row.pending ? ' tool-pending' : ''}`}>
       <summary>
         <span class="tool-name">{row.tool}</span>
         <span class="tool-summary">{row.summary}</span>
-        <span class="tool-state">{row.result === null ? '…' : row.failed ? 'error' : '✓'}</span>
+        <span class="tool-state">
+          {row.pending ? 'asking' : row.result === null ? '…' : row.failed ? 'error' : '✓'}
+        </span>
       </summary>
       {row.input !== undefined && (
         <>
@@ -234,7 +263,13 @@ function ToolCard({ row }: { row: ToolRow }) {
         </>
       )}
       <h4 class="tool-label">Result</h4>
-      <pre class="tool-body">{row.result ?? 'Still running.'}</pre>
+      {/* Not a decision this file makes: `pending` means the agent has proposed
+          the call and is holding for an answer in the terminal. PR #14 puts the
+          answer here; until then the sentence says where it is. */}
+      <pre class="tool-body">
+        {row.result ??
+          (row.pending ? 'Waiting for you to answer in the terminal.' : 'Still running.')}
+      </pre>
     </details>
   );
 }
