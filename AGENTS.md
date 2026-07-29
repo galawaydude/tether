@@ -81,8 +81,12 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   every open (`CREATE TABLE IF NOT EXISTS`). There is no migration framework, so a
   column added later must be added compatibly. `provider_session_id` is deliberately
   nullable: Codex has no session identity until the first user message, so the row is
-  provisional from spawn and back-filled. Rows are marked dead, never deleted — PR #12
-  resumes from them.
+  provisional from spawn and back-filled. Rows are marked dead, never deleted: a dead row
+  is what `resumeSession` (`machine/sessions.ts`) restarts through the provider's own
+  resume, and `revive` is the only thing that clears `dead_at`. A row whose
+  `provider_session_id` is still null has no conversation to restore, and resume refuses
+  it rather than starting fresh — a new session presented as a resumed one is the failure
+  mode that silently costs a user their work.
 - **Tests run straight from TypeScript** via `node --test` and Node's built-in type
   stripping. There is no test build step; relative imports carry the `.ts` extension.
 - **HTTP routes are default-deny.** A `preParsing` hook in `server/src/web/server.ts` rejects

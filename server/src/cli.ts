@@ -15,7 +15,7 @@ import {
   openRegistry,
   reconcileWithTmux,
 } from './machine/registry.ts';
-import { startSession, stopSession } from './machine/sessions.ts';
+import { resumeSession, startSession, stopSession } from './machine/sessions.ts';
 import { PtyUnavailableError, createTerminals, loadPty } from './machine/terminal.ts';
 import { DEFAULT_SOCKET, allowedRoots } from './machine/tmux.ts';
 import { MIN_PASSWORD_LENGTH, createAuthStore } from './web/auth.ts';
@@ -36,6 +36,7 @@ Usage:
   tether ls                        List this machine's sessions, live and dead
   tether new <dir> [options]       Start a session in <dir>
   tether kill <id>                 Kill a session; <id> is any unambiguous id prefix
+  tether resume <id>               Resume a dead session, keeping its conversation
 
 Options for serve:
   --port <n>                       Port to listen on (default ${DEFAULT_PORT})
@@ -275,9 +276,20 @@ async function killCommand(db: DatabaseSync, argv: readonly string[]): Promise<s
   return `killed ${session.id}`;
 }
 
+async function resumeCommand(db: DatabaseSync, argv: readonly string[]): Promise<string> {
+  const id = argv[0];
+  if (id === undefined || argv.length > 1) throw new Error(USAGE);
+  const session = getSession(db, id);
+  if (session === undefined) throw new Error(`no such session: ${id}`);
+  const resumed = await resumeSession(db, socket, session);
+  return `resumed ${resumed.id}\t${resumed.tmuxName}\t${resumed.cwd}`;
+}
+
 /**
- * `ls` and `kill` reconcile against real tmux first, so neither ever reports a
- * session that died while tether was not running. `new` has nothing to reconcile.
+ * `ls`, `kill` and `resume` reconcile against real tmux first, so none of them ever
+ * reports a session that died while tether was not running — and it is what makes a
+ * session that died with the machine resumable rather than a row that merely looks
+ * live. `new` has nothing to reconcile.
  */
 async function registryCommand(command: string, argv: readonly string[]): Promise<number> {
   const db = openRegistry();
@@ -287,7 +299,12 @@ async function registryCommand(command: string, argv: readonly string[]): Promis
       return 0;
     }
     await reconcileWithTmux(db, socket);
-    const output = command === 'ls' ? format(listSessions(db)) : await killCommand(db, argv);
+    const output =
+      command === 'ls'
+        ? format(listSessions(db))
+        : command === 'resume'
+          ? await resumeCommand(db, argv)
+          : await killCommand(db, argv);
     process.stdout.write(`${output}\n`);
     return 0;
   } catch (error) {
@@ -307,7 +324,7 @@ export async function main(argv: readonly string[]): Promise<number> {
 
   // Before the serve flag parsing below: these three take positionals, and `new`
   // needs a `--` terminator that `allowPositionals: false` would reject.
-  if (command === 'ls' || command === 'new' || command === 'kill') {
+  if (command === 'ls' || command === 'new' || command === 'kill' || command === 'resume') {
     return registryCommand(command, rest);
   }
 

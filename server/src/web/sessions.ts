@@ -12,7 +12,13 @@ import type { FastifyInstance } from 'fastify';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { LOCAL_MACHINE, getSession, listSessions, reconcileWithTmux } from '../machine/registry.ts';
-import { PROVIDER_COMMANDS, startSession, stopSession } from '../machine/sessions.ts';
+import {
+  NoProviderSessionError,
+  PROVIDER_COMMANDS,
+  resumeSession,
+  startSession,
+  stopSession,
+} from '../machine/sessions.ts';
 import { DEFAULT_SOCKET, InvalidCwdError } from '../machine/tmux.ts';
 
 export type SessionRoutesOptions = {
@@ -114,6 +120,33 @@ export function registerSessionRoutes(app: FastifyInstance, options: SessionRout
         // A refused directory is the caller's mistake, not a server fault. The
         // message names the roots: the account behind this request already has a
         // shell, so there is nothing to withhold and a mystery 400 helps nobody.
+        if (error instanceof InvalidCwdError) {
+          return reply.code(400).send({ error: 'invalid_cwd', message: error.message });
+        }
+        throw error;
+      }
+    },
+  );
+
+  app.post<{ Params: SessionParams }>(
+    '/api/machines/:machineId/sessions/:id/resume',
+    { schema: { params: SESSION_PARAMS } },
+    async (request, reply) => {
+      // Reconciled first for the same reason the reads are: a row that looks live
+      // but whose tmux session died while tether was down is exactly the row a
+      // caller means when it asks to resume.
+      await reconcileWithTmux(db, socket);
+      const session = getSession(db, request.params.id);
+      if (session === undefined) return reply.code(404).send({ error: 'no_such_session' });
+      try {
+        return reply.send({ session: await resumeSession(db, socket, session, roots) });
+      } catch (error) {
+        // 409, not 400: the request is well formed and the caller could not have
+        // known. The message says what to do instead, and the UI must not dress
+        // this up as a resume that worked.
+        if (error instanceof NoProviderSessionError) {
+          return reply.code(409).send({ error: 'no_provider_session', message: error.message });
+        }
         if (error instanceof InvalidCwdError) {
           return reply.code(400).send({ error: 'invalid_cwd', message: error.message });
         }

@@ -17,7 +17,12 @@ import { basename, delimiter, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 
-import { applyRegistrySchema, listSessions } from '../machine/registry.ts';
+import {
+  applyRegistrySchema,
+  getSession,
+  listSessions,
+  setProviderSessionId,
+} from '../machine/registry.ts';
 import { createTerminals } from '../machine/terminal.ts';
 import { killServer, listSessions as listTmuxSessions } from '../machine/tmux.ts';
 import { createAuthStore } from './auth.ts';
@@ -117,6 +122,7 @@ test('every session route rejects an unauthenticated request', async (t) => {
     ['POST', BASE, { cwd: h.root }],
     ['GET', `${BASE}/${id}`],
     ['DELETE', `${BASE}/${id}`],
+    ['POST', `${BASE}/${id}/resume`],
   ];
 
   for (const [method, url, payload] of requests) {
@@ -341,4 +347,51 @@ test('a create that starts a pane it cannot record leaves no orphan', async (t) 
   const res = await create(h, h.root);
   assert.equal(res.statusCode, 500);
   assert.deepEqual(await listTmuxSessions(h.socket), []);
+});
+
+// ── Resume: what a dead row is for (report §2) ──
+
+test('resume brings a dead session back under the same row and the same conversation', async (t) => {
+  const h = await harness(t);
+  const session = (await create(h, h.root)).json().session;
+  // What PR #8's transcript tail back-fills for real.
+  const providerSessionId = randomUUID();
+  setProviderSessionId(h.db, session.id, providerSessionId);
+
+  // The reboot: tmux keeps nothing on disk, so the whole server goes with it.
+  await killServer(h.socket);
+
+  const resumed = await call(h, 'POST', `${BASE}/${session.id}/resume`);
+  assert.equal(resumed.statusCode, 200, resumed.body);
+  assert.equal(resumed.json().session.id, session.id);
+  assert.equal(resumed.json().session.providerSessionId, providerSessionId);
+  assert.equal(resumed.json().session.deadAt, null);
+  assert.deepEqual(await listTmuxSessions(h.socket), [session.tmuxName]);
+
+  // Idempotent: a second resume finds it live and starts nothing.
+  const again = await call(h, 'POST', `${BASE}/${session.id}/resume`);
+  assert.equal(again.statusCode, 200);
+  assert.deepEqual(await listTmuxSessions(h.socket), [session.tmuxName]);
+  assert.equal(listSessions(h.db).length, 1);
+
+  // A well-formed id that was never issued is missing, not broken.
+  const missing = await call(h, 'POST', `${BASE}/${randomUUID()}/resume`);
+  assert.equal(missing.statusCode, 404);
+});
+
+test('resuming a session with no provider session id is refused, not quietly started fresh', async (t) => {
+  const h = await harness(t);
+  const session = (await create(h, h.root)).json().session;
+  assert.equal(session.providerSessionId, null, 'never got a first message');
+
+  await killServer(h.socket);
+
+  const res = await call(h, 'POST', `${BASE}/${session.id}/resume`);
+  assert.equal(res.statusCode, 409, res.body);
+  assert.equal(res.json().error, 'no_provider_session');
+  assert.match(res.json().message, /Start a new session/);
+
+  // Nothing was started, and the row still reads dead rather than resumed.
+  assert.deepEqual(await listTmuxSessions(h.socket), []);
+  assert.ok(getSession(h.db, session.id)!.deadAt !== null);
 });

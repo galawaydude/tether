@@ -7,16 +7,16 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync, statSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-import { listSessions, openRegistry } from './machine/registry.ts';
+import { listSessions, openRegistry, setProviderSessionId } from './machine/registry.ts';
 import { killServer, listSessions as listTmuxSessions } from './machine/tmux.ts';
 import { createAuthStore } from './web/auth.ts';
 import { formatBanner, offLoopbackWarning, resolveServeConfig } from './cli.ts';
@@ -207,6 +207,16 @@ async function tetherFor(t: TestContext): Promise<Tether> {
 /** A pane that sits there until it is killed, so the session stays live. */
 const IDLE = ['--', '/bin/sh'];
 
+/**
+ * `resume` runs the provider's own command, so it needs a `claude` on PATH. This
+ * one idles like the panes above and tests nothing about Claude Code — only that
+ * the CLI starts a pane again and the row goes back to live.
+ */
+const STUB_BIN = mkdtempSync(join(tmpdir(), 'tether-bin-'));
+writeFileSync(join(STUB_BIN, 'claude'), '#!/bin/sh\nexec /bin/sh\n', { mode: 0o755 });
+process.env['PATH'] = `${STUB_BIN}${delimiter}${process.env['PATH'] ?? ''}`;
+process.on('exit', () => rmSync(STUB_BIN, { recursive: true, force: true }));
+
 test('new starts a real tmux session, ls lists it, kill ends it', async (t) => {
   const tether = await tetherFor(t);
   const dir = await mkdtemp(join(tmpdir(), 'tether-proj-'));
@@ -285,4 +295,33 @@ test('bad input fails with a message and leaves nothing behind', async (t) => {
     // No argv prints usage on stdout; the rest fail with it on stderr.
     assert.match(result.stdout + result.stderr, /Usage:/);
   }
+});
+
+test('resume brings a dead session back, and refuses when there is nothing to resume', async (t) => {
+  const tether = await tetherFor(t);
+  const dir = await mkdtemp(join(tmpdir(), 'tether-proj-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+
+  const id = (await tether('new', dir, ...IDLE)).stdout.trim().split('\t')[0]!;
+  const db = openRegistry(tether.state);
+  t.after(() => db.close());
+
+  // The row is still provisional: nothing to resume yet, and saying so is the
+  // whole point — a fresh pane here would be a different conversation.
+  await killServer(tether.socket);
+  const nothing = await tether('resume', id.slice(0, 8));
+  assert.equal(nothing.code, 1);
+  assert.match(nothing.stderr, /no provider session id to resume/);
+  assert.deepEqual(await listTmuxSessions(tether.socket), []);
+
+  // With an identity — what the transcript tail back-fills — it resumes.
+  const providerSessionId = randomUUID();
+  setProviderSessionId(db, id, providerSessionId);
+  const resumed = await tether('resume', id.slice(0, 8));
+  assert.equal(resumed.code, 0, resumed.stderr);
+  assert.match(resumed.stdout, new RegExp(`resumed ${id}`));
+  assert.match((await tether('ls')).stdout, new RegExp(`${id.slice(0, 8)}\\s+live`));
+  assert.equal(listSessions(db).length, 1, 'the same row, not a second one');
+  assert.equal(listSessions(db)[0]!.providerSessionId, providerSessionId);
+  assert.deepEqual(await listTmuxSessions(tether.socket), [listSessions(db)[0]!.tmuxName]);
 });
