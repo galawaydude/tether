@@ -282,16 +282,18 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `coerceTypes` are on): `additionalProperties: false` strips instead of rejecting, and
   `{"password": 123}` arrives as `"123"`. `buildServer` turns both off. Do not remove that
   `ajv.customOptions` block, and do not assume stock Fastify behaviour when reading the tests.
-- **`e2e/` is two Playwright specs and they assert counts, not presence.** They drive
-  the real `tether serve` (`e2e/serve.ts` calls the CLI's own `main`) inside a scratch
-  `HOME`/state dir/tmux socket, with `e2e/stub-agent.ts` on `PATH` as `claude` — so the
-  session is created through the production path and **CI still never runs a live
+- **`e2e/` is two Playwright specs and they assert counts and geometry, not presence.**
+  They drive the real `tether serve` (`e2e/serve.ts` calls the CLI's own `main`) inside a
+  scratch `HOME`/state dir/tmux socket, with `e2e/stub-agent.ts` on `PATH` as `claude` — so
+  the session is created through the production path and **CI still never runs a live
   agent**. What `session.spec.ts` checks that nothing else can is the reload, and what
   `permission.spec.ts` checks is the hook chain end to end: `toContainText` passes just
   as happily on a view that replayed itself twice, and on two cards for one tool call.
-  Three things not to "strengthen" by accident: the locators are scoped to `.conv` and
-  `.xterm-rows` because both panes stay mounted; the terminal comparison is of the
-  **rendered screen** before versus after — the buffer above it legitimately holds the
+  `session.spec.ts` also measures the New session sheet's box against short viewports and
+  starts no session at all, because a control clipped out of a fixed overlay is still in
+  the DOM. Three things not to "strengthen" by accident: the locators are scoped to
+  `.conv` and `.xterm-rows` because both panes stay mounted; the terminal comparison is of
+  the **rendered screen** before versus after — the buffer above it legitimately holds the
   capture _under_ tmux's repaint, and byte-exactness of the recipe is
   `terminal.test.ts`'s job; and the two specs share one server and one session list, so
   each takes its own directory and reopens its session **by name**, never `.row-open`.

@@ -368,16 +368,19 @@ npm run test:e2e                  # the end-to-end specs
 `e2e/` is two Playwright specs on a phone viewport, and they are the only tests
 here that are not unit tests. One logs in, starts a session, watches it, types at
 it, **reloads the page**, and asserts the conversation and the terminal come back
-intact and exactly once. The other acts out a permission prompt and asserts the
-proposed tool call is on screen while the transcript still has nothing about it,
-and that the transcript's own record then replaces that card rather than adding a
-second one. Both run against `e2e/stub-agent.ts` — a script that prints, echoes
-what you type at it, writes a Claude-Code-shaped transcript, publishes its own
-status file and fires whatever hook the project's settings register — put on
-`PATH` as `claude`, so the session is created through the real code path. **CI
-never runs a real agent**: that would need real credentials and would cost money
-per run. Everything they touch (`HOME`, the state file, the tmux socket, the
-session root) is redirected into a scratch directory by `playwright.config.ts`.
+intact and exactly once; it also opens the New session sheet at the shortest
+phone viewports and asserts the card and its **Agent** picker stay on screen,
+since the sheet is the one screen that grows with its copy. The other acts out a
+permission prompt and asserts the proposed tool call is on screen while the
+transcript still has nothing about it, and that the transcript's own record then
+replaces that card rather than adding a second one. Both run against
+`e2e/stub-agent.ts` — a script that prints, echoes what you type at it, writes a
+Claude-Code-shaped transcript, publishes its own status file and fires whatever
+hook the project's settings register — put on `PATH` as `claude`, so the session
+is created through the real code path. **CI never runs a real agent**: that would
+need real credentials and would cost money per run. Everything they touch
+(`HOME`, the state file, the tmux socket, the session root) is redirected into a
+scratch directory by `playwright.config.ts`.
 
 They have no retries, deliberately. These tests cover the product's core claims,
 and a flake retried into passing is worse than no test.
