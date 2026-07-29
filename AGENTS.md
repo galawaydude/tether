@@ -426,14 +426,19 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `coerceTypes` are on): `additionalProperties: false` strips instead of rejecting, and
   `{"password": 123}` arrives as `"123"`. `buildServer` turns both off. Do not remove that
   `ajv.customOptions` block, and do not assume stock Fastify behaviour when reading the tests.
-- **`e2e/` is three Playwright specs and they assert counts and geometry, not presence.**
+- **`e2e/` is four Playwright specs and they assert counts and geometry, not presence.**
   They drive the real `tether serve` (`e2e/serve.ts` calls the CLI's own `main`) inside a
   scratch `HOME`/state dir/tmux socket, with `e2e/stub-agent.ts` on `PATH` as `claude` — so
   the session is created through the production path and **CI still never runs a live
   agent**. What `session.spec.ts` checks that nothing else can is the reload, what
-  `permission.spec.ts` checks is the hook chain end to end, and what `composer.spec.ts`
+  `permission.spec.ts` checks is the hook chain end to end, what `composer.spec.ts`
   checks is the compose chain end to end plus the Enter rule the composer entry above
-  describes, which has no handler to unit-test: `toContainText` passes just as happily
+  describes, which has no handler to unit-test, and what `identity.spec.ts` checks is that
+  each session shows _its own_ conversation and keeps it — two sessions in one directory,
+  then a `/resume` typed at one pane (which the stub acts out by moving to a new session
+  id and a new transcript, announcing it only through its registry file). That last claim
+  is the one found in live use rather than by a test.
+  `toContainText` passes just as happily
   on a view that replayed itself twice, on two cards for one tool call, and on an echo
   still standing beside its own record.
   `session.spec.ts` also measures the New session sheet's box against short viewports and
@@ -442,8 +447,10 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `.conv` and `.xterm-rows` because both panes stay mounted; the terminal comparison is of
   the **rendered screen** before versus after — the buffer above it legitimately holds the
   capture _under_ tmux's repaint, and byte-exactness of the recipe is
-  `terminal.test.ts`'s job; and the three specs share one server and one session list, so
-  each takes its own directory and reopens its session **by name**, never `.row-open`.
+  `terminal.test.ts`'s job; and the four specs share one server and one session list, so
+  each takes its own directory and reopens its session **by name**, never `.row-open` —
+  which is why `identity.spec.ts`, the one spec that deliberately puts two sessions in one
+  directory, gives both a title.
   The stub knows nothing about where tether's shim, secret or endpoint are — it runs
   whatever `.claude/settings.local.json` lists — so a broken installer fails the test
   rather than quietly proving nothing. A typed ask only **arms** the stub and a

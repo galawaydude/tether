@@ -69,7 +69,16 @@ const TOOL = 'Bash';
 const TRIGGER = join(process.cwd(), '.tether-e2e-fire');
 const POLL_MS = 100;
 
-const sessionId = randomUUID();
+/**
+ * Typed at the pane to act out a `/resume`. Both are `let` for it: Claude Code
+ * moves to a *different* session id and a *different* transcript file mid-session
+ * and renames itself in its own registry file, and nothing announces any of it.
+ * That file is the only evidence there is, which is why tether re-reads it.
+ */
+const RESUME = 'resume the old conversation';
+const RESUMED = 'back in the resumed conversation';
+
+let sessionId = randomUUID();
 
 // `~/.claude/projects/<cwd with every non-alphanumeric byte hyphenated>/<uuid>.jsonl`,
 // which is Claude Code's own `sanitizePath` over the *resolved* directory.
@@ -80,7 +89,7 @@ const project = join(
   realpathSync(process.cwd()).replace(/[^a-zA-Z0-9]/g, '-'),
 );
 mkdirSync(project, { recursive: true });
-const transcript = join(project, `${sessionId}.jsonl`);
+let transcript = join(project, `${sessionId}.jsonl`);
 
 function write(type: 'user' | 'assistant', content: readonly unknown[]): void {
   appendFileSync(
@@ -254,6 +263,18 @@ rl.on('line', (line) => {
   const ask = ASKS[text as keyof typeof ASKS];
   if (ask !== undefined) {
     armed = ask;
+    return;
+  }
+
+  // The `/resume` above: the line just recorded belongs to the conversation
+  // being left, and everything after it goes to a new file under a new id that
+  // only `~/.claude/sessions/<pid>.json` names.
+  if (text === RESUME) {
+    sessionId = randomUUID();
+    transcript = join(project, `${sessionId}.jsonl`);
+    record('assistant', RESUMED);
+    publish('idle');
+    process.stdout.write(`${RESUMED}\n`);
     return;
   }
 

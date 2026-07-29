@@ -415,7 +415,7 @@ npx playwright install chromium   # once; npm 12 blocks playwright's own postins
 npm run test:e2e                  # the end-to-end specs
 ```
 
-`e2e/` is three Playwright specs on a phone viewport, and they are the only tests
+`e2e/` is four Playwright specs on a phone viewport, and they are the only tests
 here that are not unit tests. One logs in, starts a session, watches it, types at
 it, **reloads the page**, and asserts the conversation and the terminal come back
 intact and exactly once; it also opens the New session sheet at the shortest
@@ -429,11 +429,15 @@ answered there, and still reconciles to one card. It also types the reflex `yes`
 at the pane after a tap has already approved something, and asserts that
 approves nothing. The third composes a message and asserts it reaches the agent
 and appears exactly once, that Enter in the box is a line break rather than a
-send, and that the composer leaves Send on screen with the keyboard up. All
-three run against `e2e/stub-agent.ts` — a script that prints, echoes what you
-type at it, writes a Claude-Code-shaped transcript, publishes its own status
-file, fires whatever hook the project's settings register **and honours the
-decision that hook writes back**, exactly as Claude Code does — put on `PATH` as
+send, and that the composer leaves Send on screen with the keyboard up. The
+fourth starts two sessions in **one** directory and asserts each shows its own
+conversation and neither shows the other's, then acts out a `/resume` at one of
+their panes and asserts that view follows the agent to the conversation it
+resumed into. All four run against `e2e/stub-agent.ts` — a script that prints, echoes
+what you type at it, writes a Claude-Code-shaped transcript, publishes its own
+status file, moves to a new session id and a new transcript on a `/resume`,
+fires whatever hook the project's settings register **and honours the decision
+that hook writes back**, exactly as Claude Code does — put on `PATH` as
 `claude`, so the session is created through the real code path.
 **CI never runs a real agent**: that would
 need real credentials and would cost money per run. Everything they touch
