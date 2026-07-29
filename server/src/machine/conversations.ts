@@ -28,7 +28,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { stateDir as defaultStateDir } from '../db.ts';
 import { mapHook, mapLines as mapClaudeLines } from '../providers/claude-code/events.ts';
 import { permissionTimeoutMs } from '../providers/claude-code/hooks.ts';
-import { readSessionId, readSessionStatus } from '../providers/claude-code/status.ts';
+import { readSession, readSessionId } from '../providers/claude-code/status.ts';
 import { findTranscript, type StartMemo } from '../providers/claude-code/transcript.ts';
 import { mapLines as mapCodexLines } from '../providers/codex/events.ts';
 import { hookLogPath } from '../providers/codex/hooks.ts';
@@ -36,8 +36,13 @@ import { findRollout } from '../providers/codex/rollout.ts';
 import { CODEX, codexHome } from '../providers/codex/spawn.ts';
 import { CodexStatus } from '../providers/codex/status.ts';
 import { tailLines, type Tail } from '../providers/tail.ts';
-import { claimedProviderSessionIds, setProviderSessionId, type Session } from './registry.ts';
-import { DEFAULT_SOCKET, listPanes } from './tmux.ts';
+import {
+  claimedProviderSessionIds,
+  listSessions,
+  setProviderSessionId,
+  type Session,
+} from './registry.ts';
+import { DEFAULT_SOCKET, listPanes, type Pane } from './tmux.ts';
 
 /**
  * How many events a reconnecting client can have missed and still be caught up
@@ -155,6 +160,14 @@ export function stderrWarn(): (message: string) => void {
 }
 
 type Live = {
+  /**
+   * The row this is following, and the *one* copy of it that matters once a
+   * session is live. `providerSessionId` is re-bound in place when the pane
+   * turns out to be running a different session (see `#bind`), so everything
+   * downstream — the transcript search, the status poller — has to read it from
+   * here rather than from whichever copy of the row it was handed at open time.
+   */
+  session: Session;
   refs: number;
   seq: number;
   /** Transcript lines the tailer has delivered, which is where the next batch starts. */
@@ -266,33 +279,102 @@ export class Conversations {
    * `readSessionStatus` will not trust it either — see the `procStart` check
    * there — but the cheapest place to not ask is here.
    */
-  async #panePid(session: Session): Promise<number | undefined> {
-    const panes = await listPanes(this.#options.socket ?? DEFAULT_SOCKET).catch(() => []);
+  async #panes(): Promise<Pane[]> {
+    return listPanes(this.#options.socket ?? DEFAULT_SOCKET).catch(() => []);
+  }
+
+  #pidOf(panes: readonly Pane[], session: Session): number | undefined {
     return panes.find((pane) => pane.session === session.tmuxName && !pane.dead)?.pid;
   }
 
+  async #panePid(session: Session): Promise<number | undefined> {
+    return this.#pidOf(await this.#panes(), session);
+  }
+
+  #home(): { home?: string } {
+    return this.#options.home === undefined ? {} : { home: this.#options.home };
+  }
+
   /**
-   * Whether `providerSessionId` is the session running in the pane tether
-   * spawned for this row. The hook route's gate before it binds a provider
-   * session id to a row that has none: the payload's `cwd` matches just as well
-   * for an agent the user started by hand in the same directory, and a row bound
-   * to a foreign transcript is a `resume` that hands back somebody else's
-   * conversation — the one failure that silently costs a user their work.
+   * Record what a pane says it is running against the row it belongs to, and
+   * report whether that moved.
    *
-   * Asked here rather than in `web/` because the pane pid and the provider's
-   * home both already live on this class, and `#panePid` is the only place that
-   * knows to skip a dead pane.
+   * **A provider session id is not stable for the life of a tether session.**
+   * `/resume` and `--continue` switch Claude Code to a *different* session id and
+   * a different transcript mid-session, so a row bound once at spawn and never
+   * re-checked ends up naming a file nothing writes to any more — the
+   * conversation view then shows a conversation that simply stopped, while the
+   * terminal beside it carries on. The row follows the pane, always.
    */
-  async ownsProviderSession(session: Session, providerSessionId: string): Promise<boolean> {
+  #bind(session: Session, running: string | undefined): boolean {
+    if (running === undefined || running === session.providerSessionId) return false;
+    setProviderSessionId(this.#db, session.id, running);
+    session.providerSessionId = running;
+    const live = this.#live.get(session.id);
+    if (live !== undefined) live.session.providerSessionId = running;
+    return true;
+  }
+
+  /**
+   * The live row whose pane is running `providerSessionId`, bound to it — the
+   * hook route's join, and an exact one.
+   *
+   * A hook subprocess's `$PPID` is the tmux `pane_pid` (the Codex spike, question
+   * 4), and Claude Code names its own session registry file by that same pid. So
+   * a pane *states* which session it is running and there is nothing left to
+   * guess at. What this replaced matched on the payload's `cwd` and could
+   * therefore only ever refuse: two tether sessions in one directory post an
+   * identical `cwd`, so the second and every later one was declined and never got
+   * a conversation at all. Pane identity tells them apart.
+   *
+   * The safety property is stronger rather than weaker for it. An agent the user
+   * started by hand in a tether-managed directory is in no tether pane, so no
+   * pane names its session and nothing is bound — which is the failure that
+   * matters, since a row bound to a foreign transcript is a `resume` that hands
+   * back somebody else's conversation.
+   *
+   * A row already bound to a *different* id is a candidate too: that is the
+   * `/resume` case, and re-binding it here is what stops the view freezing on the
+   * old transcript.
+   */
+  async bindProviderSession(providerSessionId: string): Promise<Session | undefined> {
+    const panes = await this.#panes();
+    for (const session of listSessions(this.#db)) {
+      if (session.deadAt !== null) continue;
+      const pid = this.#pidOf(panes, session);
+      if (pid === undefined) continue;
+      if ((await readSessionId(pid, this.#home())) !== providerSessionId) continue;
+      if (this.#bind(session, providerSessionId)) this.#restart(this.#live.get(session.id));
+      return session;
+    }
+    return undefined;
+  }
+
+  /**
+   * Ask the pane which session it is running, before looking for a transcript.
+   *
+   * Claude Code only, and only where the row does not already name one: this
+   * retires the identification guess `findTranscript` would otherwise have to
+   * make from mtimes and record timestamps, which cannot separate two sessions
+   * started in one directory seconds apart and which rejects a *resumed*
+   * session's transcript outright — its first record is the replayed history,
+   * stamped long before the row was created. Keeping the id *current* after that
+   * is the status poller's job, once a second off a file it already reads.
+   *
+   * Codex publishes no such file, and needs none: its rollout is already
+   * identified by the pane pid its own `SessionStart` hook carries, and the one
+   * thing that changes a Codex session id — `codex resume` — is a spawn tether
+   * performs itself and records at the time.
+   */
+  async #syncFromPane(session: Session): Promise<void> {
+    if (session.provider === CODEX || session.providerSessionId != null) return;
     const pid = await this.#panePid(session);
-    if (pid === undefined) return false;
-    const running = await readSessionId(pid, {
-      ...(this.#options.home === undefined ? {} : { home: this.#options.home }),
-    });
-    return running === providerSessionId;
+    if (pid === undefined) return;
+    this.#bind(session, await readSessionId(pid, this.#home()));
   }
 
   async #find(session: Session, memo?: StartMemo) {
+    await this.#syncFromPane(session);
     const claimed = claimedProviderSessionIds(this.#db, session.id);
     const found =
       session.provider === CODEX
@@ -315,12 +397,12 @@ export class Conversations {
             ...(memo === undefined ? {} : { memo }),
             ...(this.#options.home === undefined ? {} : { home: this.#options.home }),
           });
-    // Back-fill the provisional row: for Claude Code the transcript's own name is
-    // the provider's session id, and for Codex it comes from the `SessionStart`
-    // hook or from the rollout's `session_meta`. Either way the scan happens once
-    // per session, and `resumeSession` then has the id it needs.
+    // Back-fill the provisional row where the pane could not say: for Claude Code
+    // the transcript's own name is the provider's session id, and for Codex it
+    // comes from the `SessionStart` hook or from the rollout's `session_meta`.
+    // `resumeSession` then has the id it needs.
     if (found !== undefined && session.providerSessionId == null) {
-      setProviderSessionId(this.#db, session.id, found.providerSessionId);
+      this.#bind(session, found.providerSessionId);
     }
     return found;
   }
@@ -609,20 +691,27 @@ export class Conversations {
    * (report §4e). The pid is resolved once: a pane's process does not change,
    * and a session whose pane is gone has no status worth polling.
    */
-  #startStatus(session: Session, live: Live): void {
+  #startStatus(live: Live): void {
     const every = this.#options.statusPollMs ?? STATUS_POLL_MS;
     if (every <= 0) return;
     const tick = async () => {
       if (live.stopped) return;
       if (live.pid === undefined) {
-        live.pid = await this.#panePid(session);
+        live.pid = await this.#panePid(live.session);
         if (live.pid === undefined) return;
       }
-      const state = await readSessionStatus(live.pid, {
-        ...(this.#options.home === undefined ? {} : { home: this.#options.home }),
-        expectSessionId: session.providerSessionId,
-      });
+      const record = await readSession(live.pid, this.#home());
       if (live.stopped) return;
+      // The pane is the authority on which session it is running, and it is free
+      // to change it: a `/resume` or a `--continue` typed into the terminal moves
+      // Claude Code to a different session id and a different transcript. This
+      // tick is what notices — without it the row keeps naming the file the
+      // session used to write to, and the conversation view shows a conversation
+      // that stopped while the terminal beside it carries on.
+      if (record !== undefined && this.#bind(live.session, record.sessionId)) {
+        this.#restart(live);
+      }
+      const state = record?.state;
       // A stale, absent or unmatched file is "tether cannot say", never `idle`:
       // reading it as a state would erase, one tick later, the `waiting` a
       // `Notification` hook had just set — which is the moment this whole path
@@ -644,6 +733,7 @@ export class Conversations {
     if (existing !== undefined) return existing;
 
     const live: Live = {
+      session,
       refs: 0,
       seq: 0,
       lines: 0,
@@ -658,11 +748,49 @@ export class Conversations {
       stopped: false,
     };
     this.#live.set(session.id, live);
-    live.ready = this.#start(session, live);
+    live.ready = this.#start(live);
     // Claude Code only. Codex publishes no registry file of its own; its state
     // comes from the rollout and its hook log, folded in `#ingest`/`#fold`.
-    if (live.codex === undefined) this.#startStatus(session, live);
+    if (live.codex === undefined) this.#startStatus(live);
     return live;
+  }
+
+  /**
+   * Follow the transcript the row now names, having followed another one.
+   *
+   * Only `#bind` calls this, and only when the pane turned out to be running a
+   * different session than the row said — a `/resume`. The new transcript is not
+   * a continuation of the old numbering, so subscribers are told to refetch
+   * rather than sent events that would collide with what they already hold; that
+   * is the same branch a client gone longer than the tail takes, so there is no
+   * second path for a client to get wrong.
+   *
+   * Fire-and-forget: the caller is a poll tick or an HTTP route, and there is
+   * nothing for either to wait for.
+   */
+  #restart(live: Live | undefined): void {
+    if (live === undefined) return;
+    void (async () => {
+      // The in-flight `#start` first, or its tailer is attached after this has
+      // finished clearing and the old file is followed for the rest of the
+      // session. It resolves without waiting for a transcript — the retry it
+      // schedules is a timer this then cancels.
+      await live.ready.catch(() => {});
+      if (live.stopped) return;
+      if (live.retry !== undefined) clearTimeout(live.retry);
+      live.retry = undefined;
+      const tailer = live.tailer;
+      live.tailer = undefined;
+      await tailer?.stop();
+      if (live.stopped) return;
+      live.seq = 0;
+      live.lines = 0;
+      live.tail = [];
+      live.seen.clear();
+      live.memo.clear();
+      for (const send of live.subscribers) send({ c: 'refetch' });
+      live.ready = this.#start(live);
+    })();
   }
 
   /**
@@ -671,19 +799,19 @@ export class Conversations {
    * record, and a viewer opening straight after `POST /sessions` is the normal
    * case, not an edge one.
    */
-  async #start(session: Session, live: Live): Promise<void> {
+  async #start(live: Live): Promise<void> {
     if (live.stopped) return;
-    const found = await this.#find(session, live.memo).catch(() => undefined);
+    const found = await this.#find(live.session, live.memo).catch(() => undefined);
     if (live.stopped) return;
     if (found === undefined) {
       live.retry = setTimeout(() => {
-        live.ready = this.#start(session, live);
+        live.ready = this.#start(live);
       }, this.#options.pollMs ?? 1000);
       live.retry.unref();
       return;
     }
 
-    const map = mapperFor(session.provider);
+    const map = mapperFor(live.session.provider);
     live.tailer = await tailLines(found.path, (lines) => this.#ingest(live, map, lines), {
       ...(this.#options.pollMs === undefined ? {} : { pollMs: this.#options.pollMs }),
       onError: (error) => this.#warn(`transcript tail failed: ${String(error)}`),

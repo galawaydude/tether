@@ -838,7 +838,37 @@ async function polling(t: TestContext, statusPollMs: number) {
     warn: (message) => h.warnings.push(message),
   });
   t.after(() => conversations.closeAll());
-  return { ...h, conversations, pid };
+  return { ...h, conversations, pid, socket };
+}
+
+/**
+ * Another tether session in the *same* directory: a registry row and the tmux
+ * pane tether would have spawned for it, announcing `providerSessionId` through
+ * Claude Code's own registry file.
+ *
+ * This is the shape of the bug: every row here has an identical `cwd`, so the
+ * `cwd` can only ever say "one of these" — and the adoption it once gated on it
+ * therefore refused every directory that held more than one, which left the
+ * second and every later session in it without a conversation at all.
+ */
+async function neighbour(
+  p: Awaited<ReturnType<typeof polling>>,
+  n: number,
+  providerSessionId: string,
+): Promise<Session> {
+  const digits = `${n}`.repeat(8);
+  const session = createSession(p.db, {
+    id: `${digits}-8888-4777-8666-555555555555`,
+    provider: 'claude-code',
+    cwd: p.session.cwd,
+    title: 'work',
+    tmuxName: `tether-${digits}`,
+  });
+  await newSession(p.socket, { name: session.tmuxName, cwd: p.cwd, command: ['/bin/sh'] });
+  const pid = (await listPanes(p.socket)).find((pane) => pane.session === session.tmuxName)?.pid;
+  assert.ok(pid !== undefined, `the pane tether would have spawned for session ${n}`);
+  await writeStatus(p.home, pid, { sessionId: providerSessionId });
+  return session;
 }
 
 /** A registry file for `pid`, as Claude Code 2.1.220 writes one. */
@@ -913,21 +943,74 @@ test('a file the poller cannot read leaves the waiting it found alone', async (t
   assert.equal(idle.detail, undefined);
 });
 
-test('a pane that is not running this session cannot be adopted by it', async (t) => {
-  // The poller is off: what is under test is the lookup the hook route asks
-  // before it binds a provider session id to a row that has none.
+const SECOND_SESSION = '22222222-2222-4222-8222-222222222222';
+const THIRD_SESSION = '33333333-3333-4333-8333-333333333333';
+const FOREIGN_SESSION = '00000000-0000-4000-8000-000000000000';
+
+test('three sessions in one directory each bind to their own, by pane and not by cwd', async (t) => {
+  // The poller is off: what is under test is the lookup the hook route makes
+  // before it binds a provider session id to a row.
   const p = await polling(t, 0);
   await writeStatus(p.home, p.pid, {});
+  const second = await neighbour(p, 2, SECOND_SESSION);
+  const third = await neighbour(p, 3, THIRD_SESSION);
 
-  assert.equal(await p.conversations.ownsProviderSession(p.session, PROVIDER_SESSION), true);
-  assert.equal(
-    await p.conversations.ownsProviderSession(p.session, '00000000-0000-4000-8000-000000000000'),
-    false,
-    'the pane is running a different session',
-  );
+  // Every row below has the same cwd and none of them has been identified yet.
+  // The panes are what tell them apart, and they do it exactly.
+  for (const [id, session] of [
+    [PROVIDER_SESSION, p.session],
+    [SECOND_SESSION, second],
+    [THIRD_SESSION, third],
+  ] as const) {
+    assert.equal((await p.conversations.bindProviderSession(id))?.id, session.id, id);
+    assert.equal(getSession(p.db, session.id)?.providerSessionId, id, 'and the row is bound');
+  }
+});
 
-  // An agent the user started by hand writes no registry file for tether's own
-  // pane, so there is nothing to confirm it with and nothing is adopted.
+test('an agent no tether pane is running binds to nothing', async (t) => {
+  const p = await polling(t, 0);
+  await writeStatus(p.home, p.pid, {});
+  await neighbour(p, 2, SECOND_SESSION);
+
+  // A `claude` the user started by hand in a tether-managed directory. It writes
+  // its own registry file under its own pid, and that pid is in none of tether's
+  // panes — so no pane names it and no row may take it. A row bound to a foreign
+  // transcript is a `resume` that hands back somebody else's conversation.
+  assert.equal(await p.conversations.bindProviderSession(FOREIGN_SESSION), undefined);
+  assert.equal(getSession(p.db, p.session.id)?.providerSessionId, null, 'and nothing was bound');
+
+  // The same answer when tether's own pane publishes nothing at all — no procfs,
+  // a file not written yet, a pane already gone. Unverifiable is never a guess.
   await rm(sessionStatusPath(p.pid, p.home));
-  assert.equal(await p.conversations.ownsProviderSession(p.session, PROVIDER_SESSION), false);
+  assert.equal(await p.conversations.bindProviderSession(PROVIDER_SESSION), undefined);
+});
+
+test('a session id that changes mid-session is re-bound, and the view refetches', async (t) => {
+  // `/resume` in the terminal moves Claude Code to a different session id and a
+  // different transcript. Nothing announces it; the poller notices because the
+  // file it already reads once a second names the session as well as its state.
+  const p = await polling(t, POLL);
+  await writeFile(p.transcript, userRecord(1));
+  await writeStatus(p.home, p.pid, {});
+
+  const client = sink();
+  await p.conversations.subscribe(p.session, 0, client.send);
+  await client.waitFor(1);
+  assert.deepEqual(seqs(client.frames), [1]);
+
+  const resumed = join(projectDir(p.cwd, p.home), `${SECOND_SESSION}.jsonl`);
+  await writeFile(resumed, userRecord(2) + userRecord(3));
+  await writeStatus(p.home, p.pid, { sessionId: SECOND_SESSION });
+
+  // Refetch rather than more `conv` frames: the new transcript is not a
+  // continuation of the old numbering, and its own event 1 would collide with
+  // one the client already holds.
+  await client.waitFor(4);
+  assert.equal(client.frames[1]?.c, 'refetch');
+  assert.deepEqual(seqs(client.frames), [1, 1, 2], 'the new transcript, from its own start');
+  assert.equal(
+    getSession(p.db, p.session.id)?.providerSessionId,
+    SECOND_SESSION,
+    'and the row follows the pane, so `resume` and the history route agree with it',
+  );
 });

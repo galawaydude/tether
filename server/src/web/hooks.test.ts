@@ -15,7 +15,13 @@ import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 
 import { Conversations } from '../machine/conversations.ts';
-import { createSession, applyRegistrySchema, getSession } from '../machine/registry.ts';
+import {
+  applyRegistrySchema,
+  createSession,
+  getSession,
+  listSessions,
+  setProviderSessionId,
+} from '../machine/registry.ts';
 import type { Terminals } from '../machine/terminal.ts';
 import { createAuthStore } from './auth.ts';
 import { defaultAllowedHosts } from './guards.ts';
@@ -56,12 +62,14 @@ async function harness(t: { after: (fn: () => unknown) => void }) {
 
   const seen: { sessionId: string; payload: unknown }[] = [];
   /**
-   * Which session the pane tether spawned is really running, as Claude Code's
-   * own session file would say. Unset is the honest default: a hand-run agent
-   * writes no such file for tether's pane. `conversations.test.ts` drives the
-   * real lookup against real tmux.
+   * Which session each of tether's own panes is running, by tmux name — what
+   * Claude Code's per-pid registry file says, and the exact join the real
+   * `bindProviderSession` makes. Empty is the honest default: an agent the user
+   * started by hand is in no tether pane and so appears here for nothing.
+   * `conversations.test.ts` drives that lookup against real tmux and real
+   * registry files; what is under test here is the route.
    */
-  const pane: { running?: string } = {};
+  const pane = new Map<string, string>();
   /** What the user tapped, where a test is about the decision coming back. */
   const answer: { decision?: 'allow' | 'deny' } = {};
   const conversations = {
@@ -69,8 +77,13 @@ async function harness(t: { after: (fn: () => unknown) => void }) {
       seen.push({ sessionId: session.id, payload });
       return answer.decision;
     },
-    async ownsProviderSession(_session: { id: string }, providerSessionId: string) {
-      return pane.running === providerSessionId;
+    async bindProviderSession(providerSessionId: string) {
+      const session = listSessions(db).find(
+        (row) => row.deadAt === null && pane.get(row.tmuxName) === providerSessionId,
+      );
+      if (session === undefined) return undefined;
+      setProviderSessionId(db, session.id, providerSessionId);
+      return getSession(db, session.id);
     },
     closeAll: async () => {},
   } as unknown as Conversations;
@@ -122,15 +135,19 @@ function post(
   });
 }
 
-/** A live row that already knows its provider session id. */
-function liveSession(db: DatabaseSync, providerSessionId: string | null = PROVIDER_SESSION) {
-  const id = '11111111-1111-4111-8111-111111111111';
+/**
+ * A live row that already knows its provider session id. `n` distinguishes the
+ * several a directory can hold — which is the whole of the bug this route's
+ * adoption once had, so making more than one is deliberately cheap.
+ */
+function liveSession(db: DatabaseSync, providerSessionId: string | null = PROVIDER_SESSION, n = 1) {
+  const id = `${n}${n}${n}${n}${n}${n}${n}${n}-1111-4111-8111-111111111111`;
   createSession(db, {
     id,
     provider: 'claude-code',
     cwd: CWD,
     title: 'hookspike',
-    tmuxName: 'tether-11111111',
+    tmuxName: `tether-${n}${n}${n}${n}${n}${n}${n}${n}`,
   });
   if (providerSessionId !== null) {
     db.prepare('UPDATE sessions SET provider_session_id = ? WHERE id = ?').run(
@@ -196,13 +213,13 @@ test('a valid secret is still not permission to speak for an unknown session', a
   assert.deepEqual(h.seen, []);
 });
 
-test('a hook for a session tether has not identified yet adopts the one row in that cwd', async (t) => {
+test('a hook for a session tether has not identified yet adopts the row whose pane runs it', async (t) => {
   const h = await harness(t);
   // The first tool call of a new session: `PreToolUse` can arrive before the
-  // transcript scan has claimed the row. The cwd narrows it to one row, and the
-  // row's own pane confirms it is running this very session.
+  // transcript scan has claimed the row. The row's own pane states which session
+  // it is running, and that is the join.
   const id = liveSession(h.db, null);
-  h.pane.running = PROVIDER_SESSION;
+  h.pane.set('tether-11111111', PROVIDER_SESSION);
 
   const res = await post(h);
   assert.equal(res.statusCode, 204);
@@ -214,23 +231,63 @@ test('a hook for a session tether has not identified yet adopts the one row in t
   );
 });
 
-test('an agent run by hand in the same directory does not take the row', async (t) => {
+test('three sessions in one directory each adopt their own, not the first one found', async (t) => {
+  const h = await harness(t);
+  // The bug this route shipped with, and the reason the conversation view was
+  // empty for most real sessions: the cwd was the join, so a second row in a
+  // directory made every row in it ambiguous and adoption could only refuse.
+  // Every one of these posts an identical cwd; only their panes tell them apart.
+  const ids = [1, 2, 3].map((n) => liveSession(h.db, null, n));
+  const running = [
+    '11111111-1111-4111-8111-aaaaaaaaaaaa',
+    PROVIDER_SESSION,
+    '33333333-3333-4333-8333-cccccccccccc',
+  ];
+  ids.forEach((_, i) => h.pane.set(`tether-${`${i + 1}`.repeat(8)}`, running[i]!));
+
+  for (const [i, id] of ids.entries()) {
+    const res = await post(h, { payload: preToolUse({ session_id: running[i] }) });
+    assert.equal(res.statusCode, 204);
+    assert.equal(h.seen[i]?.sessionId, id, `session ${i + 1} reached its own row`);
+    assert.equal(getSession(h.db, id)?.providerSessionId, running[i]);
+  }
+});
+
+test('an agent run by hand in the same directory does not take a row', async (t) => {
   const h = await harness(t);
   // The shim stays installed in a project after tether is done with it, so a
   // `claude` started by hand there posts a matching cwd and an unknown session
-  // id. Binding the row to it would point the conversation view at a foreign
-  // transcript and make `resume` restore somebody else's session — so the cwd
-  // is not enough, and tether's own pane is not running this session.
-  const id = liveSession(h.db, null);
+  // id. Binding a row to it would point the conversation view at a foreign
+  // transcript and make `resume` restore somebody else's session. It is in no
+  // tether pane, so no pane names it and nothing is bound — which holds however
+  // many rows the directory has.
+  const ids = [liveSession(h.db, null, 1), liveSession(h.db, null, 2)];
+  h.pane.set('tether-22222222', '22222222-2222-4222-8222-bbbbbbbbbbbb');
 
   const res = await post(h);
   assert.equal(res.statusCode, 204, 'dropped as an unknown session, which is not an error');
   assert.deepEqual(h.seen, [], 'and nothing reached the conversation');
-  assert.equal(
-    getSession(h.db, id)?.providerSessionId,
-    null,
-    'the row is still unclaimed, and its own transcript can still claim it',
-  );
+  for (const id of ids) {
+    assert.equal(
+      getSession(h.db, id)?.providerSessionId,
+      null,
+      'the rows are still unclaimed, and their own transcripts can still claim them',
+    );
+  }
+});
+
+test('a row already bound to another session id still follows its own pane', async (t) => {
+  const h = await harness(t);
+  // `/resume` in the terminal moves Claude Code to a different session id, so
+  // the first hook after one names a session no row holds. Re-binding is what
+  // stops the conversation view sitting on a transcript nothing writes to.
+  const id = liveSession(h.db, '00000000-0000-4000-8000-000000000000');
+  h.pane.set('tether-11111111', PROVIDER_SESSION);
+
+  const res = await post(h);
+  assert.equal(res.statusCode, 204);
+  assert.equal(h.seen[0]?.sessionId, id);
+  assert.equal(getSession(h.db, id)?.providerSessionId, PROVIDER_SESSION);
 });
 
 test('a payload with no session id is dropped rather than guessed at', async (t) => {

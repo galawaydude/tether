@@ -18,9 +18,9 @@
  * 3. **A session that exists**, resolved from the payload's own `session_id`.
  *    This is the per-session authorisation: a valid secret does not let a caller
  *    say anything about a session tether does not have a live row for. A row
- *    that has no provider session id yet can be bound to one here, but only
- *    where the pane tether spawned confirms it is running that session — see
- *    `adopt` below.
+ *    whose provider session id is unknown or out of date can be bound to this
+ *    one here, but only where a pane tether spawned states that it is running
+ *    that very session — `Conversations.bindProviderSession`.
  *
  * The `Host` allowlist and the Origin guard in `server.ts` run on `onRequest`,
  * before any of this, so they cover this route too — a cross-origin page's POST
@@ -47,13 +47,7 @@ import type { FastifyInstance } from 'fastify';
 
 import { stateDir as defaultStateDir } from '../db.ts';
 import type { Conversations } from '../machine/conversations.ts';
-import {
-  getSession,
-  getSessionByProviderSessionId,
-  setProviderSessionId,
-  unclaimedSessionInCwd,
-  type Session,
-} from '../machine/registry.ts';
+import { getSessionByProviderSessionId } from '../machine/registry.ts';
 import { readHookSecret } from '../providers/claude-code/hooks.ts';
 
 /**
@@ -76,33 +70,6 @@ function secretMatches(presented: unknown, expected: string): boolean {
   const a = Buffer.from(presented);
   const b = Buffer.from(expected);
   return a.length === b.length && timingSafeEqual(a, b);
-}
-
-/**
- * Bind a provider session id to the row a hook came from, if it can be shown to
- * have come from that row's own pane.
- *
- * Two conditions, and the second is the one that matters. The registry offers at
- * most one unclaimed live row in the directory; then the pane tether spawned for
- * that row is asked, through Claude Code's own session file, which session it is
- * running. A `cwd` match alone would let an agent the user started by hand in
- * that directory take the row, after which its conversation view tails a foreign
- * transcript and `resume` restores the wrong session — data loss wearing a
- * feature's clothes. Unconfirmed is dropped as an unknown session, which costs
- * at most the first tool card of a session, recovered by transcript discovery a
- * moment later.
- */
-async function adopt(
-  db: DatabaseSync,
-  conversations: Conversations,
-  cwd: string,
-  providerSessionId: string,
-): Promise<Session | undefined> {
-  const candidate = unclaimedSessionInCwd(db, cwd);
-  if (candidate === undefined) return undefined;
-  if (!(await conversations.ownsProviderSession(candidate, providerSessionId))) return undefined;
-  setProviderSessionId(db, candidate.id, providerSessionId);
-  return getSession(db, candidate.id);
 }
 
 export function registerHookRoute(
@@ -131,19 +98,19 @@ export function registerHookRoute(
 
       const payload = request.body as Record<string, unknown>;
       const providerSessionId = payload['session_id'];
-      const cwd = payload['cwd'];
       if (typeof providerSessionId !== 'string' || providerSessionId === '') {
         return reply.code(204).send();
       }
 
-      // The usual join, and then the one that covers a session whose transcript
-      // has not been discovered yet — which is exactly the *first* tool call,
-      // since `PreToolUse` can precede the transcript's first flush.
+      // The usual join, and then the one that covers a session no row names yet
+      // — the *first* tool call, since `PreToolUse` can precede the transcript's
+      // first flush, and equally the first after a `/resume` moved the agent to
+      // a session id nothing has recorded. `bindProviderSession` asks the panes
+      // themselves; the payload's `cwd` is deliberately not consulted, because
+      // two tether sessions in one directory report an identical one.
       const session =
         getSessionByProviderSessionId(db, providerSessionId) ??
-        (typeof cwd === 'string'
-          ? await adopt(db, conversations, cwd, providerSessionId)
-          : undefined);
+        (await conversations.bindProviderSession(providerSessionId));
       // A hook for a session tether does not know is not an error. Claude Code
       // is commonly run by hand in a directory tether once managed, and the shim
       // stays installed in that project afterwards.
