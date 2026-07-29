@@ -366,14 +366,14 @@ test('a codex subscriber is told the state, and told again when it moves', async
   const leave = await h.conversations.subscribe(h.session, 0, client.send);
   t.after(leave);
 
-  await client.waitFor(1);
-  assert.deepEqual(client.frames[0], { c: 'state', state: 'idle' }, 'on arrival, unnumbered');
+  await client.waitForOther(client.states, 1);
+  assert.deepEqual(client.states[0], { c: 'state', state: 'idle' }, 'on arrival, unnumbered');
 
   // busy and idle come out of the rollout, which is there whether or not the
   // user accepted the hook.
   await appendFile(h.rollout, rolloutLine({ type: 'task_started', turn_id: 't1' }));
-  await client.waitFor(2);
-  assert.deepEqual(client.frames[1], { c: 'state', state: 'busy' });
+  await client.waitForOther(client.states, 2);
+  assert.deepEqual(client.states[1], { c: 'state', state: 'busy' });
 
   // `waiting` is the one thing that needs the hook, and it arrives on the same
   // channel without ever taking a `seq`.
@@ -389,12 +389,12 @@ test('a codex subscriber is told the state, and told again when it moves', async
       ppid: 1,
     })}\n`,
   );
-  await client.waitFor(3);
-  assert.deepEqual(client.frames[2], { c: 'state', state: 'waiting', detail: 'Bash' });
+  await client.waitForOther(client.states, 3);
+  assert.deepEqual(client.states[2], { c: 'state', state: 'waiting', detail: 'Bash' });
 
   await appendFile(h.rollout, rolloutLine({ type: 'user_message', message: 'go on' }));
-  await client.waitFor(4);
-  const conv = client.frames[3];
+  await client.waitFor(1);
+  const conv = client.frames[0];
   assert.ok(conv?.c === 'conv' && conv.e.kind === 'user');
   assert.deepEqual(seqs(client.frames), [1], 'three state frames took no sequence numbers');
 });
@@ -414,9 +414,9 @@ test('a codex session with no hook log at all still works, and says nothing abou
   const leave = await conversations.subscribe(h.session, 0, client.send);
   t.after(leave);
   await appendFile(h.rollout, rolloutLine({ type: 'task_started', turn_id: 't1' }));
-  await client.waitFor(2);
+  await client.waitForOther(client.states, 2);
 
-  assert.deepEqual(client.frames[1], { c: 'state', state: 'busy' }, 'busy without any hook');
+  assert.deepEqual(client.states[1], { c: 'state', state: 'busy' }, 'busy without any hook');
   // Declining is a supported configuration, not an error state: nothing warns,
   // nothing retries, and there is nothing for the user to be nagged about.
   assert.deepEqual(warnings, []);

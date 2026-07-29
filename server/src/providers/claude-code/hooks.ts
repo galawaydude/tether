@@ -183,7 +183,10 @@ async function readSettings(path: string): Promise<SettingsFile> {
       }
       for (const group of groups) {
         if (!isObject(group) || !Array.isArray(group['hooks'])) {
-          throw new SettingsFileError(path, `an entry under \`hooks.${event}\` is not the expected shape`);
+          throw new SettingsFileError(
+            path,
+            `an entry under \`hooks.${event}\` is not the expected shape`,
+          );
         }
       }
     }
