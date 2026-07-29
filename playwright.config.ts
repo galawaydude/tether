@@ -21,6 +21,15 @@ import { join } from 'node:path';
 const dir = join(realpathSync(tmpdir()), 'tether-e2e');
 const port = '8788';
 
+/**
+ * How long tether holds a proposed tool call, in seconds — short enough that
+ * `permission.spec.ts` can watch one expire without a slow test, long enough
+ * that a tap in the two specs above it is never racing this on a loaded CI box.
+ * The spec reads it too, so the wait and the setting cannot drift apart.
+ */
+const holdSeconds = '15';
+process.env['TETHER_E2E_HOLD_SECONDS'] = holdSeconds;
+
 // Read by both halves: `e2e/serve.ts` sets the password, and the spec logs in
 // with it. This config is evaluated in the runner and in every worker, so the
 // environment is what carries these to the spec.
@@ -59,6 +68,7 @@ export default defineConfig({
       TETHER_STATE_DIR: join(dir, 'state'),
       TETHER_ALLOWED_ROOTS: dir,
       TETHER_TMUX_SOCKET: 'tether-e2e',
+      TETHER_PERMISSION_TIMEOUT: holdSeconds,
       PATH: `${join(dir, 'bin')}:${process.env['PATH'] ?? ''}`,
     },
   },

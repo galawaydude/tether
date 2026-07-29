@@ -26,11 +26,19 @@
  * before any of this, so they cover this route too — a cross-origin page's POST
  * is refused there and never reaches the secret comparison.
  *
- * The reply is always empty. On `PreToolUse` a hook's **stdout** is how it
- * allows or denies the tool call; answering the prompt is PR #14's, so until
- * then tether says nothing that could be mistaken for a decision. The shim does
- * not read the body at all — this is belt and braces on the side that would be
- * dangerous to get wrong later.
+ * The reply is empty except for one case: a `PreToolUse` tether decided to hold,
+ * where the request stays open until the user taps Approve or Deny in the
+ * conversation view and the answer comes back as `{"decision":"allow"|"deny"}`.
+ * On `PreToolUse` a hook's **stdout** is how it allows or denies a tool call, so
+ * an empty reply is not a neutral default that happens to be safe — it is the
+ * deliberate statement "tether has nothing to say about this call", which leaves
+ * the provider's own permission rules in charge.
+ *
+ * Note what authorises that decision, because it is not this route. The secret
+ * authenticates the *hook*; what authenticates the *answer* is the session
+ * cookie on `POST /api/sessions/:id/permission`, which is default-denied like
+ * every other route. A caller holding only the hook secret can propose a tool
+ * call to tether and can wait for it, but cannot approve one.
  */
 
 import { timingSafeEqual } from 'node:crypto';
@@ -141,8 +149,13 @@ export function registerHookRoute(
       // stays installed in that project afterwards.
       if (session === undefined) return reply.code(204).send();
 
-      conversations.hook(session, payload);
-      return reply.code(204).send();
+      // This is where the agent's turn waits. `hook` resolves as soon as the
+      // user taps, and otherwise when its own hold expires — never later, so
+      // the shim's abort and Claude Code's `timeout` stay nets rather than
+      // mechanisms (`providers/claude-code/hooks.ts`).
+      const decision = await conversations.hook(session, payload);
+      if (decision === undefined) return reply.code(204).send();
+      return reply.code(200).send({ decision });
     },
   );
 }

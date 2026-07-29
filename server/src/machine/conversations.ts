@@ -13,13 +13,21 @@
  * is number 12 without either persisting anything.
  */
 
-import type { ConversationEvent, ServerFrame, SessionState, ToolCallEvent } from '@tether/shared';
+import type {
+  ConversationEvent,
+  PermissionDecision,
+  PermissionOutcome,
+  ServerFrame,
+  SessionState,
+  ToolCallEvent,
+} from '@tether/shared';
 import { mkdir, open, readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { stateDir as defaultStateDir } from '../db.ts';
 import { mapHook, mapLines as mapClaudeLines } from '../providers/claude-code/events.ts';
+import { permissionTimeoutMs } from '../providers/claude-code/hooks.ts';
 import { readSessionId, readSessionStatus } from '../providers/claude-code/status.ts';
 import { findTranscript, type StartMemo } from '../providers/claude-code/transcript.ts';
 import { mapLines as mapCodexLines } from '../providers/codex/events.ts';
@@ -83,6 +91,8 @@ export type ConversationsOptions = {
   warn?: (message: string) => void;
   /** How often Claude Code's status file is re-read; 0 turns the poller off. */
   statusPollMs?: number;
+  /** Overrides `TETHER_PERMISSION_TIMEOUT`; 0 stops tether holding at all. */
+  permissionTimeoutMs?: number;
 };
 
 /**
@@ -176,6 +186,28 @@ type Live = {
   stopped: boolean;
 };
 
+/**
+ * A tool call the provider has proposed, and — while tether is holding the
+ * agent's own hook on it — the request that is blocked waiting for an answer.
+ *
+ * `hold` is what makes the difference between reporting a permission prompt and
+ * being the place it is answered. It is present only for the calls tether will
+ * actually resolve, which is deliberately not all of them: see `NEVER_HELD` and
+ * `#holdFor` for why holding everything would make an agent with a phone open
+ * crawl.
+ */
+type Proposal = {
+  at: number;
+  e: ToolCallEvent;
+  hold?:
+    | {
+        deadline: number;
+        /** Idempotent: the first of the timer, a tap, or a shutdown wins. */
+        settle: (outcome: PermissionOutcome) => void;
+      }
+    | undefined;
+};
+
 export class Conversations {
   readonly #db: DatabaseSync;
   readonly #options: ConversationsOptions;
@@ -188,7 +220,7 @@ export class Conversations {
    * restarted server has no proposals, which is honest, since the prompt it
    * would be describing is one the agent is still holding on screen.
    */
-  readonly #pending = new Map<string, Map<string, { at: number; e: ToolCallEvent }>>();
+  readonly #pending = new Map<string, Map<string, Proposal>>();
 
   constructor(db: DatabaseSync, options: ConversationsOptions = {}) {
     this.#db = db;
@@ -344,8 +376,16 @@ export class Conversations {
       ...(live.detail === undefined ? {} : { detail: live.detail }),
     });
     // After the replay, so a card the client is about to build from the
-    // transcript is already there when its proposal arrives to be ignored.
-    for (const e of this.#pendingFor(session.id, live)) send({ c: 'pending', e });
+    // transcript is already there when its proposal arrives to be ignored. The
+    // deadline travels with it: a phone that reconnected mid-hold gets the
+    // buttons back, which is exactly the case a screen-lock produces.
+    for (const entry of this.#pendingFor(session.id, live)) {
+      send({
+        c: 'pending',
+        e: entry.e,
+        ...(entry.hold === undefined ? {} : { deadline: entry.hold.deadline }),
+      });
+    }
 
     live.subscribers.add(send);
     let released = false;
@@ -368,42 +408,128 @@ export class Conversations {
    * match (report §4). `PreToolUse` is the tool card during a permission prompt;
    * `Notification` is the *waiting for you* state.
    *
-   * Never throws and never rejects a payload it does not recognise: this is
-   * called from an HTTP route that the agent's own turn is blocked on.
+   * Resolves to a decision only when tether held the agent on this call and the
+   * user answered it. Everything else — an unrecognised payload, a call tether
+   * does not hold, a hold nobody answered — resolves to `undefined`, which the
+   * route turns into a hook that says nothing and so leaves the question to the
+   * provider's own permission rules.
+   *
+   * Never throws and never rejects: this is called from an HTTP route that the
+   * agent's own turn is blocked on.
    */
-  hook(session: Session, payload: unknown): void {
+  async hook(session: Session, payload: unknown): Promise<PermissionDecision | undefined> {
     const signal = mapHook(payload, (message) => this.#warn(message));
-    if (signal === undefined) return;
+    if (signal === undefined) return undefined;
     const live = this.#live.get(session.id);
 
     if (signal.signal === 'waiting') {
-      if (live === undefined) return;
+      if (live === undefined) return undefined;
       this.#setState(live, 'waiting', signal.detail);
-      return;
+      return undefined;
     }
 
     // The transcript can win this race — measured at ~150ms behind the hook on
     // Claude Code 2.1.220, but nothing guarantees the order — and a proposal for
     // a call that is already a real event is not a proposal.
-    if (live?.seen.has(signal.e.callId) === true) return;
-    const calls = this.#pending.get(session.id) ?? new Map();
+    if (live?.seen.has(signal.e.callId) === true) return undefined;
+    const calls = this.#pending.get(session.id) ?? new Map<string, Proposal>();
     this.#pending.set(session.id, calls);
-    calls.set(signal.e.callId, { at: Date.now(), e: signal.e });
-    while (calls.size > MAX_PENDING) calls.delete(calls.keys().next().value!);
-    if (live !== undefined) {
-      for (const send of live.subscribers) send({ c: 'pending', e: signal.e });
+    const entry: Proposal = { at: Date.now(), e: signal.e };
+    calls.set(signal.e.callId, entry);
+    while (calls.size > MAX_PENDING) {
+      const oldest = calls.keys().next().value!;
+      // Releasing it as it goes, or the agent waits on a card no longer shown.
+      calls.get(oldest)?.hold?.settle('timeout');
+      calls.delete(oldest);
     }
+
+    const holdMs = this.#holdFor(signal.holdable, live);
+    if (holdMs === 0) {
+      // No `deadline`, so the card offers no buttons: tether is reporting this
+      // call, not answering it.
+      this.#send(live, { c: 'pending', e: signal.e });
+      return undefined;
+    }
+
+    const deadline = Date.now() + holdMs;
+    const outcome = await new Promise<PermissionOutcome>((resolve) => {
+      const timer = setTimeout(() => entry.hold?.settle('timeout'), holdMs);
+      timer.unref();
+      entry.hold = {
+        deadline,
+        settle: (result) => {
+          if (entry.hold === undefined) return;
+          entry.hold = undefined;
+          clearTimeout(timer);
+          this.#send(this.#live.get(session.id), {
+            c: 'answer',
+            callId: signal.e.callId,
+            outcome: result,
+          });
+          resolve(result);
+        },
+      };
+      this.#send(live, { c: 'pending', e: signal.e, deadline });
+    });
+    // A hold nobody answered is not a denial. Saying nothing hands the question
+    // back to the provider's own prompt, which is where it would have been.
+    return outcome === 'timeout' ? undefined : outcome;
+  }
+
+  /**
+   * Answer a held proposal. `false` means there was nothing to answer — the
+   * call is unknown, was never held, or has already been settled by the timer
+   * or by somebody else's tap.
+   *
+   * That last case is the whole of the reconciliation with the terminal, and it
+   * is why the settle is single-shot: two viewers tapping opposite answers, or a
+   * tap that lands just after the hold expired, produce one decision and one
+   * refusal — never a second answer aimed at a prompt that has moved on.
+   */
+  answer(sessionId: string, callId: string, decision: PermissionDecision): boolean {
+    const hold = this.#pending.get(sessionId)?.get(callId)?.hold;
+    if (hold === undefined) return false;
+    hold.settle(decision);
+    return true;
+  }
+
+  /**
+   * How long to hold this proposal, or 0 for "do not".
+   *
+   * Two conditions, and each removes a different way holding would be a cost
+   * with no benefit:
+   *
+   * - **Somebody is subscribed.** With no viewer there is nobody who could tap,
+   *   so a hold is pure latency — a background session, or one being driven from
+   *   the terminal, never pauses for tether at all.
+   * - **The tool is holdable.** `PreToolUse` fires for every call and says
+   *   nothing about whether Claude Code was going to prompt (verified: see
+   *   `NEVER_HELD`), so the read-only burst tools are skipped by name. Without
+   *   this an agent reading twenty files with a phone open would stall twenty
+   *   times over.
+   */
+  #holdFor(holdable: boolean, live: Live | undefined): number {
+    if (!holdable || live === undefined || live.subscribers.size === 0) return 0;
+    return Math.max(0, this.#options.permissionTimeoutMs ?? permissionTimeoutMs());
+  }
+
+  #send(live: Live | undefined, frame: ServerFrame): void {
+    if (live === undefined) return;
+    for (const send of live.subscribers) send(frame);
   }
 
   /** Live proposals for a session: not yet in the transcript, not yet stale. */
-  #pendingFor(id: string, live: Live): ToolCallEvent[] {
+  #pendingFor(id: string, live: Live): Proposal[] {
     const calls = this.#pending.get(id);
     if (calls === undefined) return [];
     const floor = Date.now() - PENDING_TTL_MS;
-    const fresh: ToolCallEvent[] = [];
+    const fresh: Proposal[] = [];
     for (const [callId, entry] of calls) {
-      if (entry.at < floor || live.seen.has(callId)) calls.delete(callId);
-      else fresh.push(entry.e);
+      // A held call is never stale and never superseded — the agent is blocked
+      // on it — so the two retirement rules below cannot reach one.
+      if (entry.hold === undefined && (entry.at < floor || live.seen.has(callId))) {
+        calls.delete(callId);
+      } else fresh.push(entry);
     }
     if (calls.size === 0) this.#pending.delete(id);
     return fresh;
@@ -567,6 +693,10 @@ export class Conversations {
     const live = this.#live.get(id);
     if (live === undefined) return;
     this.#live.delete(id);
+    // The last viewer has gone — or the server is stopping — so nobody can tap
+    // and the agent must not keep waiting for one. Released rather than denied:
+    // the provider's own prompt takes the question back.
+    for (const entry of this.#pending.get(id)?.values() ?? []) entry.hold?.settle('timeout');
     live.stopped = true;
     if (live.retry !== undefined) clearTimeout(live.retry);
     if (live.statusPoll !== undefined) clearInterval(live.statusPoll);

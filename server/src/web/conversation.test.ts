@@ -14,7 +14,7 @@ import { DatabaseSync } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 
 import { Conversations } from '../machine/conversations.ts';
-import { applyRegistrySchema, createSession } from '../machine/registry.ts';
+import { applyRegistrySchema, createSession, getSession } from '../machine/registry.ts';
 import { createTerminals } from '../machine/terminal.ts';
 import { projectDir } from '../providers/claude-code/transcript.ts';
 import { createAuthStore } from './auth.ts';
@@ -64,13 +64,19 @@ async function harness(t: TestContext) {
   const auth = createAuthStore(db);
   await auth.setPassword(PASSWORD);
 
+  const conversations = new Conversations(db, {
+    home,
+    pollMs: 15,
+    // No status poller: it would shell out to the real tmux on the default socket.
+    statusPollMs: 0,
+    permissionTimeoutMs: 60_000,
+  });
   const app = buildServer({
     auth,
     db,
     // Never attached to here; `app.close()` takes it down either way.
     terminals: createTerminals(`tether-test-${ID.slice(0, 8)}`),
-    // No status poller: it would shell out to the real tmux on the default socket.
-    conversations: new Conversations(db, { home, pollMs: 15, statusPollMs: 0 }),
+    conversations,
     allowedHosts: defaultAllowedHosts('127.0.0.1'),
     loginDelayMs: 0,
   });
@@ -95,7 +101,19 @@ async function harness(t: TestContext) {
       headers: { host, ...(cookie ? { cookie: `${SESSION_COOKIE}=${token}` } : {}) },
     });
 
-  return { app, host, token, transcript, get };
+  const post = (url: string, payload: unknown, cookie = true) =>
+    app.inject({
+      method: 'POST',
+      url,
+      headers: {
+        host,
+        origin: `http://${host}`,
+        ...(cookie ? { cookie: `${SESSION_COOKIE}=${token}` } : {}),
+      },
+      payload: payload as object,
+    });
+
+  return { app, host, token, transcript, get, post, conversations, db };
 }
 
 test('the history route is behind the same default-deny hook as everything else', async (t) => {
@@ -197,4 +215,106 @@ test('an unauthenticated conv socket never upgrades', async (t) => {
     socket.addEventListener('open', () => resolve(false));
   });
   assert.ok(failed, 'the default-deny hook covers the upgrade');
+});
+
+/**
+ * Answering a permission prompt over HTTP.
+ *
+ * The posture is the point: an unauthenticated approve is an unauthenticated
+ * tool execution on the machine, so this route is behind exactly the same
+ * default-deny hook as the rest of the API and is not special-cased anywhere.
+ */
+const CALL_ID = 'toolu_012hUcdAk6Z4RcnbNgrC7PH4';
+
+function preToolUse(callId = CALL_ID): Record<string, unknown> {
+  return {
+    hook_event_name: 'PreToolUse',
+    session_id: PROVIDER_SESSION,
+    tool_name: 'Bash',
+    tool_use_id: callId,
+    tool_input: { command: 'rm -rf ./build' },
+  };
+}
+
+/** A held proposal, with a live socket so that there is somebody to hold for. */
+async function holding(t: TestContext, h: Awaited<ReturnType<typeof harness>>) {
+  await writeFile(h.transcript, userRecord(1));
+  const client = await connect(t, h, 0);
+  await client.waitFor(1);
+  // Wrapped, not returned: `return somePromise` from an async function awaits
+  // it, and the whole point here is that the hook is still hanging.
+  return { decision: h.conversations.hook(getSession(h.db, ID)!, preToolUse()) };
+}
+
+test('an unauthenticated caller cannot approve a tool call', async (t) => {
+  const h = await harness(t);
+  const response = await h.post(
+    `/api/sessions/${ID}/permission`,
+    { callId: CALL_ID, decision: 'allow' },
+    false,
+  );
+  assert.equal(response.statusCode, 401);
+});
+
+test('the answer route rejects everything that is not one of the two answers', async (t) => {
+  const h = await harness(t);
+  for (const body of [
+    { callId: CALL_ID },
+    { decision: 'allow' },
+    { callId: CALL_ID, decision: 'yes' },
+    { callId: CALL_ID, decision: 'allow', andAlso: 'run this' },
+    { callId: '', decision: 'allow' },
+  ]) {
+    assert.equal((await h.post(`/api/sessions/${ID}/permission`, body)).statusCode, 400);
+  }
+  assert.equal(
+    (
+      await h.post('/api/sessions/00000000-0000-4000-8000-000000000000/permission', {
+        callId: CALL_ID,
+        decision: 'allow',
+      })
+    ).statusCode,
+    404,
+  );
+});
+
+test('an approve reaches the held hook, and a second answer is refused', async (t) => {
+  const h = await harness(t);
+  const { decision } = await holding(t, h);
+
+  const first = await h.post(`/api/sessions/${ID}/permission`, {
+    callId: CALL_ID,
+    decision: 'allow',
+  });
+  assert.equal(first.statusCode, 204);
+  assert.equal(await decision, 'allow');
+
+  // The reflex second tap, or a second phone. One hold, one settle: this must
+  // never become a second answer aimed at whatever the agent is doing now.
+  const second = await h.post(`/api/sessions/${ID}/permission`, {
+    callId: CALL_ID,
+    decision: 'deny',
+  });
+  assert.equal(second.statusCode, 409);
+  assert.equal((second.json() as { error: string }).error, 'not_awaiting_answer');
+});
+
+test('a deny reaches the held hook as a deny', async (t) => {
+  const h = await harness(t);
+  const { decision } = await holding(t, h);
+  assert.equal(
+    (await h.post(`/api/sessions/${ID}/permission`, { callId: CALL_ID, decision: 'deny' }))
+      .statusCode,
+    204,
+  );
+  assert.equal(await decision, 'deny');
+});
+
+test('an answer for a call nothing is waiting on is a 409, not a decision', async (t) => {
+  const h = await harness(t);
+  const response = await h.post(`/api/sessions/${ID}/permission`, {
+    callId: 'toolu_never_proposed',
+    decision: 'allow',
+  });
+  assert.equal(response.statusCode, 409);
 });

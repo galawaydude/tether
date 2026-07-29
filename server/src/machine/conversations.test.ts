@@ -46,7 +46,7 @@ function userRecord(n: number): string {
   })}\n`;
 }
 
-async function harness(t: TestContext) {
+async function harness(t: TestContext, options: { permissionTimeoutMs?: number } = {}) {
   const home = await realpath(await mkdtemp(join(tmpdir(), 'tether-conv-')));
   t.after(() => rm(home, { recursive: true, force: true }));
   const cwd = join(home, 'work');
@@ -74,6 +74,7 @@ async function harness(t: TestContext) {
     // socket. The registry file's own mapping is `status.test.ts`.
     statusPollMs: 0,
     warn: (message) => warnings.push(message),
+    ...options,
   });
   t.after(() => conversations.closeAll());
 
@@ -92,9 +93,11 @@ function sink() {
   const frames: ServerFrame[] = [];
   const states: Extract<ServerFrame, { c: 'state' }>[] = [];
   const pendings: Extract<ServerFrame, { c: 'pending' }>[] = [];
+  const answers: Extract<ServerFrame, { c: 'answer' }>[] = [];
   const send = (frame: ServerFrame) => {
     if (frame.c === 'state') states.push(frame);
     else if (frame.c === 'pending') pendings.push(frame);
+    else if (frame.c === 'answer') answers.push(frame);
     else frames.push(frame);
   };
   const waitFor = async (count: number) => {
@@ -110,7 +113,7 @@ function sink() {
     }
     assert.equal(list.length, count, `expected ${count}, got ${JSON.stringify(list)}`);
   };
-  return { frames, states, pendings, send, waitFor, waitForOther };
+  return { frames, states, pendings, answers, send, waitFor, waitForOther };
 }
 
 function seqs(frames: readonly ServerFrame[]): number[] {
@@ -532,6 +535,136 @@ test('a proposal for a call the transcript already carries is never sent', async
   h.conversations.hook(h.session, preToolUse());
   await new Promise((resolve) => setTimeout(resolve, POLL * 2));
   assert.deepEqual(client.pendings, []);
+});
+
+/**
+ * Holding the agent, which is what turns tether from an observer of a permission
+ * prompt into a participant in it.
+ *
+ * The contract, in one sentence per test below: a call is held only when someone
+ * could answer it and the tool is worth stopping for; the first answer wins and
+ * there is never a second; and every way of not answering — the timer, the last
+ * viewer leaving, the server stopping — releases the agent to its *own*
+ * permission rules rather than denying anything on the user's behalf.
+ */
+async function held(t: TestContext, options: { permissionTimeoutMs?: number } = {}) {
+  const h = await harness(t, options);
+  await writeFile(h.transcript, userRecord(1));
+  const client = sink();
+  const leave = await h.conversations.subscribe(h.session, 0, client.send);
+  await client.waitFor(1);
+  return { ...h, client, leave };
+}
+
+test('a held call blocks the agent until the user taps, and Approve is the answer', async (t) => {
+  const h = await held(t);
+  const decision = h.conversations.hook(h.session, preToolUse());
+
+  await h.client.waitForOther(h.client.pendings, 1);
+  const deadline = h.client.pendings[0]?.deadline;
+  assert.ok(deadline !== undefined, 'a held card carries the deadline that puts buttons on it');
+  assert.ok(deadline > Date.now(), 'and it is in the future');
+  // Still blocked: nothing has been answered, so the agent is waiting.
+  assert.deepEqual(h.client.answers, []);
+
+  assert.equal(h.conversations.answer(h.session.id, CALL_ID, 'allow'), true);
+  assert.equal(await decision, 'allow');
+  await h.client.waitForOther(h.client.answers, 1);
+  assert.deepEqual(h.client.answers[0], { c: 'answer', callId: CALL_ID, outcome: 'allow' });
+});
+
+test('Deny is the answer too, and it is the hook that carries it back', async (t) => {
+  const h = await held(t);
+  const decision = h.conversations.hook(h.session, preToolUse());
+  await h.client.waitForOther(h.client.pendings, 1);
+
+  h.conversations.answer(h.session.id, CALL_ID, 'deny');
+  assert.equal(await decision, 'deny');
+  assert.equal(h.client.answers[0]?.outcome, 'deny');
+});
+
+test('a hold nobody answers hands the question back — it never denies for them', async (t) => {
+  const h = await held(t, { permissionTimeoutMs: 60 });
+  // `undefined` is the whole policy: the hook says nothing, so Claude Code's own
+  // permission rules decide, which is where the question started.
+  assert.equal(await h.conversations.hook(h.session, preToolUse()), undefined);
+  await h.client.waitForOther(h.client.answers, 1);
+  assert.equal(h.client.answers[0]?.outcome, 'timeout');
+});
+
+test('a read-only tool is reported and never held, so a burst of them does not stall', async (t) => {
+  const h = await held(t);
+  const before = Date.now();
+  const decision = await h.conversations.hook(h.session, {
+    ...preToolUse(),
+    tool_name: 'Read',
+    tool_input: { file_path: '/tmp/note.txt' },
+  });
+
+  assert.equal(decision, undefined);
+  assert.ok(Date.now() - before < 1000, 'it returned at once rather than waiting out the hold');
+  await h.client.waitForOther(h.client.pendings, 1);
+  // The card is still there — that is PR #10's whole point — but with no
+  // deadline, so it offers no button tether could not honour.
+  assert.equal(h.client.pendings[0]?.deadline, undefined);
+});
+
+test('nothing is held with nobody watching: a background session never pauses', async (t) => {
+  const h = await harness(t);
+  await writeFile(h.transcript, userRecord(1));
+  const before = Date.now();
+  assert.equal(await h.conversations.hook(h.session, preToolUse()), undefined);
+  assert.ok(Date.now() - before < 1000);
+});
+
+test('a timeout of zero turns holding off entirely, and tether is an observer again', async (t) => {
+  const h = await held(t, { permissionTimeoutMs: 0 });
+  assert.equal(await h.conversations.hook(h.session, preToolUse()), undefined);
+  await h.client.waitForOther(h.client.pendings, 1);
+  assert.equal(h.client.pendings[0]?.deadline, undefined);
+});
+
+test('the first answer wins and there is never a second', async (t) => {
+  const h = await held(t);
+  const decision = h.conversations.hook(h.session, preToolUse());
+  await h.client.waitForOther(h.client.pendings, 1);
+
+  assert.equal(h.conversations.answer(h.session.id, CALL_ID, 'allow'), true);
+  // The reflex tap, the second viewer, the answer that raced the timer: all the
+  // same shape, and all refused rather than sent at a prompt that has moved on.
+  assert.equal(h.conversations.answer(h.session.id, CALL_ID, 'deny'), false);
+  assert.equal(h.conversations.answer(h.session.id, CALL_ID, 'allow'), false);
+  assert.equal(await decision, 'allow');
+  assert.equal(h.client.answers.length, 1);
+});
+
+test('an answer for a call that was never held is refused, not invented', async (t) => {
+  const h = await held(t);
+  assert.equal(h.conversations.answer(h.session.id, 'toolu_never_seen', 'allow'), false);
+});
+
+test('the last viewer leaving releases the agent rather than stranding it', async (t) => {
+  // A long hold, so that only the leaving can be what ends it.
+  const h = await held(t, { permissionTimeoutMs: 60_000 });
+  const decision = h.conversations.hook(h.session, preToolUse());
+  await h.client.waitForOther(h.client.pendings, 1);
+
+  h.leave();
+  assert.equal(await decision, undefined, 'the phone went away, so the terminal has the question');
+});
+
+test('a reconnect mid-hold gets the buttons back, deadline and all', async (t) => {
+  const h = await held(t, { permissionTimeoutMs: 60_000 });
+  void h.conversations.hook(h.session, preToolUse());
+  await h.client.waitForOther(h.client.pendings, 1);
+  const deadline = h.client.pendings[0]?.deadline;
+
+  // The same phone after a screen lock: a second subscriber on the same live
+  // session, which is what a reconnect is.
+  const again = sink();
+  await h.conversations.subscribe(h.session, 1, again.send);
+  await again.waitForOther(again.pendings, 1);
+  assert.equal(again.pendings[0]?.deadline, deadline, 'the same deadline, not a fresh one');
 });
 
 test('Notification flips the session to waiting, and says what for', async (t) => {

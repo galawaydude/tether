@@ -17,8 +17,9 @@
 import type { ServerFrame, SessionState } from '@tether/shared';
 import { useEffect, useRef, useState } from 'preact/hooks';
 
-import { convSocketUrl, fetchConversation } from './api.ts';
+import { answerPermission, ApiError, convSocketUrl, fetchConversation } from './api.ts';
 import {
+  addAnswer,
   addEcho,
   addEvents,
   addPending,
@@ -26,6 +27,8 @@ import {
   noRows,
   rebuild,
   sendBlocked,
+  toolResult,
+  toolState,
   type Row,
   type Rows,
   type ToolRow,
@@ -148,9 +151,14 @@ export function ConversationView({
         }
         if (frame.c === 'pending') {
           // No `since` move: a proposal is not a transcript event and has no
-          // position in the `seq` stream. `addPending` is a no-op if the record
-          // already arrived, which is how the two orderings both come out right.
-          setState((current) => addPending(current, frame.e));
+          // position in the `seq` stream. `addPending` only moves the buttons if
+          // the record already arrived, which is how the two orderings both come
+          // out right.
+          setState((current) => addPending(current, frame.e, frame.deadline));
+          return;
+        }
+        if (frame.c === 'answer') {
+          setState((current) => addAnswer(current, frame.callId, frame.outcome));
           return;
         }
         if (frame.c !== 'conv') return;
@@ -224,7 +232,7 @@ export function ConversationView({
           <p class="muted">Nothing yet. The terminal tab shows the session as it starts.</p>
         )}
         {state.rows.map((row) => (
-          <RowView key={row.key} row={row} provider={provider} />
+          <RowView key={row.key} row={row} provider={provider} sessionId={sessionId} />
         ))}
         {/* Keyed by position: an echo is retired from the front, so the key of
             everything behind it shifts by one and Preact re-renders text into
@@ -342,7 +350,7 @@ function parse(data: unknown): ServerFrame | undefined {
   }
 }
 
-function RowView({ row, provider }: { row: Row; provider: string }) {
+function RowView({ row, provider, sessionId }: { row: Row; provider: string; sessionId: string }) {
   switch (row.row) {
     case 'message':
       return (
@@ -365,7 +373,7 @@ function RowView({ row, provider }: { row: Row; provider: string }) {
     case 'note':
       return <p class="note">{row.text}</p>;
     case 'tool':
-      return <ToolCard row={row} />;
+      return <ToolCard row={row} sessionId={sessionId} />;
   }
 }
 
@@ -374,16 +382,26 @@ function RowView({ row, provider }: { row: Row; provider: string }) {
  * own default, and the disclosure keyboard behaviour and screen-reader
  * announcement come with it. An agent session is mostly tool calls — a card that
  * opened itself would bury the conversation under file contents on a phone.
+ *
+ * One exception, and it is the whole point of this PR: a card the agent is
+ * *blocked* on opens itself. Approving what a collapsed card shows — a tool name
+ * and one clipped line — is approving blind, which the captain's decision names
+ * as worse than the terminal. Open, the card is the command, the path, the diff:
+ * enough to decide on a phone.
  */
-function ToolCard({ row }: { row: ToolRow }) {
+function ToolCard({ row, sessionId }: { row: ToolRow; sessionId: string }) {
+  const answerable = row.answerable;
   return (
-    <details class={`tool${row.failed ? ' tool-failed' : ''}${row.pending ? ' tool-pending' : ''}`}>
+    <details
+      class={`tool${row.failed ? ' tool-failed' : ''}${row.pending ? ' tool-pending' : ''}${
+        answerable === null ? '' : ' tool-answerable'
+      }`}
+      open={answerable !== null}
+    >
       <summary>
         <span class="tool-name">{row.tool}</span>
         <span class="tool-summary">{row.summary}</span>
-        <span class="tool-state">
-          {row.pending ? 'asking' : row.result === null ? '…' : row.failed ? 'error' : '✓'}
-        </span>
+        <span class="tool-state">{toolState(row)}</span>
       </summary>
       {row.input !== undefined && (
         <>
@@ -392,15 +410,85 @@ function ToolCard({ row }: { row: ToolRow }) {
         </>
       )}
       <h4 class="tool-label">Result</h4>
-      {/* Not a decision this file makes: `pending` means the agent has proposed
-          the call and is holding for an answer in the terminal. PR #14 puts the
-          answer here; until then the sentence says where it is. */}
-      <pre class="tool-body">
-        {row.result ??
-          (row.pending ? 'Waiting for you to answer in the terminal.' : 'Still running.')}
-      </pre>
+      <pre class="tool-body">{toolResult(row)}</pre>
+      {answerable !== null && (
+        <Answer sessionId={sessionId} callId={answerable.callId} deadline={answerable.deadline} />
+      )}
     </details>
   );
+}
+
+/**
+ * Approve and Deny, plus how long tether will keep holding.
+ *
+ * The countdown is not decoration. Tapping nothing is a real outcome with a real
+ * consequence — the question goes back to the agent's own prompt in the terminal
+ * — and a user who cannot see it coming would read the buttons vanishing as a
+ * bug. It counts against the server's own deadline rather than a local timer, so
+ * a phone that was asleep resumes with the truth.
+ *
+ * Both buttons disable on the first tap. The server refuses a second answer
+ * anyway (one hold, one settle), but a button that still looks tappable after it
+ * has been tapped is how a user ends up believing they denied something they
+ * approved.
+ */
+function Answer({
+  sessionId,
+  callId,
+  deadline,
+}: {
+  sessionId: string;
+  callId: string;
+  deadline: number;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [left, setLeft] = useState(() => remaining(deadline));
+
+  useEffect(() => {
+    const timer = setInterval(() => setLeft(remaining(deadline)), 1000);
+    return () => clearInterval(timer);
+  }, [deadline]);
+
+  const answer = async (decision: 'allow' | 'deny') => {
+    setBusy(true);
+    setError(null);
+    try {
+      await answerPermission(sessionId, callId, decision);
+      // No optimistic update: the `answer` frame is what clears the buttons, and
+      // it is the same frame every other viewer gets. One source, one truth.
+    } catch (failure) {
+      setBusy(false);
+      setError(failure instanceof ApiError ? failure.message : 'Could not send that answer.');
+    }
+  };
+
+  return (
+    <div class="tool-answer">
+      {error !== null && (
+        <p class="error" role="alert">
+          {error}
+        </p>
+      )}
+      <div class="tool-answer-buttons">
+        <button type="button" class="ghost danger" disabled={busy} onClick={() => answer('deny')}>
+          Deny
+        </button>
+        <button type="button" class="primary" disabled={busy} onClick={() => answer('allow')}>
+          Approve
+        </button>
+      </div>
+      <p class="muted tool-answer-note" role="status">
+        {left > 0
+          ? `${left}s left, then Claude Code asks in the terminal instead.`
+          : 'Handing back to the terminal…'}
+      </p>
+    </div>
+  );
+}
+
+function remaining(deadline: number): number {
+  return Math.max(0, Math.round((deadline - Date.now()) / 1000));
 }
 
 /** A single string input reads better raw than as a JSON-quoted one-liner. */

@@ -241,10 +241,51 @@ export function mapRecord(record: unknown, warn: Warn = () => {}): Mapped {
  * lateness, never the session.
  */
 export type HookSignal =
-  /** A tool call proposed but not yet in the transcript. Superseded by `callId`. */
-  | { signal: 'pending'; e: ToolCallEvent }
+  /**
+   * A tool call proposed but not yet in the transcript. Superseded by `callId`.
+   *
+   * `holdable` is whether tether may block the agent on this one while it waits
+   * for the user to tap — see {@link NEVER_HELD}.
+   */
+  | { signal: 'pending'; e: ToolCallEvent; holdable: boolean }
   /** The agent has stopped and is waiting on the user. */
   | { signal: 'waiting'; detail?: string };
+
+/**
+ * Tools tether will never hold the agent on, whatever the user has open.
+ *
+ * `PreToolUse` fires for **every** tool call, and nothing in its payload says
+ * whether Claude Code was going to prompt about it — verified on 2.1.220: a
+ * `Read` the permission rules auto-allow produces exactly the same hook as a
+ * `Bash` that opens a dialog, and `~/.claude/sessions/<pid>.json` reads `busy`
+ * throughout either. So a hold applied to everything costs the timeout on every
+ * auto-allowed call, and an agent reading twenty files with a phone open would
+ * crawl. This list is the cheap half of the answer (the other half is that
+ * nothing is held with nobody watching): the tools that are read-only, fire in
+ * bursts, and are approved out of the box.
+ *
+ * Deliberately a *skip* list rather than a hold list. A tool tether has never
+ * heard of — an MCP server's, or one Claude Code ships next month — is held,
+ * because those are the ones that do prompt, and being late to a card costs a
+ * timeout while missing the buttons costs the whole feature.
+ *
+ * ponytail: a coarse filter, not Claude Code's permission engine, and it cannot
+ * be one — the rules live in the user's own settings and are the provider's to
+ * apply. `Read` outside an allowed root does prompt, and tether will not have
+ * held it; that answer is one tap away in the terminal, which is where it always
+ * was. Upgrade path if this ever matters: none worth taking, since re-deriving
+ * the engine is how tether would start disagreeing with the agent about what
+ * needs approving.
+ */
+export const NEVER_HELD = new Set([
+  'Read',
+  'Glob',
+  'Grep',
+  'TodoWrite',
+  'BashOutput',
+  'NotebookRead',
+  'WebSearch',
+]);
 
 export function mapHook(
   payload: unknown,
@@ -266,6 +307,7 @@ export function mapHook(
       }
       return {
         signal: 'pending',
+        holdable: !NEVER_HELD.has(tool),
         // `id` is not a transcript uuid and must not look like one: this event
         // never enters the `seq` stream, and the client keys it by `callId`.
         e: {

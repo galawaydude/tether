@@ -8,7 +8,7 @@
  * of information the server went to the trouble of sending.
  */
 
-import type { Session, SessionState } from '@tether/shared';
+import type { PermissionDecision, Session, SessionState } from '@tether/shared';
 
 import type { SeqEvent } from './conversation.ts';
 
@@ -46,6 +46,7 @@ const MESSAGES: Record<string, string> = {
   too_many_attempts: 'Too many attempts. This device is locked out for a while.',
   unauthorized: 'Your session has expired — log in again.',
   no_such_session: 'That session no longer exists.',
+  not_awaiting_answer: 'Already answered — the agent has moved on.',
   forbidden_host: 'This hostname is not in the server’s allowed list.',
   forbidden_origin: 'The server refused this origin.',
 };
@@ -133,6 +134,23 @@ export function killSession(id: string): Promise<{ session: Session }> {
  */
 export function fetchConversation(id: string): Promise<ConversationHistory> {
   return request(`/api/sessions/${id}/conversation`);
+}
+
+/**
+ * Answer a tool call the agent is blocked on. Authenticated by the same cookie
+ * as everything else — this is the one request in the product that causes a
+ * command to run on the user's machine, so it goes through the ordinary door.
+ *
+ * A `409` means the hold was already settled: the timer, another viewer, or a
+ * second tap. It is reported, never retried — a retry is how one tap becomes
+ * two answers.
+ */
+export function answerPermission(
+  id: string,
+  callId: string,
+  decision: PermissionDecision,
+): Promise<void> {
+  return request(`/api/sessions/${id}/permission`, json('POST', { callId, decision }));
 }
 
 export type ConversationHistory = {

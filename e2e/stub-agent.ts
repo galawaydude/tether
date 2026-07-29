@@ -29,14 +29,22 @@ const VERSION = '2.1.220';
 /** Printed once, and the line the reload assertion counts. */
 const GREETING = 'stub agent ready';
 
-/** Typed at the pane to act out a permission prompt, and then to answer it. */
-const ASK = 'ask to run something';
+/**
+ * Typed at the pane to act out a permission prompt, and then to answer it in
+ * the terminal. Three asks because there are three ways one ends: tether
+ * approves it, tether denies it, or tether does not answer in time and Claude
+ * Code's own prompt takes the question — which is the only path where `ANSWER`
+ * is ever typed.
+ */
+const ASKS = {
+  'ask to run something': { command: 'rm -rf ./build', callId: 'toolu_01StubPermissionPrompt' },
+  'ask to run the other thing': { command: 'rm -rf ./dist', callId: 'toolu_02StubPermissionDeny' },
+  'ask and wait it out': { command: 'rm -rf ./cache', callId: 'toolu_03StubPermissionTimeout' },
+} as const;
 const ANSWER = 'yes';
 
-/** What the acted-out prompt is asking for. One call, so one `tool_use_id`. */
+/** What the acted-out prompts are asking for. */
 const TOOL = 'Bash';
-const COMMAND = 'rm -rf ./build';
-const CALL_ID = 'toolu_01StubPermissionPrompt';
 
 const sessionId = randomUUID();
 
@@ -95,11 +103,19 @@ function publish(status: 'busy' | 'idle' | 'waiting'): void {
 /**
  * Run tether's hook the way Claude Code runs it: every `command` the project's
  * own `.claude/settings.local.json` lists for the event, through a shell, with
- * the payload on stdin. Nothing here knows where tether's shim, secret or
- * endpoint are — if the installer did not write that file, no hook fires, which
- * is also the real behaviour.
+ * the payload on stdin — and then **read its stdout**, which on `PreToolUse` is
+ * where a hook allows or denies the call. Nothing here knows where tether's
+ * shim, secret or endpoint are; if the installer did not write that file, no
+ * hook fires, which is also the real behaviour.
+ *
+ * The decision shape is copied from Claude Code's own documented one rather than
+ * imported from `server/`, by the same rule as the transcript records above: a
+ * stub that shared tether's idea of it would agree with a wrong one.
  */
-function fire(event: 'PreToolUse' | 'Notification', extra: Record<string, unknown>): void {
+function fire(
+  event: 'PreToolUse' | 'Notification',
+  extra: Record<string, unknown>,
+): 'allow' | 'deny' | undefined {
   const settings = JSON.parse(
     readFileSync(join(process.cwd(), '.claude', 'settings.local.json'), 'utf8'),
   ) as { hooks?: Record<string, { hooks: { command: string }[] }[]> };
@@ -110,11 +126,26 @@ function fire(event: 'PreToolUse' | 'Notification', extra: Record<string, unknow
     hook_event_name: event,
     ...extra,
   });
+  let decision: 'allow' | 'deny' | undefined;
   for (const group of settings.hooks?.[event] ?? []) {
     for (const handler of group.hooks) {
-      spawnSync('sh', ['-c', handler.command], { input: payload });
+      const { stdout } = spawnSync('sh', ['-c', handler.command], { input: payload });
+      for (const line of String(stdout ?? '').split('\n')) {
+        if (line.trim() === '') continue;
+        try {
+          const said = JSON.parse(line) as {
+            hookSpecificOutput?: { permissionDecision?: string };
+          };
+          const said_ = said.hookSpecificOutput?.permissionDecision;
+          if (said_ === 'allow' || said_ === 'deny') decision = said_;
+        } catch {
+          // A hook that writes something unparseable decides nothing, which is
+          // what Claude Code does with it too.
+        }
+      }
     }
   }
+  return decision;
 }
 
 record('assistant', GREETING);
@@ -127,43 +158,75 @@ process.stdout.write(`${GREETING}\n`);
 // No prompt, deliberately. One `write` per turn means the pane is never caught
 // half-updated between a reply and the prompt after it — which would make the
 // before/after screen comparison in the spec a coin toss rather than a check.
+/**
+ * The call, once something has decided about it — tether, or the user at the
+ * pane. Either way the same two records reach the transcript with the same
+ * `tool_use_id` the hook already announced, which is what the pending card is
+ * reconciled by; only the result differs.
+ */
+function commit(call: { command: string; callId: string }, allowed: boolean): void {
+  publish('busy');
+  write('assistant', [
+    { type: 'tool_use', id: call.callId, name: TOOL, input: { command: call.command } },
+  ]);
+  const output = allowed
+    ? `removed ${call.command.replace('rm -rf ', '')}`
+    : 'The user denied permission to run this command.';
+  write('user', [
+    {
+      type: 'tool_result',
+      tool_use_id: call.callId,
+      content: output,
+      ...(allowed ? {} : { is_error: true }),
+    },
+  ]);
+  publish('idle');
+  process.stdout.write(`${output}\n`);
+}
+
+/** The call the pane is being asked about, while Claude Code's own prompt is up. */
+let asked: { command: string; callId: string } | undefined;
+
 const rl = createInterface({ input: process.stdin, output: process.stdout });
 rl.on('line', (line) => {
   const text = line.trim();
   if (text === '') return;
   record('user', text);
 
-  // The moment PR #10 exists for: the agent has decided to run something and is
-  // holding for an answer, with *nothing* in the transcript about it yet. The
-  // hook is the only thing that can say so, and the pane says what a real
-  // permission dialog says.
-  if (text === ASK) {
+  // The moment this whole path exists for: the agent has decided to run
+  // something and is holding for an answer, with *nothing* in the transcript
+  // about it yet. `PreToolUse` fires first and blocks — tether may answer it
+  // right there, which is the tap from the conversation view. Only if it does
+  // not does the pane show a dialog, and only then is `Notification` sent.
+  const ask = ASKS[text as keyof typeof ASKS];
+  if (ask !== undefined) {
     publish('waiting');
-    fire('PreToolUse', {
+    const decision = fire('PreToolUse', {
       permission_mode: 'default',
       tool_name: TOOL,
-      tool_input: { command: COMMAND, description: 'Clear the build directory' },
-      tool_use_id: CALL_ID,
+      tool_input: { command: ask.command, description: 'Clear a directory' },
+      tool_use_id: ask.callId,
     });
+    if (decision !== undefined) {
+      commit(ask, decision === 'allow');
+      return;
+    }
+    asked = ask;
     fire('Notification', {
       message: `Claude needs your permission to use ${TOOL}`,
       notification_type: 'permission_prompt',
     });
-    process.stdout.write(`\n${TOOL} command\n  ${COMMAND}\n\nDo you want to proceed? (y/n)\n`);
+    process.stdout.write(`\n${TOOL} command\n  ${ask.command}\n\nDo you want to proceed? (y/n)\n`);
     return;
   }
 
-  // Answered. Only now does the call reach the transcript — with the same
-  // `tool_use_id` the hook already announced, which is what the pending card is
-  // reconciled by.
-  if (text === ANSWER) {
-    publish('busy');
-    write('assistant', [
-      { type: 'tool_use', id: CALL_ID, name: TOOL, input: { command: COMMAND } },
-    ]);
-    write('user', [{ type: 'tool_result', tool_use_id: CALL_ID, content: 'removed ./build' }]);
-    publish('idle');
-    process.stdout.write('removed ./build\n');
+  // Answered at the pane, which only ever happens for a call tether did not
+  // answer. A `yes` with no dialog up is not an approval of anything — it is
+  // ordinary typing, and it must not run the last thing that was asked about.
+  if (text === ANSWER && asked !== undefined) {
+    const call = asked;
+    asked = undefined;
+    commit(call, true);
     return;
   }
 

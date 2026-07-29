@@ -18,7 +18,13 @@
  * degrade to one grey line and keep rendering the rest.
  */
 
-import type { ConversationEvent, SessionState, ToolCallEvent } from '@tether/shared';
+import type {
+  ConversationEvent,
+  PermissionOutcome,
+  SessionState,
+  Timestamp,
+  ToolCallEvent,
+} from '@tether/shared';
 
 import { MAX_TEXT } from './keys.ts';
 import type { Status } from './terminal.tsx';
@@ -42,6 +48,19 @@ export type ToolRow = {
    * "asking to run this" rather than "running this".
    */
   pending: boolean;
+  /**
+   * The agent is blocked on this call and tether will deliver the answer, until
+   * `deadline`. The presence of this — not `pending` — is what puts Approve and
+   * Deny on a card: tether reports far more proposals than it can answer, and a
+   * button that resolves nothing is worse than no button at all.
+   */
+  answerable: { callId: string; deadline: Timestamp } | null;
+  /**
+   * How the hold ended, once it has. `timeout` is not an error and must not read
+   * as one: the question simply went back to the provider's own prompt, which
+   * the terminal tab is showing.
+   */
+  outcome: PermissionOutcome | null;
 };
 
 export type Row =
@@ -257,8 +276,16 @@ export function sendBlocked(agent: SessionState, message: string, terminal: Stat
  * Carries no `seq` and never moves one: `seq` is a position in the transcript's
  * event stream and a proposal has no position in it.
  */
-export function addPending(state: Rows, e: ToolCallEvent): Rows {
-  if (state.byCall.has(e.callId)) return state;
+export function addPending(state: Rows, e: ToolCallEvent, deadline?: Timestamp): Rows {
+  const existing = state.byCall.get(e.callId);
+  if (existing !== undefined) {
+    // The record beat the proposal, or a reconnect replayed it. Nothing about
+    // the card changes except whether it can still be answered — which it can,
+    // because the agent is blocked on it whatever the transcript says.
+    if (deadline === undefined) return state;
+    existing.answerable = { callId: e.callId, deadline };
+    return { ...state, rows: [...state.rows] };
+  }
   const row: ToolRow = {
     key: `pending:${e.callId}`,
     row: 'tool',
@@ -268,9 +295,28 @@ export function addPending(state: Rows, e: ToolCallEvent): Rows {
     input: e.input,
     result: null,
     pending: true,
+    answerable: deadline === undefined ? null : { callId: e.callId, deadline },
+    outcome: null,
   };
   state.byCall.set(e.callId, row);
   return { ...state, rows: [...state.rows, row] };
+}
+
+/**
+ * A held proposal is over, however it ended. The buttons go, and the card says
+ * which of the three things happened.
+ *
+ * This is the client half of "whichever answers first wins": the frame reaches
+ * every viewer, so a second phone showing the same card stops offering an answer
+ * the moment the first one gives it — and so does this one when the answer came
+ * from the timer or from the terminal instead.
+ */
+export function addAnswer(state: Rows, callId: string, outcome: PermissionOutcome): Rows {
+  const row = state.byCall.get(callId);
+  if (row === undefined || row.answerable === null) return state;
+  row.answerable = null;
+  row.outcome = outcome;
+  return { ...state, rows: [...state.rows] };
 }
 
 export function addEvents(state: Rows, incoming: readonly SeqEvent[]): Rows {
@@ -368,6 +414,8 @@ function toRow(key: string, e: ConversationEvent, byCall: Map<string, ToolRow>):
         input: e.input,
         result: null,
         pending: false,
+        answerable: null,
+        outcome: null,
       };
       byCall.set(e.callId, row);
       return row;
@@ -390,6 +438,8 @@ function toRow(key: string, e: ConversationEvent, byCall: Map<string, ToolRow>):
         input: undefined,
         result: e.output,
         pending: false,
+        answerable: null,
+        outcome: null,
       };
     }
     case 'status':
@@ -399,6 +449,41 @@ function toRow(key: string, e: ConversationEvent, byCall: Map<string, ToolRow>):
       // this branch exists for the build of Claude Code that ships a kind this
       // build has never compiled against.
       return { key, row: 'note', text: `Unsupported event: ${kindOf(e)}` };
+  }
+}
+
+/**
+ * The word on a collapsed card, and the sentence inside it. Here rather than in
+ * the JSX for the reason at the top of this file: what a card says about a
+ * permission it is holding is the most consequential wording in the product, and
+ * a decision made inside a component is one no test can reach.
+ */
+export function toolState(row: ToolRow): string {
+  if (row.answerable !== null) return 'asking';
+  if (row.outcome === 'deny') return 'denied';
+  if (row.outcome === 'timeout' && row.result === null) return 'in terminal';
+  // Approved here, so it is no longer being asked about — it is running, even
+  // though the transcript has not caught up and the card is still `pending`.
+  if (row.outcome === 'allow' && row.result === null) return '…';
+  if (row.pending) return 'asking';
+  if (row.result === null) return '…';
+  return row.failed ? 'error' : '✓';
+}
+
+export function toolResult(row: ToolRow): string {
+  if (row.result !== null) return row.result;
+  if (row.answerable !== null) return 'The agent is waiting on your answer.';
+  switch (row.outcome) {
+    case 'allow':
+      return 'Approved here. The agent is running it.';
+    case 'deny':
+      return 'Denied here. The agent was told you refused, and did not run it.';
+    case 'timeout':
+      // Not a failure, and it must not read as one: tether stopped holding and
+      // the agent's own prompt has the question, which the terminal tab shows.
+      return 'No answer here in time — Claude Code is asking in the terminal instead.';
+    default:
+      return row.pending ? 'Waiting for you to answer in the terminal.' : 'Still running.';
   }
 }
 
