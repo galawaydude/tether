@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  addEcho,
   addEvents,
   addPending,
   noRows,
+  sendBlocked,
   summarise,
   toRows,
   type SeqEvent,
@@ -269,4 +271,74 @@ test('two proposals in one turn are two cards, and each is replaced by its own r
     state.rows.map((row) => (row as ToolRow).pending),
     [true, false],
   );
+});
+
+test('a composed message shows at once and is replaced, not duplicated, by its record', () => {
+  const sent = 'rewrite the parser\n\nkeep the tests passing';
+  let state = addEcho(noRows(), sent);
+  // Shown before any round trip: the whole point of composing locally is that
+  // the textarea does not empty into silence while the agent thinks.
+  assert.deepEqual(state.echoes, [sent]);
+  assert.equal(state.rows.length, 0);
+
+  // The transcript catches up. One message, from the record — never two.
+  state = addEvents(state, stream({ kind: 'user', id: 'u1', at: AT, text: sent }));
+  assert.deepEqual(state.echoes, []);
+  assert.deepEqual(state.rows, [{ key: '1', row: 'message', who: 'user', text: sent }]);
+});
+
+test('the record retires an echo even when the provider recorded it differently', () => {
+  // Matching on text would leave the echo standing beside its own record for
+  // the life of the session; matching on arrival order cannot.
+  let state = addEcho(noRows(), 'ship it');
+  state = addEvents(state, stream({ kind: 'user', id: 'u1', at: AT, text: 'ship it\n' }));
+  assert.deepEqual(state.echoes, []);
+  assert.equal(state.rows.length, 1);
+});
+
+test('two messages sent before either lands retire oldest-first and stay in order', () => {
+  let state = addEcho(addEcho(noRows(), 'first'), 'second');
+  assert.deepEqual(state.echoes, ['first', 'second']);
+
+  state = addEvents(state, stream({ kind: 'user', id: 'u1', at: AT, text: 'first' }));
+  assert.deepEqual(state.echoes, ['second']);
+
+  state = addEvents(state, [{ seq: 2, e: { kind: 'user', id: 'u2', at: AT, text: 'second' } }]);
+  assert.deepEqual(state.echoes, []);
+  assert.deepEqual(
+    state.rows.map((row) => (row as { text: string }).text),
+    ['first', 'second'],
+  );
+});
+
+test('a replayed record cannot retire a second echo', () => {
+  // The `since` replay after a reconnect re-sends events the client already has.
+  // They are dropped by `seq` before anything else looks at them — an echo
+  // retired twice would erase a message the user really did send.
+  let state = addEcho(addEcho(noRows(), 'first'), 'second');
+  const first = stream({ kind: 'user', id: 'u1', at: AT, text: 'first' });
+  state = addEvents(state, first);
+  state = addEvents(state, first);
+  assert.deepEqual(state.echoes, ['second']);
+  assert.equal(state.rows.length, 1);
+});
+
+test('an assistant message does not retire an echo', () => {
+  // Only the user’s own record supersedes the user’s own echo.
+  const state = addEvents(addEcho(noRows(), 'hello'), [
+    { seq: 1, e: { kind: 'assistant', id: 'a1', at: AT, text: 'working on it' } },
+  ]);
+  assert.deepEqual(state.echoes, ['hello']);
+});
+
+test('the composer refuses to send into a permission prompt, and only that', () => {
+  // A message pasted at a permission prompt is not a message: it answers the
+  // dialog with whatever option is selected, which can be *yes* to a command
+  // nobody read. Refused, and the reason is a sentence rather than a grey button.
+  assert.equal(sendBlocked('waiting'), 'Answer the prompt in the terminal first.');
+  // Mid-turn is not refused. Both providers queue what arrives during a turn, and
+  // redirecting an agent that is off down the wrong path is the whole reason to
+  // reach for a phone.
+  assert.equal(sendBlocked('busy'), null);
+  assert.equal(sendBlocked('idle'), null);
 });

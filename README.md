@@ -43,10 +43,10 @@ Docker or SSH session targets, session sharing, usage dashboards, a mobile app.
 
 Toolchain, CI, the tmux driver, authentication, the session registry, the HTTP
 session API, the terminal transport, the conversation data layer, the browser app,
-and the conversation view. Run `tether serve`, open the address it prints, and
-you can log in, see the sessions on this machine — each tagged with the agent it is
-running — start one in a directory you name under either agent, and follow it in two
-tabs: a **Conversation** — your prompts, the agent's replies,
+the conversation view, and the composer. Run `tether serve`, open the address it
+prints, and you can log in, see the sessions on this machine — each tagged with the
+agent it is running — start one in a directory you name under either agent, and
+follow it in two tabs: a **Conversation** — your prompts, the agent's replies,
 and a collapsed card per tool call that opens onto its input and result — and a
 live **Terminal**, with a bar for the keys a phone keyboard has not got (Esc, Tab,
 arrows, Ctrl-C). A live session shows what its agent is doing — _Working_, _Idle_
@@ -56,8 +56,17 @@ Claude Code permission prompt puts the tool call it is asking about in the
 conversation before the transcript has it (see
 [the hook](#the-claude-code-hook-and-the-file-it-writes-in-your-project)).
 Answering it still means the terminal tab: tether shows you the question and adds
-no approve/deny of its own. The composer is still to come. This milestone is being
-built one focused PR at a time.
+no approve/deny of its own.
+
+You reply in the conversation tab's **composer**: a real text box, so the message
+is composed on the phone and sent as one unit rather than a round trip per
+keystroke with autocorrect fighting a raw byte stream. **Enter inserts a line
+break** — the Send button is what sends — and a multi-line prompt arrives whole,
+line breaks and all. It shows the moment you send it and is replaced, not
+duplicated, by the transcript's own record a moment later. Send is refused only
+while the agent is waiting on a permission prompt, where a message would answer
+the dialog rather than the agent; mid-turn it is fine, and the agent queues it.
+This milestone is being built one focused PR at a time.
 
 ```
 GET    /api/machines/local/sessions            every session, live and dead, with each live one's state

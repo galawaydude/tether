@@ -265,6 +265,24 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `since` replay after a reconnect free of duplicates. The mirror of the data
   layer's rule holds here too: an **unknown event kind becomes a grey note, never
   a throw** — one uncaught kind would blank the whole page.
+- **The composer's message leaves on the _terminal_ pane's socket, and that is
+  the only thing the two panes share.** A composed message is an `input` frame,
+  and input sequencing — the per-client `seq`, the server's highest-applied map,
+  the client's resend-until-`ack` — lives on that socket; a second one would be a
+  second attach, a second full replay and a second sequence space nothing
+  de-duplicates against the first. So `app.tsx` holds one `sender` ref,
+  `terminal.tsx` fills it in, `conversation.tsx` calls it. The retry set holds
+  only `input` frames: a lost keystroke costs a character, a lost message costs a
+  prompt the user believes they sent, and a phone drops its socket on every
+  screen-lock. Three rules that are easy to undo: **Enter inserts a newline** —
+  the composer has no key handler at all, which is the implementation, and
+  `e2e/composer.spec.ts` is what would catch a "convenience" that submits on it;
+  the optimistic echo is retired by **arrival order, not by matching the text**,
+  because a provider is free to record what it received rather than what was
+  typed and a failed match leaves an echo standing beside its own record forever;
+  and `sendBlocked` refuses only `waiting` — a message pasted at a permission
+  prompt answers the dialog, while `busy` is queued by both providers and is the
+  most valuable thing a phone can do.
 - **The session screen keeps both panes mounted and hides one with
   `visibility: hidden`** (`app.tsx`, `.pane-off` in `style.css`). That one
   property is the whole of "switching tabs preserves both scroll positions", and

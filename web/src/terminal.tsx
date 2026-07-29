@@ -65,14 +65,29 @@ const ACCESSORY: readonly { label: string; name: string; keys: string[] }[] = [
   { label: '⌃C', name: 'Control C', keys: ['C-c'] },
 ];
 
+/**
+ * How the conversation's composer reaches the pane: one function, filled in by
+ * the view that owns the socket.
+ *
+ * The composer lives in the other pane but its message travels on *this*
+ * socket, because that socket is where input sequencing lives — a second one
+ * would be a second attach, a second full replay, and a second sequence space
+ * the server would have no reason to de-duplicate against the first. Both panes
+ * are always mounted (`app.tsx`), so this is filled in before anything can call
+ * it; the null is only the gap before the first effect runs.
+ */
+export type Send = { current: ((message: string) => void) | null };
+
 export function TerminalView({
   session,
   onStatus,
   onSignedOut,
+  sender,
 }: {
   session: Session;
   onStatus: (status: Status) => void;
   onSignedOut: () => void;
+  sender?: Send;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const send = useRef<(frame: InputFrame) => void>(() => {});
@@ -111,13 +126,30 @@ export function TerminalView({
     let closed = false;
     let backoff = RECONNECT_MIN_MS;
 
+    /**
+     * Composed messages sent but not yet ACKed, oldest first.
+     *
+     * Only `input` frames go in here. A dropped keystroke costs one character
+     * and the user can see it did not arrive; a dropped *message* is a prompt
+     * the user believes they sent, and a phone drops its socket every time the
+     * screen locks. Resending is safe precisely because the server keys on the
+     * per-client sequence: the retry of one it already applied is dropped there
+     * and ACKed anyway.
+     */
+    const unacked = new Map<number, ClientFrame>();
+
     const post = (frame: ClientFrame) => {
       if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(frame));
     };
     send.current = (frame) => {
       seq += 1;
-      post(withSeq(frame, seq));
+      const framed = withSeq(frame, seq);
+      if (framed.c === 'input') unacked.set(framed.seq, framed);
+      post(framed);
     };
+    if (sender !== undefined) {
+      sender.current = (message) => send.current({ c: 'input', text: message });
+    }
 
     const sendSize = () => {
       // `proposeDimensions` returns nothing while the element has no layout, and
@@ -140,12 +172,25 @@ export function TerminalView({
         backoff = RECONNECT_MIN_MS;
         setStatus.current('live');
         sendSize();
+        // Before anything the user types on this socket, and in the order they
+        // were composed: `Map` iterates by insertion, and the server applies
+        // sequences in order or not at all.
+        for (const frame of unacked.values()) post(frame);
       };
       ws.onmessage = (event: MessageEvent) => {
-        // Bytes in, bytes out. The JSON text frames on this socket are control
-        // only — `ack` is the sole one today, and there is nothing to do with it
-        // until a composer needs to retry (PR #11).
-        if (event.data instanceof ArrayBuffer) term.write(new Uint8Array(event.data));
+        // Bytes in, bytes out — nothing decodes terminal output. The JSON text
+        // frames on this socket are control only, and `ack` is the sole one:
+        // it is what stops a composed message being resent on the next connect.
+        if (event.data instanceof ArrayBuffer) return term.write(new Uint8Array(event.data));
+        if (typeof event.data !== 'string') return;
+        // A text frame that is not JSON is the server's problem, not a crash in
+        // an event handler nothing is waiting on.
+        try {
+          const frame = JSON.parse(event.data) as { c?: unknown; seq?: unknown };
+          if (frame.c === 'ack' && typeof frame.seq === 'number') unacked.delete(frame.seq);
+        } catch {
+          /* ignored */
+        }
       };
       ws.onclose = (event: CloseEvent) => {
         socket = null;
@@ -207,8 +252,9 @@ export function TerminalView({
       window.visualViewport?.removeEventListener('resize', scheduleResize);
       socket?.close();
       term.dispose();
+      if (sender !== undefined) sender.current = null;
     };
-  }, [session.tmuxName]);
+  }, [session.tmuxName, sender]);
 
   return (
     <>

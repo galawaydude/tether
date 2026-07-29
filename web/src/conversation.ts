@@ -18,7 +18,7 @@
  * degrade to one grey line and keep rendering the rest.
  */
 
-import type { ConversationEvent, ToolCallEvent } from '@tether/shared';
+import type { ConversationEvent, SessionState, ToolCallEvent } from '@tether/shared';
 
 /** An event with its position in the session's stream, as the server sends it. */
 export type SeqEvent = { seq: number; e: ConversationEvent };
@@ -107,10 +107,51 @@ export type Rows = {
   rows: readonly Row[];
   seq: number;
   byCall: Map<string, ToolRow>;
+  /**
+   * Messages sent from the composer that the transcript has not shown back yet,
+   * oldest first — the optimistic echo. Rendered after {@link Rows.rows}, which
+   * is where they belong: both providers record the user's message when the turn
+   * starts, well before any reply, so an echo is only ever the newest thing in
+   * the conversation and is gone by the time anything could follow it.
+   *
+   * Held apart from `rows` rather than mixed in, for the same reason `pending`
+   * and `state` are not `conv` frames: a sent message has no `seq` until the
+   * transcript gives it one, and inventing a position for it would make the
+   * history route and a live tailer disagree about which event is number 12.
+   */
+  echoes: readonly string[];
 };
 
 export function noRows(): Rows {
-  return { rows: [], seq: 0, byCall: new Map() };
+  return { rows: [], seq: 0, byCall: new Map(), echoes: [] };
+}
+
+/**
+ * The composer sent a message. Shown at once, before any round trip: on a phone
+ * the alternative is a textarea that empties into silence for as long as the
+ * agent takes to write its first record.
+ */
+export function addEcho(state: Rows, text: string): Rows {
+  return { ...state, echoes: [...state.echoes, text] };
+}
+
+/**
+ * Why the composer will not send right now, or `null`. A sentence rather than a
+ * boolean: a Send button that is grey for no stated reason is a bug report.
+ *
+ * `waiting` means the pane is holding on a permission prompt. A message pasted
+ * into that is not a message — it answers the dialog with whatever option is
+ * selected, which can be *yes* to a command the user never read. So it is
+ * refused, and the banner above both panes already says where to answer.
+ *
+ * `busy` is deliberately **not** refused. Both providers accept a message that
+ * arrives mid-turn and show it queued in their own pane, and redirecting an
+ * agent that is off down the wrong path is the single most valuable thing a
+ * phone can do — a composer that locks for the length of a turn is a composer
+ * that is unavailable exactly when it is wanted.
+ */
+export function sendBlocked(agent: SessionState): string | null {
+  return agent === 'waiting' ? 'Answer the prompt in the terminal first.' : null;
 }
 
 /**
@@ -156,16 +197,30 @@ export function addPending(state: Rows, e: ToolCallEvent): Rows {
 export function addEvents(state: Rows, incoming: readonly SeqEvent[]): Rows {
   let rows: Row[] | undefined;
   let seq = state.seq;
+  let echoes = state.echoes;
   for (const { seq: at, e } of incoming) {
     if (at <= seq) continue;
     seq = at;
+    // **Replaced, never duplicated.** A `user` event is the transcript catching
+    // up with something the user sent, so the oldest outstanding echo is retired
+    // against it and the real record takes its place — same position in the
+    // list, no second copy.
+    //
+    // Retired by arrival order rather than by matching the text: a provider is
+    // free to record what it received rather than what was typed (trailing
+    // whitespace, a trailing newline), and a match that fails leaves the echo
+    // standing next to its own record forever. The cost of the looser rule is a
+    // message typed straight into the terminal while a composed one is in flight
+    // retiring the wrong echo — one message shown with the other's text for the
+    // moment before its own record lands, and still never two.
+    if (e.kind === 'user' && echoes.length > 0) echoes = echoes.slice(1);
     const row = toRow(String(at), e, state.byCall);
     if (row === undefined) continue;
     rows ??= [...state.rows];
     rows.push(row);
   }
   if (seq === state.seq) return state;
-  return { rows: rows ?? state.rows, seq, byCall: state.byCall };
+  return { rows: rows ?? state.rows, seq, byCall: state.byCall, echoes };
 }
 
 /** Convenience for the tests and for a fresh history: rows from nothing. */

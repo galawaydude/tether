@@ -125,4 +125,12 @@ test('controlKey leaves ordinary characters alone', () => {
 test('withSeq produces the wire frames the server parses', () => {
   assert.deepEqual(withSeq({ c: 'text', text: ';' }, 7), { c: 'text', seq: 7, text: ';' });
   assert.deepEqual(withSeq({ c: 'key', keys: ['C-c'] }, 8), { c: 'key', seq: 8, keys: ['C-c'] });
+  // The composer's frame: a whole message, submitted, and its newlines are the
+  // reason it is `input` and not `text` — the server delivers it through tmux's
+  // paste buffer, where `send-keys -l` would silently swallow them (report §3).
+  assert.deepEqual(withSeq({ c: 'input', text: 'one\ntwo' }, 9), {
+    c: 'input',
+    seq: 9,
+    text: 'one\ntwo',
+  });
 });
