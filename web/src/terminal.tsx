@@ -117,7 +117,10 @@ export function TerminalView({
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
       cursorBlink: true,
       scrollback: 5000,
-      theme: { background: '#000000', foreground: '#eaeaea', cursor: '#7ee787' },
+      // The background matches `.term`'s in `style.css` — any difference shows
+      // as a seam around the rows — and the cursor is the app's accent, which
+      // is the one colour in the product that means a human is involved.
+      theme: { background: '#08080a', foreground: '#e8e8ec', cursor: '#ffb454' },
     });
     const fit = new FitAddon();
     term.loadAddon(fit);

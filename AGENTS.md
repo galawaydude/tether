@@ -419,6 +419,32 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   xterm's textarea has to switch tabs first. The two views share nothing else —
   they are two renderings of one process from two independent sources (report
   §3), and there is no cursor between them to reconcile.
+- **The look is one system with three rules, and they are written down at the
+  top of `web/src/style.css`**: amber means a human (the waiting badge and
+  banner, Approve, Send, New session, the spine on your own messages) and
+  nothing decorative may use it; the machine's own states are cool and never
+  amber; monospace means the machine said it — paths, tool names, tool output,
+  provider tags, state words. The spine — a short bar in a meaningful colour —
+  is the app's one graphic idea, and it is the wordmark, the provider stripe on
+  a session row and the edge of a user message. Adding a fourth accent, or an
+  amber that is only decoration, is what breaks it.
+- **There are two layouts and `app.tsx` picks between them.** Past `WIDE`
+  (900px) it renders `.workspace`: the session list as a rail beside the open
+  session. A media query cannot do that, because it cannot mount a component,
+  which is why `useWide` exists — and it uses `matchMedia`, which carries no
+  secure-context gate. Crossing the breakpoint remounts the session screen, so
+  it costs one tmux replay and one conversation refetch; that is acceptable
+  because a phone never crosses it (390×844 rotated is still 844) and nothing
+  is lost, only re-derived. The rail needs no class of its own — the list is
+  the only `<main>` in the tree.
+- **The session bar's height may not follow its own text.** The chips say
+  "Connecting…" then "Live", "Idle" then "Waiting for you", and a bar that wraps
+  only when its own text happens to be long changes height as a session runs —
+  which resizes the terminal, which resizes the tmux pane, which makes the agent
+  redraw its prompt into the scrollback. `e2e/session.spec.ts`'s reload
+  comparison is what catches it, as one stray line in the "after" screen. Hence
+  `.bar-chips` takes a whole row below 600px and `.bar` is `nowrap` above it:
+  both heights are constant for every status word.
 - **A `.conv` child needs `flex: none`.** The list is a column flex container,
   which shrinks its items to fit rather than overflowing; a collapsed tool card
   has no text holding it open, so every card renders as a 6px stripe without it.
