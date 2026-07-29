@@ -14,6 +14,8 @@ concurrency:
 
 env:
   GITLEAKS_VERSION: 8.30.1
+  TMUX_VERSION: 3.7b
+  TMUX_SHA256: 87f2e99e3b685973f2ca002ffd6ed7e51a5744f7009daae5a15670b6d532db96
 
 jobs:
   check:
@@ -29,9 +31,25 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
 
-      # Integration tests from PR #2 onwards drive a real tmux server.
+      # Integration tests from PR #2 onwards drive a real tmux server, and tether.conf
+      # sets `window-size manual`. tmux before 3.7 sizes a session that has no window
+      # yet by dereferencing that NULL window, so every detached `new-session` kills
+      # the server (fixed upstream in 3.7's resize.c). ubuntu-latest's apt tmux is 3.4,
+      # so build the pinned release instead.
       - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y tmux
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential bison libevent-dev libncurses-dev pkg-config
+          tarball="tmux-${TMUX_VERSION}.tar.gz"
+          curl -sSfL -o "${RUNNER_TEMP}/${tarball}" \
+            "https://github.com/tmux/tmux/releases/download/${TMUX_VERSION}/${tarball}"
+          echo "${TMUX_SHA256}  ${RUNNER_TEMP}/${tarball}" | sha256sum -c -
+          tar -xzf "${RUNNER_TEMP}/${tarball}" -C "${RUNNER_TEMP}"
+          cd "${RUNNER_TEMP}/tmux-${TMUX_VERSION}"
+          ./configure
+          make -j"$(nproc)"
+          sudo make install
+          tmux -V
 
       - run: npm ci
 

@@ -39,13 +39,15 @@ targets, session sharing, usage dashboards, a mobile app.
 
 ## Status
 
-Repository skeleton only. Nothing runs yet — this milestone is being built one
-focused PR at a time, starting from the toolchain and CI.
+Toolchain, CI and the tmux driver. Nothing runs end to end yet — this milestone
+is being built one focused PR at a time.
 
 ## Development
 
-Requires the Node version in [`.nvmrc`](.nvmrc) (`nvm use`) and, from PR #2
-onwards, `tmux`.
+Requires the Node version in [`.nvmrc`](.nvmrc) (`nvm use`) and **tmux 3.7 or
+newer** — the tmux driver's tests drive a real server on a private socket, not a
+mock, and older tmux crashes on the `window-size manual` that `tether.conf` sets
+(so does tether itself; 3.7 is a hard floor, not just a test one).
 
 ```sh
 npm ci        # installs all workspaces; builds shared/ declarations
