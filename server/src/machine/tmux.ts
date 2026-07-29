@@ -142,8 +142,7 @@ const NO_SESSION = /can't find session/;
  */
 export function isSessionGone(error: unknown): boolean {
   return (
-    error instanceof TmuxError &&
-    (NO_SERVER.test(error.stderr) || NO_SESSION.test(error.stderr))
+    error instanceof TmuxError && (NO_SERVER.test(error.stderr) || NO_SESSION.test(error.stderr))
   );
 }
 

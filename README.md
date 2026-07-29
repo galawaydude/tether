@@ -48,7 +48,7 @@ milestone is being built one focused PR at a time.
 ## Using it from a terminal
 
 ```sh
-npm ci && npm run build
+npm ci                            # also builds the CLI, so `npx tether` works
 
 npx tether new ~/src/project      # starts Claude Code in a durable tmux session
 npx tether ls                     # every session, live or dead
@@ -105,9 +105,9 @@ mock, and older tmux crashes on the `window-size manual` that `tether.conf` sets
 (so does tether itself; 3.7 is a hard floor, not just a test one).
 
 ```sh
-npm ci        # installs all workspaces; builds shared/ declarations
+npm ci        # installs all workspaces; builds shared/ declarations and server/ (the CLI)
 npm test      # node:test across every package
-npm run build # server (tsc) and web (vite)
+npm run build # server (tsc) and web (vite) — rerun after editing server sources
 ```
 
 Other checks, all of which CI runs on every pull request:
