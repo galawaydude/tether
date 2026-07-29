@@ -5,6 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import { applyRegistrySchema } from '../machine/registry.ts';
 import type { Terminals } from '../machine/terminal.ts';
+import { UnsafeArgumentError } from '../machine/tmux.ts';
 import { createAuthStore } from './auth.ts';
 import { defaultAllowedHosts } from './guards.ts';
 import { SESSION_COOKIE, buildServer } from './server.ts';
@@ -19,7 +20,7 @@ const HOST = 'localhost:8787';
  * the socket's guards and framing; `machine/terminal.test.ts` drives the real
  * thing against a real tmux.
  */
-function recordingTerminals() {
+function recordingTerminals(refusedKey?: string) {
   const calls: string[] = [];
   let emit: ((bytes: Uint8Array) => void) | undefined;
   let ended: (() => void) | undefined;
@@ -44,6 +45,10 @@ function recordingTerminals() {
       return true;
     },
     async key(session, clientId, seq, keys) {
+      // What the real driver does with a key name tmux's lexer would eat.
+      if (refusedKey !== undefined && keys.includes(refusedKey)) {
+        throw new UnsafeArgumentError(refusedKey);
+      }
       calls.push(`key ${session} ${clientId} ${seq} ${keys.join('+')}`);
       return true;
     },
@@ -57,14 +62,14 @@ function recordingTerminals() {
   };
 }
 
-async function harness(overrides: Partial<ServerOptions> = {}) {
+async function harness(overrides: Partial<ServerOptions> = {}, refusedKey?: string) {
   // One database for both, as in production: the auth store and the registry share
   // the single SQLite file.
   const db = new DatabaseSync(':memory:');
   applyRegistrySchema(db);
   const auth = createAuthStore(db);
   await auth.setPassword(PASSWORD);
-  const recorder = recordingTerminals();
+  const recorder = recordingTerminals(refusedKey);
   const app = buildServer({
     auth,
     db,
@@ -584,6 +589,30 @@ test('terminal output arrives as binary frames and input is ACKed', async (t) =>
     'key s1 phone 2 C-c',
     'text s1 phone 3 ";"',
   ]);
+});
+
+test('a key the argv guard refuses costs one keystroke, not the session', async (t) => {
+  // Alt+`;` reaches the driver as the key name `M-;`, which tmux's lexer would
+  // eat, so the guard refuses it. That must not read as a dead attach: closing
+  // here makes the client reset its terminal and replay the whole pane.
+  const { app, terminal } = await harness({}, 'M-;');
+  t.after(() => app.close());
+  await app.ready();
+
+  const token = await sessionToken(app);
+  const term = openTerm(app, { cookie: `${SESSION_COOKIE}=${token}` });
+  const socket = await term.socket;
+  t.after(() => socket.close());
+  await term.next();
+
+  socket.send(JSON.stringify({ c: 'key', seq: 1, keys: ['M-;'] }));
+  assert.deepEqual(JSON.parse((await term.next()).data.toString('utf8')), { c: 'ack', seq: 1 });
+  assert.equal(socket.readyState, socket.OPEN, 'the socket survives a refused frame');
+
+  socket.send(JSON.stringify({ c: 'key', seq: 2, keys: ['C-c'] }));
+  assert.deepEqual(JSON.parse((await term.next()).data.toString('utf8')), { c: 'ack', seq: 2 });
+
+  assert.deepEqual(terminal.calls, ['attach s1', 'key s1 phone 2 C-c']);
 });
 
 test('a malformed session name or missing client id never reaches tmux', async (t) => {

@@ -118,8 +118,10 @@ export function escapeAt(data: string, at: number): Escape {
     if (st !== -1) return { length: st + 2 - at, key: null };
     return { length: data.length - at, key: null };
   }
-  // ESC then one more key is Alt: `M-b`, `M-Enter`. tmux reads those names, and
-  // `M-;` is not the standalone `;` the argv guard refuses.
+  // ESC then one more key is Alt: `M-b`, `M-Enter`; tmux reads those names. The
+  // handful whose character tmux's lexer would mangle — `M-;` — are refused at
+  // the driver and cost that one keystroke, which is why the name is synthesised
+  // here rather than filtered: the lexer rule has one home, and it is `tmux.ts`.
   if (introducer !== '') {
     return { length: 2, key: `M-${controlKey(introducer) ?? introducer}` };
   }
