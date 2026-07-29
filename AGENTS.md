@@ -27,6 +27,8 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   for web's Node-side files (`vite.config.ts` and the tests). Web's `tsconfig.json` is the
   browser program: `types: []` plus that split is what keeps Node globals out of it, since
   vite's own declarations pull `@types/node` into any program containing `vite.config.ts`.
+  That Node-side program also sets `jsx`, because a web test reaching a type declared in a
+  `.tsx` pulls the component file into it and `--jsx` unset is an error there, not a skip.
   `tsc --noEmit` at the repo root is not configured — use `npm run typecheck`.
 - **TypeScript is pinned to 5.x.** TypeScript 7 is released but `typescript-eslint` still
   peers on `<6.1.0`; upgrading TS ahead of that breaks `npm install`.
@@ -320,20 +322,23 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `coerceTypes` are on): `additionalProperties: false` strips instead of rejecting, and
   `{"password": 123}` arrives as `"123"`. `buildServer` turns both off. Do not remove that
   `ajv.customOptions` block, and do not assume stock Fastify behaviour when reading the tests.
-- **`e2e/` is two Playwright specs and they assert counts and geometry, not presence.**
+- **`e2e/` is three Playwright specs and they assert counts and geometry, not presence.**
   They drive the real `tether serve` (`e2e/serve.ts` calls the CLI's own `main`) inside a
   scratch `HOME`/state dir/tmux socket, with `e2e/stub-agent.ts` on `PATH` as `claude` — so
   the session is created through the production path and **CI still never runs a live
-  agent**. What `session.spec.ts` checks that nothing else can is the reload, and what
-  `permission.spec.ts` checks is the hook chain end to end: `toContainText` passes just
-  as happily on a view that replayed itself twice, and on two cards for one tool call.
+  agent**. What `session.spec.ts` checks that nothing else can is the reload, what
+  `permission.spec.ts` checks is the hook chain end to end, and what `composer.spec.ts`
+  checks is the compose chain end to end plus the Enter rule the composer entry above
+  describes, which has no handler to unit-test: `toContainText` passes just as happily
+  on a view that replayed itself twice, on two cards for one tool call, and on an echo
+  still standing beside its own record.
   `session.spec.ts` also measures the New session sheet's box against short viewports and
   starts no session at all, because a control clipped out of a fixed overlay is still in
   the DOM. Three things not to "strengthen" by accident: the locators are scoped to
   `.conv` and `.xterm-rows` because both panes stay mounted; the terminal comparison is of
   the **rendered screen** before versus after — the buffer above it legitimately holds the
   capture _under_ tmux's repaint, and byte-exactness of the recipe is
-  `terminal.test.ts`'s job; and the two specs share one server and one session list, so
+  `terminal.test.ts`'s job; and the three specs share one server and one session list, so
   each takes its own directory and reopens its session **by name**, never `.row-open`.
   The stub knows nothing about where tether's shim, secret or endpoint are — it runs
   whatever `.claude/settings.local.json` lists — so a broken installer fails the test

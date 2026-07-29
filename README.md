@@ -376,15 +376,18 @@ npx playwright install chromium   # once; npm 12 blocks playwright's own postins
 npm run test:e2e                  # the end-to-end specs
 ```
 
-`e2e/` is two Playwright specs on a phone viewport, and they are the only tests
+`e2e/` is three Playwright specs on a phone viewport, and they are the only tests
 here that are not unit tests. One logs in, starts a session, watches it, types at
 it, **reloads the page**, and asserts the conversation and the terminal come back
 intact and exactly once; it also opens the New session sheet at the shortest
 phone viewports and asserts the card and its **Agent** picker stay on screen,
-since the sheet is the one screen that grows with its copy. The other acts out a
+since the sheet is the one screen that grows with its copy. The second acts out a
 permission prompt and asserts the proposed tool call is on screen while the
 transcript still has nothing about it, and that the transcript's own record then
-replaces that card rather than adding a second one. Both run against
+replaces that card rather than adding a second one. The third composes a message
+and asserts it reaches the agent and appears exactly once, that Enter in the box
+is a line break rather than a send, and that the composer leaves Send on screen
+with the keyboard up. All three run against
 `e2e/stub-agent.ts` — a script that prints, echoes what you type at it, writes a
 Claude-Code-shaped transcript, publishes its own status file and fires whatever
 hook the project's settings register — put on `PATH` as `claude`, so the session

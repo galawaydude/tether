@@ -45,6 +45,8 @@ const evidence = process.env['TETHER_E2E_SHOTS'];
 const GREETING = 'stub agent ready';
 const TYPED = 'summarise what you just did';
 const REPLY = `echo ${TYPED}`;
+/** The second message, sent after a reload through a freshly wired sender. */
+const AGAIN = 'and once more after a reload';
 
 test('a composed message reaches the agent and appears exactly once', async ({ page }) => {
   mkdirSync(project, { recursive: true });
@@ -76,11 +78,14 @@ test('a composed message reaches the agent and appears exactly once', async ({ p
   expect(await box.inputValue()).toBe('first line\nsecond line');
   // Still in the box, and nothing has been sent.
   await expect(conversation.getByText('first line', { exact: false })).toHaveCount(0);
+  if (evidence !== undefined) {
+    await page.screenshot({ path: join(evidence, '5-composer-newline.png') });
+  }
 
   await box.fill('');
   await box.fill(TYPED);
   if (evidence !== undefined) {
-    await page.screenshot({ path: join(evidence, '5-composer.png') });
+    await page.screenshot({ path: join(evidence, '6-composer.png') });
   }
 
   // ── the claim ──────────────────────────────────────────────────────────────
@@ -94,10 +99,47 @@ test('a composed message reaches the agent and appears exactly once', async ({ p
   await expect(conversation.getByText(TYPED, { exact: true })).toHaveCount(1);
   await expect(conversation.locator('.msg-sending')).toHaveCount(0);
   if (evidence !== undefined) {
-    await page.screenshot({ path: join(evidence, '6-composer-sent.png') });
+    await page.screenshot({ path: join(evidence, '7-composer-sent.png') });
   }
 
   // And it really went through tmux to the agent, not just into the view.
   await page.getByRole('button', { name: 'Terminal' }).click();
   await expect(page.locator('.xterm-rows')).toContainText(REPLY);
+
+  // ── the sender is rewired on remount ───────────────────────────────────────
+  // A composed message leaves on the *terminal* pane's socket, through a ref
+  // `app.tsx` holds and `terminal.tsx` fills in. A reload drops both panes, both
+  // sockets and the ref, so this is where a rewiring that never happens shows
+  // up — as a Send button that empties the box and does nothing else.
+  await page.reload();
+  // By name, like the other two specs: three sessions share this list.
+  await page.getByRole('button', { name: `composer ${project}` }).click();
+  await expect(conversation.getByText(TYPED, { exact: true })).toHaveCount(1);
+
+  await box.fill(AGAIN);
+  await send.click();
+  await expect(box).toHaveValue('');
+  await expect(conversation.getByText(`echo ${AGAIN}`, { exact: true })).toHaveCount(1);
+  await expect(conversation.getByText(AGAIN, { exact: true })).toHaveCount(1);
+  await expect(conversation.locator('.msg-sending')).toHaveCount(0);
+
+  // ── the keyboard-open case ─────────────────────────────────────────────────
+  // 360×340 is this phone with its keyboard up, and it is the viewport that
+  // finds a composer able to eat the conversation it belongs to. A tall message
+  // must leave Send on screen and must not push its own pane sideways.
+  await page.setViewportSize({ width: 360, height: 340 });
+  await box.fill('one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten');
+  const button = await send.boundingBox();
+  if (button === null) throw new Error('Send is not laid out at all at 360×340');
+  expect(button.y + button.height).toBeLessThanOrEqual(340);
+  // Measured on the conversation pane rather than the document: the terminal
+  // pane stays mounted and absolutely positioned, and xterm does not re-fit a
+  // pane it cannot measure, so a document-wide check reports the *other* pane's
+  // stale geometry. What this pane owns is that its own text wraps.
+  expect(
+    await conversation.evaluate((el) => [el.scrollWidth - el.clientWidth, el.clientWidth]),
+  ).toEqual([0, 360]);
+  if (evidence !== undefined) {
+    await page.screenshot({ path: join(evidence, '8-composer-keyboard-open.png') });
+  }
 });
