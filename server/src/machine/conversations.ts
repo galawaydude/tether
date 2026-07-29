@@ -239,6 +239,13 @@ type Proposal = {
   outcome?: PermissionOutcome | undefined;
 };
 
+/**
+ * What a `#bind` did to a row: named a session it had none for, moved it off the
+ * one it was carrying, or nothing. The two are not the same event — only a move
+ * abandons a transcript a subscriber may be holding events from.
+ */
+type Bound = 'unchanged' | 'identified' | 'moved';
+
 export class Conversations {
   readonly #db: DatabaseSync;
   readonly #options: ConversationsOptions;
@@ -297,7 +304,10 @@ export class Conversations {
 
   /**
    * Record what a pane says it is running against the row it belongs to, and
-   * report whether that moved.
+   * report whether the row was *identified* for the first time or *moved* off an
+   * id it was already carrying. Only the second abandons a transcript, and only
+   * the caller knows it synchronously — by the time a restart runs, the row names
+   * the new file either way.
    *
    * **A provider session id is not stable for the life of a tether session.**
    * `/resume` and `--continue` switch Claude Code to a *different* session id and
@@ -314,15 +324,15 @@ export class Conversations {
    * two tailers on one transcript, every line ingested twice, and the one that
    * loses the `live.tailer` field left running for the life of the process.
    */
-  #bind(session: Session, running: string | undefined): boolean {
-    if (running === undefined) return false;
+  #bind(session: Session, running: string | undefined): Bound {
+    if (running === undefined) return 'unchanged';
     const live = this.#live.get(session.id);
     const bound = live === undefined ? session.providerSessionId : live.session.providerSessionId;
     session.providerSessionId = running;
-    if (running === bound) return false;
+    if (running === bound) return 'unchanged';
     setProviderSessionId(this.#db, session.id, running);
     if (live !== undefined) live.session.providerSessionId = running;
-    return true;
+    return bound === null ? 'identified' : 'moved';
   }
 
   /**
@@ -359,7 +369,8 @@ export class Conversations {
       const pid = this.#pidOf(panes, session);
       if (pid === undefined) continue;
       if ((await readSessionId(pid, this.#home())) !== providerSessionId) continue;
-      if (this.#bind(session, providerSessionId)) this.#restart(this.#live.get(session.id));
+      const bound = this.#bind(session, providerSessionId);
+      if (bound !== 'unchanged') this.#restart(this.#live.get(session.id), bound === 'moved');
       return session;
     }
     return undefined;
@@ -723,9 +734,8 @@ export class Conversations {
       // tick is what notices — without it the row keeps naming the file the
       // session used to write to, and the conversation view shows a conversation
       // that stopped while the terminal beside it carries on.
-      if (record !== undefined && this.#bind(live.session, record.sessionId)) {
-        this.#restart(live);
-      }
+      const bound = record === undefined ? 'unchanged' : this.#bind(live.session, record.sessionId);
+      if (bound !== 'unchanged') this.#restart(live, bound === 'moved');
       const state = record?.state;
       // A stale, absent or unmatched file is "tether cannot say", never `idle`:
       // reading it as a state would erase, one tick later, the `waiting` a
@@ -773,17 +783,26 @@ export class Conversations {
   /**
    * Follow the transcript the row now names, having followed another one.
    *
-   * Only `#bind` calls this, and only when the pane turned out to be running a
-   * different session than the row said — a `/resume`. The new transcript is not
-   * a continuation of the old numbering, so subscribers are told to refetch
-   * rather than sent events that would collide with what they already hold; that
-   * is the same branch a client gone longer than the tail takes, so there is no
-   * second path for a client to get wrong.
+   * Called only where `#bind` moved the row, so the tailer always has to move —
+   * a row identified for the first time was being followed by a `#start` that
+   * had no id to look up either. `notify` is the narrower question of whether a
+   * subscriber holds events from the file being left: that is a `/resume`, where
+   * the new transcript is not a continuation of the old numbering, so subscribers
+   * are told to refetch rather than sent events that would collide with what they
+   * already hold — the same branch a client gone longer than the tail takes, so
+   * there is no second path for a client to get wrong. On a first identification
+   * they are being sent that very transcript, and a refetch buys them a socket
+   * close and the same history again.
+   *
+   * It is passed rather than read here because nothing measurable at this point
+   * still knows it: this runs after `await live.ready`, and `live.seq` by then
+   * counts the records `#start` already ingested from the transcript the row now
+   * names — the one this is arriving *at*, not the one it is leaving.
    *
    * Fire-and-forget: the caller is a poll tick or an HTTP route, and there is
    * nothing for either to wait for.
    */
-  #restart(live: Live | undefined): void {
+  #restart(live: Live | undefined, notify: boolean): void {
     if (live === undefined) return;
     void (async () => {
       // The in-flight `#start` first, or its tailer is attached after this has
@@ -798,17 +817,12 @@ export class Conversations {
       live.tailer = undefined;
       await tailer?.stop();
       if (live.stopped) return;
-      // Nothing has been sent when the row is being bound for the *first* time —
-      // the ordinary path, where `#syncFromPane` and the poller's first tick race
-      // to read one pane file. A refetch there costs a client that holds nothing
-      // a socket close and an empty history for no invalidation at all.
-      const held = live.seq > 0;
       live.seq = 0;
       live.lines = 0;
       live.tail = [];
       live.seen.clear();
       live.memo.clear();
-      if (held) for (const send of live.subscribers) send({ c: 'refetch' });
+      if (notify) for (const send of live.subscribers) send({ c: 'refetch' });
       live.ready = this.#start(live);
     })();
   }
