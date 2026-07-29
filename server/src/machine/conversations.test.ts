@@ -313,6 +313,25 @@ function rolloutLine(payload: Record<string, unknown>, at = Date.now()): string 
   return `${JSON.stringify({ timestamp: new Date(at).toISOString(), type: 'event_msg', payload })}\n`;
 }
 
+/**
+ * Where Codex would file a rollout begun at `at`: `sessions/<Y>/<M>/<D>` and a
+ * `rollout-<local ts>-<uuid>.jsonl` inside it, both in **local** time, as
+ * `rollout.ts` reads them.
+ *
+ * Derived from the session's own clock rather than written out, because
+ * `findRollout` walks day directories from `createdAt - STALE_MTIME_MS` down and
+ * stops there: a fixture stamped with the day it was authored on is invisible to
+ * the search from the next midnight onwards.
+ */
+function rolloutPath(codexHome: string, at: number): { day: string; path: string } {
+  const when = new Date(at);
+  const pad = (part: number): string => String(part).padStart(2, '0');
+  const [y, m, d] = [String(when.getFullYear()), pad(when.getMonth() + 1), pad(when.getDate())];
+  const day = join(codexHome, 'sessions', y, m, d);
+  const clock = `${pad(when.getHours())}-${pad(when.getMinutes())}-${pad(when.getSeconds())}`;
+  return { day, path: join(day, `rollout-${y}-${m}-${d}T${clock}-${CODEX_SESSION}.jsonl`) };
+}
+
 async function codexHarness(t: TestContext) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'tether-conv-codex-')));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -320,15 +339,14 @@ async function codexHarness(t: TestContext) {
   const stateDir = join(root, 'state');
   const cwd = join(root, 'work');
   await mkdir(cwd);
-  const day = join(codexHome, 'sessions', '2026', '07', '29');
+  const createdAt = Date.now() - 1000;
+  const { day, path: rollout } = rolloutPath(codexHome, createdAt);
   await mkdir(day, { recursive: true });
   await mkdir(join(stateDir, 'codex-hooks'), { recursive: true });
-  const rollout = join(day, `rollout-2026-07-29T12-00-10-${CODEX_SESSION}.jsonl`);
   const hookLog = join(stateDir, 'codex-hooks', `${CODEX_SESSION}.ndjson`);
 
   const db = new DatabaseSync(':memory:');
   applyRegistrySchema(db);
-  const createdAt = Date.now() - 1000;
   const session: Session = createSession(db, {
     id: '77777777-8888-4777-8666-555555555555',
     provider: 'codex',

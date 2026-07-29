@@ -18,10 +18,10 @@
  *     cards — this file carries it through the rest of the app.
  *
  * Mobile first, and one-handed: the acceptance bar is a phone held in one hand
- * outdoors, so every control is at least 44px, every foreground colour is past
- * 5.6:1 on its background (most are past 8:1), and the two things a thumb
- * reaches for — the accessory bar and "New session" — sit at the bottom of the
- * screen rather than the top.
+ * outdoors, so every control is at least 44px, every foreground token clears
+ * 5.6:1 on *every* surface it is used on rather than only on the deepest one
+ * (most are past 8:1), and the two things a thumb reaches for — the accessory
+ * bar and "New session" — sit at the bottom of the screen rather than the top.
  *
  * Desktop is a different shape, not a wider phone: past 900px the session list
  * becomes a rail beside the open session (`.workspace`, chosen in `app.tsx`),
@@ -43,8 +43,11 @@
   --line-lit: #3a3a44;
 
   --fg: #f3f3f5; /* 17:1 on --bg */
-  --muted: #a8a8b4; /* 8:1 */
-  --dim: #8b8b98; /* 5.6:1 — the floor, used only for machine detail */
+  --muted: #a8a8b4; /* 8:1 on --bg, 6.2:1 on --raise */
+  /* The floor, used only for machine detail. Set against `--raise` rather than
+     against `--bg`: it lands on all three surfaces, and a token chosen on the
+     deepest one is below the floor everywhere it is actually read. */
+  --dim: #9a9aa8; /* 6.9:1 on --bg, 6.4:1 on --panel, 6:1 on --raise */
 
   /* Amber is the human. See rule 1 above. */
   --accent: #ffb454; /* 10.8:1 on --bg, 10.5:1 against --on-accent */
@@ -126,6 +129,14 @@ body {
    own — and `app.tsx` needs no prop saying which shape it is being rendered in. */
 .workspace > main.screen {
   border-right: 1px solid var(--line);
+}
+
+/* "Back to sessions" is phone thinking here: the list is the rail beside this,
+   and it never left. `display: none` rather than `visibility: hidden`, so it
+   leaves the tab order and the accessibility tree too — a control a keyboard can
+   still reach, for a screen that is already on screen, is worse than none. */
+.workspace .bar-back {
+  display: none;
 }
 
 /* Nothing open. Says what the space is for rather than leaving it blank. */
@@ -435,10 +446,17 @@ label {
 
 /* The one that is open, in the desktop rail. Tinted with its own provider
    colour rather than a fourth accent, so "selected" and "which agent" are the
-   same fact told twice. */
+   same fact told twice.
+ *
+ * The tint is a fourth surface, and the two numbers below are what keeps it
+ * legible: 8% is as far as a provider colour can lift `--raise` before the
+ * lightest usable `--dim` falls under the 5.6:1 floor, and on this row `--dim`
+ * steps up to `--muted` — so the path, the note and the state word on the row
+ * being read are the one place they are not at the floor. */
 .row-on,
 .row-on:hover {
-  background: color-mix(in srgb, var(--spine, var(--fg)) 12%, var(--raise));
+  --dim: var(--muted); /* 5.9:1 on the codex tint, 6:1 on the claude one */
+  background: color-mix(in srgb, var(--spine, var(--fg)) 8%, var(--raise));
   border-color: color-mix(in srgb, var(--spine, var(--line-lit)) 35%, var(--line));
   border-left-color: var(--spine, var(--line-lit));
 }
@@ -605,11 +623,16 @@ label {
   font-size: 14.5px;
 }
 
+/* Reads as a word in the sentence and is still a 44px tap target: it is the one
+   control on the amber banner, reached for one-handed while an agent is blocked.
+   `inline-flex` centres the label in that box, and the banner's `baseline`
+   alignment keeps the word on the line of the sentence around it. */
 .link {
+  display: inline-flex;
+  align-items: center;
   border: 0;
   background: none;
   padding: 0;
-  min-height: 0;
   color: inherit;
   font: inherit;
   font-weight: 600;

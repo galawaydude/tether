@@ -169,7 +169,7 @@ function SessionScreen({
   return (
     <div class="screen">
       <header class="bar">
-        <button class="ghost" onClick={onBack} aria-label="Back to sessions">
+        <button class="ghost bar-back" onClick={onBack} aria-label="Back to sessions">
           ‹ Sessions
         </button>
         <div class="bar-title">
