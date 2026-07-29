@@ -69,10 +69,7 @@ The conversation is read from the provider's own transcript file rather than fro
 the terminal — `~/.claude/projects/<slug>/<uuid>.jsonl` for Claude Code,
 `~/.codex/sessions/<Y>/<M>/<D>/rollout-<ts>-<uuid>.jsonl` for Codex. Both are
 append-only NDJSON, which is why they share one tailer and differ only in a
-mapper. Those files are **internal to tools that ship frequently, not public
-APIs**: a release can change one, and when it does the conversation view loses
-detail — never the session, and never the terminal, which depends on none of it
-and is always correct.
+mapper. Neither file is a public API — see [Known risks](#known-risks).
 
 `conv` also carries `{"c":"state","state":"busy"|"idle"|"waiting"}`, which is the
 session's current state rather than a record of anything — Codex sessions today,
@@ -331,8 +328,8 @@ npm run test:e2e                  # the one end-to-end spec
 here that is not a unit test: log in, start a session, watch it, type at it,
 **reload the page**, and assert the conversation and the terminal come back
 intact and exactly once. It runs against `e2e/stub-agent.ts` — a script that
-prints, prompts and writes a Claude-Code-shaped transcript — put on `PATH` as
-`claude`, so the session is created through the real code path. **CI never runs a
+prints, echoes what you type at it, and writes a Claude-Code-shaped transcript —
+put on `PATH` as `claude`, so the session is created through the real code path. **CI never runs a
 real agent**: that would need real credentials and would cost money per run.
 Everything it touches (`HOME`, the state file, the tmux socket, the session root)
 is redirected into a scratch directory by `playwright.config.ts`.
