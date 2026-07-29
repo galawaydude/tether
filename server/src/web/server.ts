@@ -1,10 +1,12 @@
 import cookie from '@fastify/cookie';
 import Fastify from 'fastify';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { DatabaseSync } from 'node:sqlite';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import type { AuthStore } from './auth.ts';
 import { isHostAllowed, isOriginAllowed, isStateChanging } from './guards.ts';
+import { registerSessionRoutes } from './sessions.ts';
 
 declare module 'fastify' {
   interface FastifyContextConfig {
@@ -17,8 +19,14 @@ export const SESSION_COOKIE = 'tether_session';
 
 export type ServerOptions = {
   auth: AuthStore;
+  /** The registry database (the same file the auth store uses). */
+  db: DatabaseSync;
   /** Accepted `Host` header hostnames — see `defaultAllowedHosts`. */
   allowedHosts: Iterable<string>;
+  /** tmux socket the session routes drive. Tests point this at their own. */
+  socket?: string | undefined;
+  /** Directories a session may be started in; defaults to `allowedRoots()`. */
+  allowedRoots?: readonly string[] | undefined;
   /**
    * IPs/CIDRs whose `X-Forwarded-Proto` and `X-Forwarded-For` are believed. Empty
    * means believe nobody, so a client header can never spoof the `Secure` flag.
@@ -186,6 +194,14 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   });
 
   app.get('/api/session', async (_request, reply) => reply.send({ authenticated: true }));
+
+  // Behind the same default-deny hook as everything else — these routes opt out of
+  // nothing, which is the whole point of the posture being deny-by-default.
+  registerSessionRoutes(app, {
+    db: options.db,
+    socket: options.socket,
+    allowedRoots: options.allowedRoots,
+  });
 
   return app;
 }

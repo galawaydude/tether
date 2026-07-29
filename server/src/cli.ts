@@ -1,31 +1,22 @@
 #!/usr/bin/env node
-import { randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
-import { basename } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { DatabaseSync } from 'node:sqlite';
 import { Writable } from 'node:stream';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 
-import { databasePath, openDatabase } from './db.ts';
+import { databasePath } from './db.ts';
 import {
   DEFAULT_PROVIDER,
   type Session,
-  createSession,
   getSession,
   listSessions,
-  markDead,
   openRegistry,
   reconcileWithTmux,
 } from './machine/registry.ts';
-import {
-  DEFAULT_SOCKET,
-  isSessionGone,
-  killSession,
-  newSession,
-  resolveCwd,
-} from './machine/tmux.ts';
+import { startSession, stopSession } from './machine/sessions.ts';
+import { DEFAULT_SOCKET, allowedRoots } from './machine/tmux.ts';
 import { MIN_PASSWORD_LENGTH, createAuthStore } from './web/auth.ts';
 import type { AuthStore } from './web/auth.ts';
 import { defaultAllowedHosts, isLoopbackHost } from './web/guards.ts';
@@ -64,6 +55,8 @@ export type ServeConfig = {
   port: number;
   allowedHosts: Set<string>;
   trustedProxies: string[];
+  /** Where a session may be started — home unless `TETHER_ALLOWED_ROOTS` widens it. */
+  allowedRoots: readonly string[];
 };
 
 export type ServeArgs = {
@@ -96,6 +89,7 @@ export function resolveServeConfig(args: ServeArgs, hasPassword: boolean): Serve
     port,
     allowedHosts: defaultAllowedHosts(host, args.allowedHosts ?? []),
     trustedProxies: [...(args.trustedProxies ?? [])],
+    allowedRoots: allowedRoots(),
   };
 }
 
@@ -106,6 +100,7 @@ export function formatBanner(config: ServeConfig, hasPassword: boolean): string 
     `  password:      ${hasPassword ? 'set' : 'NOT SET — every login will fail'}`,
     `  allowed hosts: ${[...config.allowedHosts].join(', ')}`,
     `  trusted proxies: ${config.trustedProxies.length > 0 ? config.trustedProxies.join(', ') : 'none (X-Forwarded-* ignored)'}`,
+    `  session roots: ${config.allowedRoots.join(', ')}`,
   ].join('\n');
 }
 
@@ -168,7 +163,7 @@ async function setPassword(auth: AuthStore): Promise<number> {
   return 0;
 }
 
-async function serve(auth: AuthStore, args: ServeArgs): Promise<number> {
+async function serve(db: DatabaseSync, auth: AuthStore, args: ServeArgs): Promise<number> {
   const hasPassword = auth.hasPassword();
   let config: ServeConfig;
   try {
@@ -180,8 +175,11 @@ async function serve(auth: AuthStore, args: ServeArgs): Promise<number> {
 
   const app = buildServer({
     auth,
+    db,
     allowedHosts: config.allowedHosts,
     trustedProxies: config.trustedProxies,
+    socket,
+    allowedRoots: config.allowedRoots,
   });
   try {
     await app.listen({ host: config.host, port: config.port });
@@ -205,13 +203,6 @@ async function serve(auth: AuthStore, args: ServeArgs): Promise<number> {
 
 /** Tests point this at their own tmux server; nothing else sets it. */
 const socket = process.env['TETHER_TMUX_SOCKET'] || DEFAULT_SOCKET;
-
-/**
- * What `tether new` starts when no explicit command is given. A `Map` rather than
- * an object literal so `--provider constructor` is an unknown provider and not
- * `Object.prototype`'s member.
- */
-const PROVIDER_COMMANDS = new Map<string, readonly string[]>([[DEFAULT_PROVIDER, ['claude']]]);
 
 function fixed(value: string, width: number): string {
   return value.length > width ? `${value.slice(0, width - 1)}…` : value.padEnd(width);
@@ -252,31 +243,13 @@ async function newCommand(db: DatabaseSync, argv: readonly string[]): Promise<st
   const dir = positionals[0];
   if (dir === undefined || positionals.length > 1) throw new Error(USAGE);
 
-  const provider = values.provider ?? DEFAULT_PROVIDER;
-  const run = command?.length ? command : PROVIDER_COMMANDS.get(provider);
-  if (run === undefined) {
-    throw new Error(`unknown provider ${provider} — pass the command after \`--\``);
-  }
-
-  // The one cwd validation in tether lives in the tmux driver; this is a call to
-  // it, not a second copy. Doing it before anything is created means a bad
-  // directory leaves no tmux session and no row.
-  const cwd = await resolveCwd(dir);
-  const id = randomUUID();
-  const tmuxName = `tether-${id.slice(0, 8)}`;
-
-  await newSession(socket, { name: tmuxName, cwd, command: run });
-  try {
-    // Provisional from spawn: provider_session_id is null here and is back-filled
-    // once the provider creates its own session identity.
-    createSession(db, { id, provider, cwd, title: values.title ?? basename(cwd), tmuxName });
-  } catch (error) {
-    // A session tmux is running that the registry does not know about is invisible
-    // garbage — nothing would ever list it, let alone kill it.
-    await killSession(socket, tmuxName).catch(() => {});
-    throw error;
-  }
-  return `${id}\t${tmuxName}\t${cwd}`;
+  const session = await startSession(db, socket, {
+    cwd: dir,
+    title: values.title,
+    provider: values.provider,
+    command: command ?? undefined,
+  });
+  return `${session.id}\t${session.tmuxName}\t${session.cwd}`;
 }
 
 async function killCommand(db: DatabaseSync, argv: readonly string[]): Promise<string> {
@@ -284,13 +257,7 @@ async function killCommand(db: DatabaseSync, argv: readonly string[]): Promise<s
   if (id === undefined || argv.length > 1) throw new Error(USAGE);
   const session = getSession(db, id);
   if (session === undefined) throw new Error(`no such session: ${id}`);
-  // Already-gone is the postcondition, not an error — but only already-gone. Any
-  // other tmux failure leaves the pane running, so it must not be reported as a
-  // kill and must not record a row dead that nothing ever revives.
-  await killSession(socket, session.tmuxName).catch((error: unknown) => {
-    if (!isSessionGone(error)) throw error;
-  });
-  markDead(db, session.id);
+  await stopSession(db, socket, session);
   return `killed ${session.id}`;
 }
 
@@ -347,14 +314,16 @@ export async function main(argv: readonly string[]): Promise<number> {
     return 1;
   }
 
-  const db = openDatabase();
+  // One database, one schema: `serve` answers the session routes from the same file
+  // the CLI's `ls` reads.
+  const db = openRegistry();
   const auth = createAuthStore(db);
 
   switch (command) {
     case 'set-password':
       return setPassword(auth);
     case 'serve':
-      return serve(auth, {
+      return serve(db, auth, {
         host: values.host,
         port: values.port,
         allowedHosts: values['allowed-host'],

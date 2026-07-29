@@ -39,11 +39,21 @@ targets, session sharing, usage dashboards, a mobile app.
 
 ## Status
 
-Toolchain, CI, the tmux driver, authentication and the session registry. There is
-no web UI yet — the server serves login, logout and a session check, and no route
-can reach a terminal, auth deliberately landing before there is anything behind it
-to protect — but tether is already usable from a terminal, see below. This
-milestone is being built one focused PR at a time.
+Toolchain, CI, the tmux driver, authentication, the session registry and the HTTP
+session API. There is no web UI yet, and no terminal transport — but every session
+the CLI can start, list and kill can now be driven over HTTP by an authenticated
+client. This milestone is being built one focused PR at a time.
+
+```
+GET    /api/machines/local/sessions        every session, live and dead
+POST   /api/machines/local/sessions        {"cwd": "…", "title"?: "…", "provider"?: "…"}
+GET    /api/machines/local/sessions/:id
+DELETE /api/machines/local/sessions/:id    kills the tmux session and marks the row dead
+```
+
+Sessions are addressed as `(machineId, sessionId)` from day one, and `machineId` is
+always `local`. That one path segment is what makes a second machine a later split
+rather than a rewrite.
 
 ## Using it from a terminal
 
@@ -91,6 +101,19 @@ npm run tether -- serve          # binds 127.0.0.1:8787
 - **`--trusted-proxy <ip|cidr>`** is the only way `X-Forwarded-Proto` and
   `X-Forwarded-For` are believed. Without it a client cannot spoof the `Secure`
   cookie flag or its own address.
+- **Sessions may only start inside the allowed roots.** "Start a session in
+  directory X" is input that becomes a process working directory, so the path is
+  resolved — symlinks and all — and then required to lie inside one of them.
+  The default is your home directory; `TETHER_ALLOWED_ROOTS` widens it, taking a
+  `:`-separated list like `PATH`:
+
+  ```sh
+  TETHER_ALLOWED_ROOTS=/srv/code:/mnt/work npm run tether -- serve
+  ```
+
+  It applies to `tether new` as well as to the API, and the startup banner prints
+  the roots in force. There is no per-root permission model: there is one account,
+  and it has full access to everything inside the roots.
 
 State — the one SQLite file, holding the password hash and the session registry —
 lives in `~/.local/state/tether/tether.sqlite` (`$XDG_STATE_HOME`, or

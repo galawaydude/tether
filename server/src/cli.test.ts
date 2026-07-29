@@ -40,7 +40,13 @@ async function cli(
   extraEnv: NodeJS.ProcessEnv = {},
 ): Promise<CliResult> {
   const child = run(process.execPath, [CLI, ...args], {
-    env: { ...process.env, TETHER_STATE_DIR: stateDir, ...extraEnv },
+    // These sessions start in temporary directories, not under the default root.
+    env: {
+      ...process.env,
+      TETHER_STATE_DIR: stateDir,
+      TETHER_ALLOWED_ROOTS: tmpdir(),
+      ...extraEnv,
+    },
   });
   child.child.stdin?.end(stdin);
   try {

@@ -14,7 +14,8 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { delimiter, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 /** The socket name of tether's own tmux server. Tests use their own. */
 export const DEFAULT_SOCKET = 'tether';
@@ -147,15 +148,42 @@ export function isSessionGone(error: unknown): boolean {
 }
 
 /**
- * Resolve a caller-supplied working directory and require it to be an existing
- * directory. Returns the real path — symlinks resolved — which is what gets passed
- * to tmux.
- *
- * The configurable root confinement from report section 7 lands with the API in
- * PR #5 and belongs here, right after the realpath: this is the only place a cwd
- * enters the system, and realpath is what makes a root check meaningful.
+ * Where a session may be started. `cwd` is attacker-controlled input that becomes a
+ * process working directory on a machine where reaching tether is a shell (report
+ * §7), so it is confined to these roots. The default is the user's home;
+ * `TETHER_ALLOWED_ROOTS` — a `:`-separated list, like `PATH` — widens it. One
+ * setting, read at use, and that is deliberately all of it: there is no per-root
+ * permission model to build, because there is one account with full access.
  */
-export async function resolveCwd(cwd: string): Promise<string> {
+export function allowedRoots(): readonly string[] {
+  const configured = process.env['TETHER_ALLOWED_ROOTS'];
+  if (configured === undefined || configured.trim() === '') return [homedir()];
+  return configured.split(delimiter).filter((root) => root.trim() !== '');
+}
+
+/**
+ * Real containment, never a string prefix: `/home/user2` is not inside `/home/user`
+ * however similar the two strings are. `relative` is the stdlib answer — `''` for
+ * the root itself, and something starting `..` (or an absolute path, on Windows,
+ * across drives) for anything outside it.
+ */
+function contains(root: string, path: string): boolean {
+  const rel = relative(root, path);
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+}
+
+/**
+ * Resolve a caller-supplied working directory, require it to be an existing
+ * directory, and require it to lie inside one of `roots`. Returns the real path —
+ * symlinks resolved — which is what gets passed to tmux.
+ *
+ * The order is the whole point (report §7): resolve *first*, then check. Checking
+ * the path as given would pass `~/link -> /etc` and `~/../../etc` alike.
+ */
+export async function resolveCwd(
+  cwd: string,
+  roots: readonly string[] = allowedRoots(),
+): Promise<string> {
   const absolute = resolve(cwd);
   let real: string;
   let isDirectory: boolean;
@@ -166,6 +194,15 @@ export async function resolveCwd(cwd: string): Promise<string> {
     throw new InvalidCwdError(absolute, `does not exist (${(error as Error).message})`);
   }
   if (!isDirectory) throw new InvalidCwdError(real, 'not a directory');
+  // The roots are resolved too: a home directory that is itself a symlink would
+  // otherwise contain nothing at all. A root that does not resolve is dropped
+  // rather than compared literally, so an unusable list denies everything.
+  const realRoots = (
+    await Promise.all(roots.map((root) => realpath(resolve(root)).catch(() => null)))
+  ).filter((root) => root !== null);
+  if (!realRoots.some((root) => contains(root, real))) {
+    throw new InvalidCwdError(real, `outside the allowed roots (${roots.join(delimiter)})`);
+  }
   return real;
 }
 
@@ -175,11 +212,16 @@ export async function resolveCwd(cwd: string): Promise<string> {
  */
 export async function newSession(
   socket: string,
-  opts: { name: string; cwd: string; command: readonly string[] },
+  opts: {
+    name: string;
+    cwd: string;
+    command: readonly string[];
+    roots?: readonly string[] | undefined;
+  },
 ): Promise<string> {
   checkSessionName(opts.name);
   if (opts.command.length === 0) throw new Error('newSession requires a command');
-  const cwd = await resolveCwd(opts.cwd);
+  const cwd = await resolveCwd(opts.cwd, opts.roots);
   await run(socket, ['new-session', '-d', '-s', opts.name, '-c', cwd, '--', ...opts.command]);
   return cwd;
 }

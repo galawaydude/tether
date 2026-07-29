@@ -10,14 +10,15 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
+import { delimiter, join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { promisify } from 'node:util';
 
 import {
   InvalidCwdError,
+  allowedRoots,
   TmuxError,
   UnsafeArgumentError,
   captureScrollback,
@@ -33,6 +34,13 @@ import {
   sendText,
   showOption,
 } from './tmux.ts';
+
+/**
+ * Sessions here start in temporary directories, and the default root is the user's
+ * home. This is the widening setting doing its job — the confinement itself is
+ * tested below with explicit roots, so nothing here is bypassed.
+ */
+process.env['TETHER_ALLOWED_ROOTS'] = tmpdir();
 
 /**
  * A socket nobody else is using, torn down when the test ends however it ends.
@@ -221,6 +229,77 @@ test('cwd is resolved and required to be an existing directory', async (t) => {
     InvalidCwdError,
   );
   assert.deepEqual(await listSessions(socket), []);
+});
+
+/**
+ * The trust boundary (report §7). Every case below is one an attacker would try,
+ * and the two that matter are the symlink and the `/home/user2` prefix: a check
+ * that resolves too late, or compares strings, passes everything else and fails
+ * exactly these.
+ */
+test('cwd is confined to the allowed roots', async (t) => {
+  // Realpath'd up front so the assertions compare real paths to real paths on a
+  // system whose temporary directory is itself a symlink.
+  const base = await realpath(await mkdtemp(join(tmpdir(), 'tether-roots-')));
+  t.after(() => rm(base, { recursive: true, force: true }));
+
+  const root = join(base, 'user');
+  const inside = join(root, 'project');
+  const outside = join(base, 'elsewhere');
+  // The case a string prefix gets wrong: `/home/user2` starts with `/home/user`.
+  const sibling = join(base, 'user2');
+  for (const dir of [root, inside, outside, sibling]) await mkdir(dir, { recursive: true });
+
+  const file = join(root, 'a-file');
+  await writeFile(file, '');
+  // A symlink inside the root pointing out of it. Resolving before checking is the
+  // only thing that catches this; checking the path as given would let it through.
+  const escape = join(root, 'escape-hatch');
+  await symlink(outside, escape);
+
+  const roots = [root];
+  assert.equal(await resolveCwd(root, roots), root, 'the root itself');
+  assert.equal(await resolveCwd(inside, roots), inside, 'a directory under it');
+
+  for (const [cwd, why] of [
+    [outside, 'outside the roots'],
+    [sibling, 'a sibling whose path is a string prefix match'],
+    [join(root, '..', 'elsewhere'), 'traversal out of the root'],
+    [escape, 'a symlink pointing outside the root'],
+    [join(root, 'no-such-dir'), 'a path that does not exist'],
+    [file, 'a file rather than a directory'],
+  ] as const) {
+    await assert.rejects(() => resolveCwd(cwd, roots), InvalidCwdError, why);
+  }
+
+  // A refused directory starts nothing: the check runs before tmux is asked.
+  const socket = socketFor(t);
+  await assert.rejects(
+    () => newSession(socket, { name: 'x', cwd: outside, command: IDLE_SHELL, roots }),
+    InvalidCwdError,
+  );
+  assert.deepEqual(await listSessions(socket), []);
+
+  // Several roots widen it; an unusable list denies everything rather than
+  // comparing an unresolvable root literally.
+  assert.equal(await resolveCwd(outside, [root, outside]), outside);
+  await assert.rejects(() => resolveCwd(inside, [join(base, 'gone')]), InvalidCwdError);
+});
+
+test('the allowed roots default to home and are widened by one setting', (t) => {
+  const previous = process.env['TETHER_ALLOWED_ROOTS'];
+  t.after(() => {
+    process.env['TETHER_ALLOWED_ROOTS'] = previous;
+  });
+
+  for (const unset of [undefined, '', '   ']) {
+    if (unset === undefined) delete process.env['TETHER_ALLOWED_ROOTS'];
+    else process.env['TETHER_ALLOWED_ROOTS'] = unset;
+    assert.deepEqual(allowedRoots(), [homedir()], JSON.stringify(unset));
+  }
+
+  process.env['TETHER_ALLOWED_ROOTS'] = ['/srv/code', '', '/mnt/work'].join(delimiter);
+  assert.deepEqual(allowedRoots(), ['/srv/code', '/mnt/work']);
 });
 
 test('tmux command separators in caller arguments are rejected, not executed', async (t) => {

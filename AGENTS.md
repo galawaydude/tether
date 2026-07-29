@@ -48,6 +48,15 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `new-session` dies with `server exited unexpectedly`. Ubuntu 24.04 ships 3.4, hence
   the source build in `.github/workflows/ci.yml`. That message from any tmux command
   means the tmux on `PATH` is too old, not that the argv was wrong.
+- **`cwd` is a trust boundary and `resolveCwd` in `machine/tmux.ts` is the only
+  gate.** It resolves the path (symlinks included) _before_ checking it, and confines
+  the result to `allowedRoots()` — the user's home unless `TETHER_ALLOWED_ROOTS` (a
+  `:`-separated list) widens it. Containment is `path.relative`, never a string
+  prefix: `/home/user2` is not inside `/home/user`. Everything that starts a session
+  goes through it; do not add a second path check anywhere. Tests that start sessions
+  in a temp directory set `TETHER_ALLOWED_ROOTS` rather than bypassing it.
+  `machine/sessions.ts` holds the one create/delete sequence — tmux plus registry,
+  rollback on a failed insert — that both the CLI and the HTTP routes call.
 - **All persistent state is one SQLite file outside the repo**, opened by
   `server/src/db.ts` — `~/.local/state/tether/tether.sqlite`, file `0600` in a `0700`
   directory (`$XDG_STATE_HOME`, or `$TETHER_STATE_DIR`, which tests and any manual run
