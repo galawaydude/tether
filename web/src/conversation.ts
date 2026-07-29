@@ -20,6 +20,9 @@
 
 import type { ConversationEvent, SessionState, ToolCallEvent } from '@tether/shared';
 
+import { MAX_TEXT } from './keys.ts';
+import type { Status } from './terminal.tsx';
+
 /** An event with its position in the session's stream, as the server sends it. */
 export type SeqEvent = { seq: number; e: ConversationEvent };
 
@@ -139,19 +142,45 @@ export function addEcho(state: Rows, text: string): Rows {
  * Why the composer will not send right now, or `null`. A sentence rather than a
  * boolean: a Send button that is grey for no stated reason is a bug report.
  *
- * `waiting` means the pane is holding on a permission prompt. A message pasted
- * into that is not a message — it answers the dialog with whatever option is
- * selected, which can be *yes* to a command the user never read. So it is
- * refused, and the banner above both panes already says where to answer.
+ * Every refusal here is a message that could not arrive. The alternative is not
+ * a stricter composer, it is a "Sending…" that never resolves — an interface
+ * quietly telling the user something untrue about their own message, which in a
+ * tool for supervising work you cannot see is the worst failure available.
+ *
+ * The three facts it knows, in the order it applies them:
+ *
+ *  - **The terminal channel is finished.** A composed message is an `input`
+ *    frame on that socket, so a session that has ended — or one the server no
+ *    longer has — has nowhere for it to go, and the two are said apart because
+ *    the user can act on the difference.
+ *  - **`waiting`** means the pane is holding on a permission prompt. A message
+ *    pasted into that is not a message — it answers the dialog with whatever
+ *    option is selected, which can be *yes* to a command the user never read.
+ *    The banner above both panes already says where to answer.
+ *  - **Longer than the wire allows.** `parseClientFrame` drops an `input` frame
+ *    over {@link MAX_TEXT} and never ACKs it, so it would be resent on every
+ *    reconnect for the life of the mount. Measured the same way the server
+ *    measures it — `String.length` on the text that is actually sent — and
+ *    refused rather than split, since a splitting scheme invents an
+ *    interleaving no test covers.
  *
  * `busy` is deliberately **not** refused. Both providers accept a message that
  * arrives mid-turn and show it queued in their own pane, and redirecting an
  * agent that is off down the wrong path is the single most valuable thing a
  * phone can do — a composer that locks for the length of a turn is a composer
- * that is unavailable exactly when it is wanted.
+ * that is unavailable exactly when it is wanted. Nor is `retrying`: the frame
+ * waits in the terminal view's unacked set and goes out on the next connect,
+ * which is the whole point of that set.
  */
-export function sendBlocked(agent: SessionState): string | null {
-  return agent === 'waiting' ? 'Answer the prompt in the terminal first.' : null;
+export function sendBlocked(agent: SessionState, message: string, terminal: Status): string | null {
+  if (terminal === 'ended') return 'This session has ended. Nothing can reach it now.';
+  if (terminal === 'gone')
+    return 'The server no longer has this session. Nothing can reach it now.';
+  if (agent === 'waiting') return 'Answer the prompt in the terminal first.';
+  if (message.length > MAX_TEXT) {
+    return `Too long to send: ${message.length} characters, and the limit is ${MAX_TEXT}.`;
+  }
+  return null;
 }
 
 /**
@@ -226,6 +255,31 @@ export function addEvents(state: Rows, incoming: readonly SeqEvent[]): Rows {
 /** Convenience for the tests and for a fresh history: rows from nothing. */
 export function toRows(events: readonly SeqEvent[]): readonly Row[] {
   return addEvents(noRows(), events).rows;
+}
+
+/**
+ * The whole conversation again, replacing the rows built so far — the answer to
+ * `refetch`, where the gap is wider than the server's tail.
+ *
+ * Rows are replaced rather than merged: this is the entire transcript, and
+ * merging it into rows built from a stream that has since been declared unusable
+ * is how a hole gets papered over instead of fixed.
+ *
+ * Echoes are **carried across**, because a message sent a moment ago cannot have
+ * been superseded by a transcript the server built before it arrived, and
+ * dropping it blanks a just-sent message from the view for as long as the turn
+ * it landed in. It cannot duplicate, because it is the same {@link addEvents}
+ * retirement either way — applied only past the `seq` this client had already
+ * seen, which is the whole of the two passes: those records already had their
+ * chance at the echo and retired nothing, so replaying them must not retire it
+ * now.
+ */
+export function rebuild(state: Rows, events: readonly SeqEvent[]): Rows {
+  const seen = addEvents(
+    noRows(),
+    events.filter(({ seq }) => seq <= state.seq),
+  );
+  return addEvents({ ...seen, echoes: state.echoes }, events);
 }
 
 /**

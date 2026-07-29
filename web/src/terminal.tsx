@@ -39,14 +39,23 @@ const RECONNECT_MAX_MS = 30_000;
 /** Long enough to coalesce an orientation change, short enough not to be felt. */
 const RESIZE_DEBOUNCE_MS = 120;
 
-/** Shared with the conversation channel, which reaches a subset of these. */
-export type Status = 'connecting' | 'live' | 'retrying' | 'ended' | 'signedOut';
+/**
+ * Shared with the conversation channel, which reaches a subset of these.
+ *
+ * `ended` and `gone` are one close each and are kept apart rather than merged
+ * into "finished": a session that stopped is not a session the server cannot
+ * find, and the user can act on the difference. The composer reads them too
+ * (`sendBlocked`), because this socket is where a composed message goes — a
+ * message accepted after either one could never leave.
+ */
+export type Status = 'connecting' | 'live' | 'retrying' | 'ended' | 'gone' | 'signedOut';
 
 export const STATUS_TEXT: Record<Status, string> = {
   connecting: 'Connecting…',
   live: 'Live',
   retrying: 'Reconnecting…',
   ended: 'Session ended',
+  gone: 'Session not found',
   signedOut: 'Signed out',
 };
 
@@ -196,7 +205,7 @@ export function TerminalView({
         socket = null;
         if (closed) return;
         if (event.code === CLOSE_NO_SESSION || event.code === CLOSE_SESSION_ENDED) {
-          setStatus.current('ended');
+          setStatus.current(event.code === CLOSE_SESSION_ENDED ? 'ended' : 'gone');
           return;
         }
         // A phone suspends its sockets the moment the screen locks, so a dropped

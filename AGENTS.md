@@ -279,10 +279,22 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `e2e/composer.spec.ts` is what would catch a "convenience" that submits on it;
   the optimistic echo is retired by **arrival order, not by matching the text**,
   because a provider is free to record what it received rather than what was
-  typed and a failed match leaves an echo standing beside its own record forever;
-  and `sendBlocked` refuses only `waiting` — a message pasted at a permission
-  prompt answers the dialog, while `busy` is queued by both providers and is the
-  most valuable thing a phone can do.
+  typed and a failed match leaves an echo standing beside its own record forever
+  — the cost, accepted, is that **any** `user` event retires one, and the mappers
+  give that kind to every user-role text block that is not command noise, so a
+  message typed straight into the terminal or any other such record retires the
+  oldest echo early and shows one message with another's text until its own
+  record lands, still never two; a refetch therefore **carries the outstanding
+  echoes across the rebuild** and re-retires them only past the `seq` already
+  applied, since a message sent a moment ago cannot have been superseded by a
+  transcript written before it arrived; and `sendBlocked` refuses only what could
+  not arrive — `waiting`, because a message pasted at a permission prompt answers
+  the dialog; a message over `MAX_TEXT`, which `parseClientFrame` drops and never
+  ACKs, so it would be resent on every reconnect under a permanent "Sending…";
+  and a terminal socket closed `ended` or `gone`, which is why those two closes
+  are separate `Status` values. `busy` and `retrying` are **not** refused: both
+  providers queue a message mid-turn, the unacked set carries one across a
+  reconnect, and that is the most valuable thing a phone can do.
 - **The session screen keeps both panes mounted and hides one with
   `visibility: hidden`** (`app.tsx`, `.pane-off` in `style.css`). That one
   property is the whole of "switching tabs preserves both scroll positions", and

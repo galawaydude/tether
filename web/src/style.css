@@ -317,6 +317,7 @@ label {
 }
 
 .chip-ended,
+.chip-gone,
 .chip-signedOut {
   color: var(--danger);
   border-color: var(--danger);

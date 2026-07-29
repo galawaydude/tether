@@ -23,6 +23,7 @@ import {
   addEvents,
   addPending,
   noRows,
+  rebuild,
   sendBlocked,
   type Row,
   type Rows,
@@ -44,6 +45,7 @@ export function ConversationView({
   onStatus,
   onState,
   sender,
+  terminal,
 }: {
   sessionId: string;
   /** Whose name goes over an assistant message. Nothing else here reads it. */
@@ -57,6 +59,12 @@ export function ConversationView({
   onState: (state: SessionState, detail?: string) => void;
   /** Where a composed message goes: the terminal pane's socket. */
   sender: Send;
+  /**
+   * That socket's own status. The composer needs it: a session that has ended
+   * or one the server no longer has can still be typed into, and the message
+   * would sit under "Sending…" forever with nothing to say why.
+   */
+  terminal: Status;
 }) {
   const [state, setState] = useState<Rows>(noRows);
   const [failed, setFailed] = useState(false);
@@ -100,12 +108,15 @@ export function ConversationView({
         const history = await fetchConversation(sessionId);
         if (closed) return;
         setFailed(false);
-        // Replace rather than merge: this is the whole conversation, and merging
-        // it into rows built from a stream that has since been declared unusable
-        // is how a hole gets papered over instead of fixed.
-        const fresh = addEvents(noRows(), history.events);
-        setState(fresh);
+        // Built here rather than only in the updater because `connect` needs the
+        // `seq` now, and an updater runs at the next render. It is also the
+        // answer whenever nothing is outstanding, which is every refetch but the
+        // one that lands on a message sent seconds ago.
+        const fresh = rebuild(noRows(), history.events);
         since = fresh.seq;
+        setState((current) =>
+          current.echoes.length === 0 ? fresh : rebuild(current, history.events),
+        );
         connect();
       } catch {
         if (closed) return;
@@ -226,6 +237,7 @@ export function ConversationView({
       </div>
       <Composer
         agent={agent}
+        terminal={terminal}
         onSend={(text) => {
           sender.current?.(text);
           setState((current) => addEcho(current, text));
@@ -250,15 +262,25 @@ export function ConversationView({
  * A `<form>` around a textarea is safe for exactly the same reason: Enter only
  * submits a form implicitly from a single-line control.
  */
-function Composer({ agent, onSend }: { agent: SessionState; onSend: (text: string) => void }) {
+function Composer({
+  agent,
+  terminal,
+  onSend,
+}: {
+  agent: SessionState;
+  terminal: Status;
+  onSend: (text: string) => void;
+}) {
   const [text, setText] = useState('');
   const box = useRef<HTMLTextAreaElement>(null);
 
-  const blocked = sendBlocked(agent);
+  // The message as it would be sent, so the refusal measures what the server
+  // will measure rather than what is on screen.
+  const message = text.trim();
+  const blocked = sendBlocked(agent, message, terminal);
 
   const submit = (event: Event) => {
     event.preventDefault();
-    const message = text.trim();
     if (message === '' || blocked !== null) return;
     onSend(message);
     setText('');
@@ -288,7 +310,7 @@ function Composer({ agent, onSend }: { agent: SessionState; onSend: (text: strin
           element.style.height = `${element.scrollHeight}px`;
         }}
       />
-      <button type="submit" class="primary" disabled={text.trim() === '' || blocked !== null}>
+      <button type="submit" class="primary" disabled={message === '' || blocked !== null}>
         Send
       </button>
       {blocked !== null && (

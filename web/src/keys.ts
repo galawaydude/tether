@@ -28,8 +28,12 @@ import type { ClientFrame } from '@tether/shared';
 export type InputFrame =
   { c: 'text'; text: string } | { c: 'key'; keys: string[] } | { c: 'input'; text: string };
 
-/** `term-socket.ts` drops a frame that exceeds either of these. */
-const MAX_TEXT = 64 * 1024;
+/**
+ * `term-socket.ts` drops a frame that exceeds either of these. `MAX_TEXT` is
+ * exported because the composer has to refuse what the server would drop, and a
+ * third copy of the number would be one that drifts.
+ */
+export const MAX_TEXT = 64 * 1024;
 const MAX_KEYS = 64;
 
 /** The final byte of a cursor/navigation CSI, and the tmux key name it means. */

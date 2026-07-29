@@ -7,12 +7,14 @@ import {
   addEvents,
   addPending,
   noRows,
+  rebuild,
   sendBlocked,
   summarise,
   toRows,
   type SeqEvent,
   type ToolRow,
 } from './conversation.ts';
+import { MAX_TEXT } from './keys.ts';
 
 /** Events as the server numbers them: file order, counted from 1. */
 function stream(...events: ConversationEvent[]): SeqEvent[] {
@@ -331,14 +333,75 @@ test('an assistant message does not retire an echo', () => {
   assert.deepEqual(state.echoes, ['hello']);
 });
 
-test('the composer refuses to send into a permission prompt, and only that', () => {
+test('the composer refuses to send into a permission prompt, and only that state', () => {
   // A message pasted at a permission prompt is not a message: it answers the
   // dialog with whatever option is selected, which can be *yes* to a command
   // nobody read. Refused, and the reason is a sentence rather than a grey button.
-  assert.equal(sendBlocked('waiting'), 'Answer the prompt in the terminal first.');
+  assert.equal(
+    sendBlocked('waiting', 'ship it', 'live'),
+    'Answer the prompt in the terminal first.',
+  );
   // Mid-turn is not refused. Both providers queue what arrives during a turn, and
   // redirecting an agent that is off down the wrong path is the whole reason to
   // reach for a phone.
-  assert.equal(sendBlocked('busy'), null);
-  assert.equal(sendBlocked('idle'), null);
+  assert.equal(sendBlocked('busy', 'ship it', 'live'), null);
+  assert.equal(sendBlocked('idle', 'ship it', 'live'), null);
+  // Nor is a dropped socket: the frame waits in the unacked set and goes out on
+  // the next connect, which is what that set is for.
+  assert.equal(sendBlocked('idle', 'ship it', 'retrying'), null);
+});
+
+test('the composer refuses a message the wire would drop, and says how long it is', () => {
+  // `parseClientFrame` returns null over `MAX_TEXT` and so never ACKs, which
+  // means the frame is resent on every reconnect while the view shows a
+  // "Sending…" that can never resolve. Measured the way the server measures it:
+  // `String.length` on the trimmed text that is actually sent.
+  assert.equal(sendBlocked('idle', 'x'.repeat(MAX_TEXT), 'live'), null);
+  assert.equal(
+    sendBlocked('idle', 'x'.repeat(MAX_TEXT + 1), 'live'),
+    `Too long to send: ${MAX_TEXT + 1} characters, and the limit is ${MAX_TEXT}.`,
+  );
+});
+
+test('the composer refuses a session that has ended, and says which kind of gone', () => {
+  // The composed message leaves on the terminal socket, so once that socket is
+  // finished there is nowhere for it to go. Two closes, two facts: a session
+  // that stopped is not a session the server cannot find.
+  assert.equal(
+    sendBlocked('idle', 'ship it', 'ended'),
+    'This session has ended. Nothing can reach it now.',
+  );
+  assert.equal(
+    sendBlocked('idle', 'ship it', 'gone'),
+    'The server no longer has this session. Nothing can reach it now.',
+  );
+});
+
+test('a refetch keeps an outstanding echo, and its record still retires it once', () => {
+  // The server answered `refetch`, so the whole history is replayed onto fresh
+  // rows. The echo must survive that: the records already applied had their
+  // chance and retired nothing, and dropping it blanks a just-sent message for
+  // as long as the turn it landed in.
+  const history = [
+    { seq: 1, e: { kind: 'user', id: 'u1', at: AT, text: 'first' } },
+    { seq: 2, e: { kind: 'assistant', id: 'a1', at: AT, text: 'done' } },
+  ] as const;
+  let live = addEvents(noRows(), history);
+  live = addEcho(live, 'second');
+
+  // The replayed record for 'first' already had its chance at the echo and
+  // retired nothing, so replaying it must not retire it now.
+  let fresh = rebuild(live, history);
+  assert.deepEqual(fresh.echoes, ['second']);
+  assert.equal(fresh.rows.length, 2);
+  assert.equal(fresh.seq, 2);
+
+  // And the record retires it exactly once when it finally lands.
+  fresh = addEvents(fresh, [{ seq: 3, e: { kind: 'user', id: 'u2', at: AT, text: 'second' } }]);
+  assert.deepEqual(fresh.echoes, []);
+  assert.equal(fresh.rows.filter((row) => row.row === 'message' && row.who === 'user').length, 2);
+
+  // A refetch with nothing outstanding is the plain full rebuild.
+  assert.deepEqual(rebuild(noRows(), history).echoes, []);
+  assert.equal(rebuild(noRows(), history).rows.length, 2);
 });

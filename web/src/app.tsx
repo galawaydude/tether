@@ -173,6 +173,7 @@ function SessionScreen({
                   )
                 }
                 sender={sender}
+                terminal={status.terminal}
               />
             ) : (
               <TerminalView
