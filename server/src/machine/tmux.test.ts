@@ -18,6 +18,7 @@ import { promisify } from 'node:util';
 
 import {
   InvalidCwdError,
+  TmuxError,
   UnsafeArgumentError,
   captureScrollback,
   captureViewport,
@@ -132,6 +133,26 @@ test('multi-line input survives into the pane with its newline intact', async (t
   // The regression: `send-keys -l $'a\nb'` delivers `ab`.
   assert.match(await readFile(sink, 'utf8'), /first line\r?\nsecond line/);
   await assert.rejects(() => sendText(socket, 'p', 'a\nb'), /use pasteText/);
+  // A bare CR is submit to a TUI, which is exactly what this path must not do.
+  await assert.rejects(() => sendText(socket, 'p', 'a\rb'), /use pasteText/);
+});
+
+test('a failed paste leaves no buffer behind', async (t) => {
+  const socket = socketFor(t);
+  await newSession(socket, { name: 'b', cwd: tmpdir(), command: IDLE_SHELL });
+
+  // The normal race: the pane is gone by the time the paste lands.
+  await assert.rejects(() => pasteText(socket, 'no-such-session', 'a message'), TmuxError);
+
+  // Named buffers are exempt from `buffer-limit`, so a leak here is permanent.
+  const buffers = await promisify(execFile)('tmux', ['-L', socket, 'list-buffers']);
+  assert.equal(buffers.stdout, '');
+});
+
+test('a paste larger than the pipe buffer rejects instead of crashing on EPIPE', async (t) => {
+  // No server on this socket, so tmux exits before draining stdin.
+  const socket = socketFor(t);
+  await assert.rejects(() => pasteText(socket, 'anything', 'x'.repeat(500_000)), TmuxError);
 });
 
 test('tether.conf is applied and the user’s ~/.tmux.conf is not', async (t) => {
@@ -201,6 +222,14 @@ test('tmux command separators in caller arguments are rejected, not executed', a
     UnsafeArgumentError,
   );
   await assert.rejects(() => sendKeys(socket, 'g', [';', 'kill-server']), UnsafeArgumentError);
+  // Targets, session names and literal text reach argv too, so the guard covers them.
+  await assert.rejects(() => sendKeys(socket, '}', ['Enter']), UnsafeArgumentError);
+  await assert.rejects(() => captureViewport(socket, '{'), UnsafeArgumentError);
+  await assert.rejects(() => sendText(socket, 'g', ';'), UnsafeArgumentError);
+  await assert.rejects(
+    () => newSession(socket, { name: ';', cwd: tmpdir(), command: IDLE_SHELL }),
+    UnsafeArgumentError,
+  );
 
   // Embedded separators and format strings are data, and must still go through.
   await sendText(socket, 'g', 'echo "a;b #{pane_id} $NOPE"');

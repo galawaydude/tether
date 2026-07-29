@@ -68,8 +68,13 @@ export class UnsafeArgumentError extends Error {
 
 /**
  * tmux splits its argv on standalone `;`, `{` and `}` before any command sees them:
- * `new-session -- sleep 1 ';' kill-server` runs kill-server. Embedded separators
- * (`a;b`, `$USER`, `#{pane_id}`) are passed through literally and are safe.
+ * `new-session -- sleep 1 ';' kill-server` runs kill-server, and `send-keys -l -- ';'`
+ * delivers nothing at all. Embedded separators (`a;b`, `$USER`, `#{pane_id}`) are
+ * passed through literally and are safe.
+ *
+ * The check lives in `run`, so it covers every argv this module builds — session
+ * names, pane targets, keys, commands — rather than only the paths that remember
+ * to ask for it.
  */
 const SEPARATORS = new Set([';', '{', '}']);
 
@@ -87,6 +92,9 @@ function checkSessionName(name: string): void {
 function run(socket: string, args: readonly string[], input?: string): Promise<string> {
   const argv = ['-L', socket, '-f', TMUX_CONF, ...args];
   return new Promise((fulfil, reject) => {
+    // Inside the executor, so a bad argument rejects rather than throwing synchronously
+    // out of the wrappers that are not `async`.
+    checkArgs(args);
     const child = spawn('tmux', argv, { stdio: ['pipe', 'pipe', 'pipe'] });
     const out: Buffer[] = [];
     const err: Buffer[] = [];
@@ -97,6 +105,11 @@ function run(socket: string, args: readonly string[], input?: string): Promise<s
       if (code === 0) fulfil(Buffer.concat(out).toString('utf8'));
       else reject(new TmuxError(argv, code, Buffer.concat(err).toString('utf8')));
     });
+    // A tmux that exits before draining stdin (bad socket, unreadable config) turns a
+    // large `load-buffer` write into an EPIPE. Swallow it: `close` reports the real
+    // failure with argv, exit code and stderr, and an unhandled 'error' would take
+    // the process down instead.
+    child.stdin.on('error', () => {});
     child.stdin.end(input ?? '');
   });
 }
@@ -126,12 +139,14 @@ function emptyIfNoServer(error: unknown): string {
 export async function resolveCwd(cwd: string): Promise<string> {
   const absolute = resolve(cwd);
   let real: string;
+  let isDirectory: boolean;
   try {
     real = await realpath(absolute);
+    isDirectory = (await stat(real)).isDirectory();
   } catch (error) {
     throw new InvalidCwdError(absolute, `does not exist (${(error as Error).message})`);
   }
-  if (!(await stat(real)).isDirectory()) throw new InvalidCwdError(real, 'not a directory');
+  if (!isDirectory) throw new InvalidCwdError(real, 'not a directory');
   return real;
 }
 
@@ -144,7 +159,6 @@ export async function newSession(
   opts: { name: string; cwd: string; command: readonly string[] },
 ): Promise<string> {
   checkSessionName(opts.name);
-  checkArgs(opts.command);
   if (opts.command.length === 0) throw new Error('newSession requires a command');
   const cwd = await resolveCwd(opts.cwd);
   await run(socket, ['new-session', '-d', '-s', opts.name, '-c', cwd, '--', ...opts.command]);
@@ -243,17 +257,17 @@ export async function sendKeys(
   target: string,
   keys: readonly string[],
 ): Promise<void> {
-  checkArgs(keys);
   await run(socket, ['send-keys', '-t', target, '--', ...keys]);
 }
 
 /**
- * Single-line literal text. **Not** for anything that may contain a newline:
- * `send-keys -l $'a\nb'` silently delivers `ab` (reproduced in report section 3).
+ * Single-line literal text. **Not** for anything that may contain a line break:
+ * `send-keys -l $'a\nb'` silently delivers `ab` (reproduced in report section 3),
+ * and a bare `\r` reaches the pane as a carriage return, which a TUI reads as submit.
  * Use `pasteText` for message bodies.
  */
 export async function sendText(socket: string, target: string, text: string): Promise<void> {
-  if (text.includes('\n')) {
+  if (/[\n\r]/.test(text)) {
     throw new Error('sendText drops newlines — use pasteText for multi-line input');
   }
   await run(socket, ['send-keys', '-t', target, '-l', '--', text]);
@@ -263,9 +277,19 @@ export async function sendText(socket: string, target: string, text: string): Pr
  * Multi-line-safe text delivery: `load-buffer` + `paste-buffer -p -d` (bracketed
  * paste, buffer deleted after). Does *not* submit — send `Enter` as a separate
  * call, because Ink treats Enter in the same tmux invocation as a literal newline.
+ *
+ * Only `-d` deletes the buffer, so a failed paste — the target pane died between a
+ * `listPanes` read and this call — has to delete it explicitly: a named buffer is
+ * exempt from `buffer-limit` and would hold the message text for the life of the
+ * server.
  */
 export async function pasteText(socket: string, target: string, text: string): Promise<void> {
   const buffer = `tether-${randomUUID()}`;
   await run(socket, ['load-buffer', '-b', buffer, '-'], text);
-  await run(socket, ['paste-buffer', '-b', buffer, '-t', target, '-p', '-d']);
+  try {
+    await run(socket, ['paste-buffer', '-b', buffer, '-t', target, '-p', '-d']);
+  } catch (error) {
+    await run(socket, ['delete-buffer', '-b', buffer]).catch(() => {});
+    throw error;
+  }
 }
