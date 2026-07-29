@@ -12,7 +12,14 @@ import { randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 
-import { DEFAULT_PROVIDER, type Session, createSession, markDead } from './registry.ts';
+import {
+  DEFAULT_PROVIDER,
+  type Session,
+  createSession,
+  getSession,
+  markDead,
+  revive,
+} from './registry.ts';
 import { isSessionGone, killSession, newSession, resolveCwd } from './tmux.ts';
 
 /**
@@ -22,6 +29,16 @@ import { isSessionGone, killSession, newSession, resolveCwd } from './tmux.ts';
  */
 export const PROVIDER_COMMANDS = new Map<string, readonly string[]>([
   [DEFAULT_PROVIDER, ['claude']],
+]);
+
+/**
+ * How each provider is told to continue an existing conversation of its own. The
+ * providers implement resume; tether only has to spell the argument, and the
+ * spelling differs (Codex takes `codex resume <id>`), so it is per provider rather
+ * than a flag appended to `PROVIDER_COMMANDS`.
+ */
+export const PROVIDER_RESUME = new Map<string, (providerSessionId: string) => readonly string[]>([
+  [DEFAULT_PROVIDER, (id) => ['claude', '--resume', id]],
 ]);
 
 /**
@@ -66,6 +83,69 @@ export async function startSession(
     await killSession(socket, tmuxName).catch(() => {});
     throw error;
   }
+}
+
+/**
+ * A dead row that has no conversation to go back to: the provider never got as far
+ * as creating a session identity, so `provider_session_id` is still null.
+ *
+ * Refusing is the point. Starting the provider fresh in the same directory would
+ * look exactly like a resume and would be a different conversation — the one
+ * failure mode here that silently costs a user work, in their head if not on disk.
+ * Starting fresh is still available, spelled as what it is: create a new session.
+ */
+export class NoProviderSessionError extends Error {
+  readonly sessionId: string;
+
+  constructor(session: Session) {
+    super(
+      `session ${session.id} has no provider session id to resume: it never got a first ` +
+        `message, so there is no conversation to restore. Start a new session in ${session.cwd} instead.`,
+    );
+    this.name = 'NoProviderSessionError';
+    this.sessionId = session.id;
+  }
+}
+
+/**
+ * Bring a dead session back: a fresh tmux session running the provider's own
+ * resume, under the row that was already there. tmux keeps nothing across a reboot
+ * (report §2), so this is the whole of reboot recovery — the conversation lives in
+ * the provider's own transcript, and resume is idempotent for both providers, so
+ * the resumed process keeps the same provider session id and appends to the same
+ * file rather than starting a second one.
+ *
+ * Idempotent by the same rule as `stopSession`: the row is re-read here, and a row
+ * that is already live is already the postcondition. Resuming twice therefore
+ * yields one pane, not two, even from a stale listing.
+ *
+ * The terminal scrollback is genuinely lost; only the conversation comes back.
+ */
+export async function resumeSession(
+  db: DatabaseSync,
+  socket: string,
+  session: Session,
+  roots?: readonly string[] | undefined,
+): Promise<Session> {
+  const current = getSession(db, session.id);
+  if (current === undefined) throw new Error(`no such session: ${session.id}`);
+  if (current.deadAt === null) return current;
+
+  if (current.providerSessionId === null) throw new NoProviderSessionError(current);
+  const resume = PROVIDER_RESUME.get(current.provider);
+  if (resume === undefined) throw new Error(`provider ${current.provider} cannot resume`);
+
+  // The same tmux name: it is derived from the session id, the old session is gone,
+  // and reusing it keeps that derivation true. A name that is somehow still taken
+  // makes tmux refuse, which is the right answer — it means the row is not dead.
+  await newSession(socket, {
+    name: current.tmuxName,
+    cwd: current.cwd,
+    command: resume(current.providerSessionId),
+    roots,
+  });
+  revive(db, current.id);
+  return getSession(db, current.id)!;
 }
 
 /**

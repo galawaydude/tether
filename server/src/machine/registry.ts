@@ -155,6 +155,18 @@ export function markDead(db: DatabaseSync, id: string): void {
 }
 
 /**
+ * Bring a dead row back to life, once its tmux session exists again.
+ *
+ * The one thing that clears `dead_at`, and only ever after `resumeSession` has
+ * started the replacement pane: a row whose `dead_at` is null and whose tmux
+ * session is not running is the state reconcile exists to prevent.
+ */
+export function revive(db: DatabaseSync, id: string): void {
+  const now = Date.now();
+  db.prepare('UPDATE sessions SET dead_at = NULL, updated_at = ? WHERE id = ?').run(now, id);
+}
+
+/**
  * Mark every live row whose tmux session is not in `liveTmuxNames` as dead, and
  * return how many that was.
  *
@@ -166,8 +178,9 @@ export function markDead(db: DatabaseSync, id: string): void {
  * existed then are judged. Atomicity covers the database, not the tmux snapshot
  * the verdict is derived from: without this, a `tether new` that lands between
  * another process's pane read and its UPDATE has its brand-new row marked dead
- * while its agent runs. Nothing ever clears `dead_at` — that is deliberate, and
- * it is exactly why a false positive has to be impossible.
+ * while its agent runs. The only thing that clears `dead_at` is `revive`, on an
+ * explicit resume — nothing un-kills a row on its own, which is exactly why a
+ * false positive here has to be impossible.
  */
 export function reconcile(
   db: DatabaseSync,

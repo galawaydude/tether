@@ -64,14 +64,22 @@ npm ci                            # also builds the CLI, so `npx tether` works
 npx tether new ~/src/project      # starts Claude Code in a durable tmux session
 npx tether ls                     # every session, live or dead
 npx tether kill 1a2b3c4d          # any unambiguous id prefix
+npx tether resume 1a2b3c4d        # bring a dead session's conversation back
 ```
 
 `tether new` takes `--title` and, after `--`, a command to run instead of the
 provider's own (`npx tether new ~/src/project -- /bin/sh`).
 
-`ls` and `kill` reconcile the registry against real tmux first, so a session that
-died while tether was not running shows as **dead** rather than live. Dead rows are
-kept, not deleted: they are what a later _Resume_ needs.
+`ls`, `kill` and `resume` reconcile the registry against real tmux first, so a
+session that died while tether was not running shows as **dead** rather than live.
+Dead rows are kept, not deleted: they are what _Resume_ works from.
+
+A reboot destroys every tmux session, so `resume` is how a machine restart stops
+being data loss. It starts the provider's own resume (`claude --resume <id>`) in a
+fresh tmux session under the same registry row, so it is the same conversation —
+the terminal scrollback is genuinely gone, the conversation is not. A session that
+died before its first message has no conversation to restore; `resume` says so and
+refuses rather than handing back a fresh session dressed up as the old one.
 
 ## Access and security
 
