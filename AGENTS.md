@@ -31,6 +31,12 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   to build is usually this; approve it with `npm install-scripts approve <pkg>`. Nothing in
   the current tree needs it. `node-pty` (PR #6) will — it ships no Linux prebuild, so it
   needs both an install-script approval and a native toolchain.
+- **Every tmux command goes through `server/src/machine/tmux.ts`.** It carries
+  `-L <socket> -f tether.conf` on _every_ invocation, so whichever command starts the
+  server starts it with tether's config. `tether.conf` is a non-TS asset, so `tsc` does
+  not copy it — `server`'s `build` script does, and anything that moves the file must
+  move that `cp` too. The reason for each rule is in the module's own comments; the
+  traps they defend against are in report §2/§3/§7.
 - **Tests run straight from TypeScript** via `node --test` and Node's built-in type
   stripping. There is no test build step; relative imports carry the `.ts` extension.
 

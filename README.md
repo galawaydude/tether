@@ -44,8 +44,8 @@ focused PR at a time, starting from the toolchain and CI.
 
 ## Development
 
-Requires the Node version in [`.nvmrc`](.nvmrc) (`nvm use`) and, from PR #2
-onwards, `tmux`.
+Requires the Node version in [`.nvmrc`](.nvmrc) (`nvm use`) and `tmux` — the
+tmux driver's tests drive a real server on a private socket, not a mock.
 
 ```sh
 npm ci        # installs all workspaces; builds shared/ declarations
