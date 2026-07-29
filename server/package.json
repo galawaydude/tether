@@ -8,7 +8,8 @@
     "tether": "./dist/cli.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && cp src/machine/tether.conf dist/machine/tether.conf"
+    "build": "tsc -p tsconfig.build.json && cp src/machine/tether.conf dist/machine/tether.conf && chmod +x dist/cli.js",
+    "prepare": "npm run build -w @tether/shared && npm run build"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.2",

@@ -31,6 +31,12 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   to build is usually this; approve it with `npm install-scripts approve <pkg>`. Nothing in
   the current tree needs it. `node-pty` (PR #6) will — it ships no Linux prebuild, so it
   needs both an install-script approval and a native toolchain.
+- **`npx tether` only works because `server`'s `prepare` builds during `npm ci`.** npm links
+  workspace bins before install finishes and skips a bin whose target is missing, so
+  `dist/cli.js` has to exist by then — and it has to carry the exec bit itself, which is why
+  `build` ends in `chmod +x`. `prepare` builds `@tether/shared` first: npm runs the two
+  workspace `prepare` scripts in the wrong order otherwise and `server`'s `tsc` cannot find
+  the declarations.
 - **Every tmux command goes through `server/src/machine/tmux.ts`.** It carries
   `-L <socket> -f tether.conf` on _every_ invocation, so whichever command starts the
   server starts it with tether's config. `tether.conf` is a non-TS asset, so `tsc` does
