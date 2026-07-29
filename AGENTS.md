@@ -293,9 +293,14 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   ACKs, so it would be resent on every reconnect under a permanent "Sending…";
   and a terminal socket closed `ended` or `gone`, which is why those two closes
   are separate `Status` values — and an echo already outstanding at either close
-  is **marked undeliverable, never dropped and never retired** (`markUndelivered`),
-  since the text is what the user would lose and a record that turns up anyway
-  must still retire it exactly once. `busy` and `retrying` are **not** refused: both
+  is **marked with that close, never dropped and never retired**
+  (`markUndelivered`), since the text is what the user would lose and a record
+  that turns up anyway must still retire it exactly once. Its note says only
+  which close it was and never that the message was not delivered: the `ack` is
+  an earlier milestone than the transcript record and lives in the terminal
+  view's unacked set, so a message applied and queued mid-turn by an agent that
+  then exits was delivered, and claiming otherwise is "Sending…" over-claiming in
+  the other direction. `busy` and `retrying` are **not** refused: both
   providers queue a message mid-turn, the unacked set carries one across a
   reconnect, and that is the most valuable thing a phone can do.
 - **The session screen keeps both panes mounted and hides one with

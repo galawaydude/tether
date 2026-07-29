@@ -600,9 +600,10 @@ label {
   opacity: 0.7;
 }
 
-/* Sent, and now known never to have left. Kept at full opacity and marked: the
-   text is the thing the user would otherwise lose, so it stays selectable and
-   copyable rather than being dimmed like something still in flight. */
+/* Sent, and the socket it went out on has closed for good — whether it arrived
+   is what the note says, and is not something this side knows. Kept at full
+   opacity and marked: the text is the thing the user would otherwise lose, so it
+   stays selectable and copyable rather than dimmed like something in flight. */
 .msg-undelivered {
   border-color: var(--danger);
 }

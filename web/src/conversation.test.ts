@@ -397,14 +397,16 @@ test('an echo outstanding when the socket closes for good is marked, not left se
     assert.equal(markUndelivered(sending, status), sending);
   }
 
-  // Two closes, two facts, in the same words the send refusal uses.
+  // Two closes, two facts — and each says only the fact. Whether the message
+  // arrived is not something this side knows: the ACK is an earlier milestone
+  // than the transcript record, and it lives in the terminal view's unacked set.
   assert.equal(
     markUndelivered(sending, 'ended').echoes[0]?.undelivered,
-    'Not delivered: this session ended.',
+    'This session ended before the agent recorded this message.',
   );
   assert.equal(
     markUndelivered(sending, 'gone').echoes[0]?.undelivered,
-    'Not delivered: the server no longer has this session.',
+    'The server no longer has this session, and the agent had not recorded this message.',
   );
 
   // Nothing outstanding, and a second pass over what is already marked, are both
@@ -429,7 +431,10 @@ test('marking an echo undelivered is not retiring it: a late record still retire
   state = addEvents(state, record);
   assert.deepEqual(texts(state), ['second']);
   assert.equal(state.rows.length, 1);
-  assert.equal(state.echoes[0]?.undelivered, 'Not delivered: this session ended.');
+  assert.equal(
+    state.echoes[0]?.undelivered,
+    'This session ended before the agent recorded this message.',
+  );
 });
 
 test('a refetch keeps an outstanding echo, and its record still retires it once', () => {

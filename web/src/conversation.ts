@@ -104,10 +104,11 @@ function oneLine(text: string): string {
 /**
  * A message sent from the composer, before the transcript has shown it back.
  *
- * `undelivered` is the sentence saying it never left, or `null` while it still
- * can. It is a state the echo enters rather than an exit: the text is the thing
- * the user would otherwise lose, so an undeliverable message stays on screen and
- * is marked, never dropped and never silently retired.
+ * `undelivered` is the sentence saying the socket it was sent on has closed for
+ * good, or `null` while the transcript can still show it back. It is a state the
+ * echo enters rather than an exit: the text is the thing the user would
+ * otherwise lose, so the message stays on screen and is marked, never dropped
+ * and never silently retired.
  */
 export type Echo = { text: string; undelivered: string | null };
 
@@ -159,6 +160,14 @@ export function addEcho(state: Rows, text: string): Rows {
  * says which fact it is — a session that stopped is not a session the server
  * cannot find.
  *
+ * What the note may say is bounded by what this side knows, which is **less than
+ * whether the message arrived**. An echo is outstanding until the *transcript*
+ * records it, and the ACK is a different, earlier milestone that lives in the
+ * terminal view's unacked set: a message sent mid-turn can be applied, ACKed and
+ * queued by the agent, and the session then end before its record is written. So
+ * each sentence states the close and stops there. Saying "not delivered" would
+ * be the same over-claim as "Sending…", pointing the other way.
+ *
  * Marking is **not** retiring. The echo keeps its place in the queue, so if a
  * record does turn up after all — a message the pane took before it went, whose
  * transcript line the tailer had not reached — {@link addEvents} retires it
@@ -166,8 +175,8 @@ export function addEcho(state: Rows, text: string): Rows {
  * untouched.
  */
 const UNDELIVERED: Partial<Record<Status, string>> = {
-  ended: 'Not delivered: this session ended.',
-  gone: 'Not delivered: the server no longer has this session.',
+  ended: 'This session ended before the agent recorded this message.',
+  gone: 'The server no longer has this session, and the agent had not recorded this message.',
 };
 
 export function markUndelivered(state: Rows, terminal: Status): Rows {
