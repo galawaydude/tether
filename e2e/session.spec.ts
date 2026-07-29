@@ -1,6 +1,6 @@
 /**
- * The one end-to-end test: log in, start a session, watch it, type at it, and
- * **reload the page**.
+ * One of the two end-to-end tests — `permission.spec.ts` is the other: log in,
+ * start a session, watch it, type at it, and **reload the page**.
  *
  * That reload is the product claim (report §8). Everything else in this codebase
  * is unit-testable and is unit-tested; this is not, because it is the whole
@@ -15,7 +15,7 @@
 import { expect, test, type Locator } from '@playwright/test';
 import { join } from 'node:path';
 
-/** The one directory inside the sandbox a session may be started in; `serve.ts` makes it. */
+/** This spec's own directory inside the sandbox; `serve.ts` makes it. */
 const project = join(process.env['TETHER_E2E_DIR'] as string, 'project');
 
 /** What `e2e/stub-agent.ts` prints and records; the reload counts them. */
@@ -81,7 +81,10 @@ test('a reload loses nothing: scrollback and conversation come back intact and o
   // socket and all of the app's state. What comes back is re-derived — the
   // terminal from tmux, the conversation from the transcript.
   await page.reload();
-  await page.locator('.row-open').click();
+  // By name, not `.row-open`: `permission.spec.ts` shares this server and has a
+  // session of its own in the list, and reopening the wrong one would compare
+  // this session's terminal against another's.
+  await page.getByRole('button', { name: `project ${project}` }).click();
 
   await expect(conversation.getByText(GREETING, { exact: true })).toHaveCount(1);
   await expect(conversation.getByText(TYPED, { exact: true })).toHaveCount(1);

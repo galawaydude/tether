@@ -173,8 +173,11 @@ async function beganAt(candidate: Candidate, memo?: StartMemo): Promise<number |
  * ponytail: the window left is two sessions started in the same directory within
  * `START_SLACK_MS` of each other while *neither* has been back-filled yet, so
  * neither is claimed and both files qualify on time alone; mtime order picks.
- * PR #10's `SessionStart` hook delivers `transcript_path` outright and retires
- * the guess, and this window with it.
+ * The hook receiver narrows it — a row back-filled from a `PreToolUse` payload
+ * (`web/hooks.ts`, confirmed against the pane's own session file) is claimed and
+ * drops out of the guess — but does not close it, since a session that has run
+ * no tool yet has fired no hook. Reading `status.ts`'s `readSessionId` off the
+ * pane at discovery time would retire the guess outright.
  */
 export async function findTranscript(session: {
   cwd: string;

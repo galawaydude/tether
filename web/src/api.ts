@@ -8,11 +8,19 @@
  * of information the server went to the trouble of sending.
  */
 
-import type { Session } from '@tether/shared';
+import type { Session, SessionState } from '@tether/shared';
 
 import type { SeqEvent } from './conversation.ts';
 
 export type { Session };
+
+/**
+ * What each live session is doing, beside the rows rather than on them. No
+ * detail: the registry file the list is built from has no such field, and the
+ * one sentence that says *what* is wanted arrives on the session's own `state`
+ * frame, from the `Notification` hook.
+ */
+export type SessionStates = Record<string, { state: SessionState }>;
 
 /** The only machine there is in M1; the API is addressed by machine regardless. */
 const MACHINE = 'local';
@@ -85,9 +93,11 @@ export function checkSession(): Promise<{ authenticated: boolean }> {
   return request('/api/session');
 }
 
-export async function listSessions(): Promise<Session[]> {
-  const { sessions } = await request<{ sessions: Session[] }>(`/api/machines/${MACHINE}/sessions`);
-  return sessions;
+export async function listSessions(): Promise<{ sessions: Session[]; states: SessionStates }> {
+  const body = await request<{ sessions: Session[]; states?: SessionStates }>(
+    `/api/machines/${MACHINE}/sessions`,
+  );
+  return { sessions: body.sessions, states: body.states ?? {} };
 }
 
 export async function createSession(cwd: string, title?: string): Promise<Session> {

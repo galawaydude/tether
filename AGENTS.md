@@ -104,7 +104,9 @@ CI runs exactly those (`.github/workflows/ci.yml`).
 - **The browser app is served by two named routes, not a wildcard**
   (`server/src/web/static.ts`). `@fastify/static` is registered with
   `serve: false` purely for `reply.sendFile`; `/` and `/assets/:file` are the only
-  routes marked `public` besides `/api/login`. A wildcard would answer every
+  routes marked `public` besides `/api/login` and `/internal/hook`, which is not
+  unauthenticated but authenticated differently (loopback plus the `0600` secret,
+  see the hook entry below). A wildcard would answer every
   unmatched path publicly and hand an unauthenticated caller a 404-vs-401 oracle
   for which API routes exist. `web`'s `prepare` builds `web/dist` on `npm ci` for
   the same reason `server`'s does — `tether serve` reads it at startup and only
@@ -186,11 +188,53 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   key, and the fixtures contain the case that proves it (two attempts, identical
   `tool_input`, different ids).
 
-- **`{c:'state'}` is not a `conv` frame, and must not become one.** `seq` is a
-  position in the mapped transcript; the evidence for `waiting` arrives by hook,
-  outside it. Giving state a `seq` makes the history route and a live tailer
-  disagree about which event is number 12. It is also why `status` is the one
-  `ConversationEvent` variant with no `id`.
+- **The two providers' hooks share a purpose and no code, deliberately.**
+  `providers/claude-code/hooks.ts` installs into `<cwd>/.claude/settings.local.json`
+  — a file in the **user's own repo** — per project at spawn, with no trust gate,
+  and its shim POSTs to `/internal/hook`. Codex's is one global trust-gated
+  entry whose shim appends to a log tether tails. Report §4 chose the seam;
+  do not abstract over two examples. The transport differs for a reason that
+  outlives this PR: a `PreToolUse` hook answers a permission prompt on **stdout**,
+  so PR #14 needs request/response, which a log file could never become. Until
+  then the shim writes no stdout at all and the route replies empty — writing
+  either would silently allow or deny the user's tool call.
+- **The hook secret is a `0600` file read at hook execution time, and the
+  settings file gets only a path.** `settings.local.json` lives in the user's
+  repository, so a token in it is one `git add` from being published (report
+  §7); the same goes for the endpoint URL, which is rewritten after every
+  `listen` so a session spawned under one `tether serve` reaches the next one
+  on a new port. The secret is per installation — Claude Code names its own
+  session and tether cannot know it at install time — and **per-session
+  authorisation lives at the endpoint instead**: loopback checked against the
+  real peer address (never `request.ip`, which `trustProxy` lets a header
+  forge), constant-time secret compare, then a payload accepted only for a live
+  registry row. A hook whose `session_id` is unknown may adopt the one unclaimed
+  row in its `cwd` — which is how the _first_ tool call of a session is not
+  lost — but the `cwd` alone never binds it: an agent run by hand in that
+  directory posts the same one, and a row bound to a foreign transcript is a
+  `resume` that hands back somebody else's conversation. The pane tether spawned
+  has to confirm it is running that session (`Conversations.ownsProviderSession`,
+  via `readSessionId`); unconfirmed is dropped as unknown.
+- **`~/.claude/sessions/<pid>.json` outlives its process, so both guards in
+  `providers/claude-code/status.ts` are mandatory.** It is deleted on a graceful
+  exit and left behind by a `SIGKILL` or a reboot, and pids are reused — so
+  `kill(pid, 0)` is not enough on its own. `procStart` is the identity check,
+  and it is verified to be `/proc/<pid>/stat` **field 22** (`starttime`), found
+  from the **last** `") "` because field 2 is a comm that can contain spaces and
+  `)`. Anything unreadable or unverifiable is `undefined` — "tether cannot say"
+  — never a guess: a session wrongly reported `waiting` is a phone notification
+  that should not have fired. The file also carries `waitingFor`, which nothing
+  reads yet.
+
+- **`{c:'state'}` and `{c:'pending'}` are not `conv` frames, and must not become
+  one.** `seq` is a position in the mapped transcript; the evidence for `waiting`
+  arrives by hook, outside it, and a pending tool call is a claim the transcript
+  will supersede rather than a record in it. Giving either a `seq` makes the
+  history route and a live tailer disagree about which event is number 12. It is
+  also why `status` is the one `ConversationEvent` variant with no `id`. The
+  pending card is keyed by `callId` in `web/src/conversation.ts` — the same index
+  a `tool_call` consults — so whichever of the two arrives second replaces the
+  card the first one made, in either order.
 - **`machine/conversations.ts` has a cursor and `machine/terminal.ts` does not.**
   The asymmetry is deliberate: tmux re-derives the terminal exactly on every
   attach, conversation events are re-derivable from nothing the client holds.
@@ -225,18 +269,24 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `coerceTypes` are on): `additionalProperties: false` strips instead of rejecting, and
   `{"password": 123}` arrives as `"123"`. `buildServer` turns both off. Do not remove that
   `ajv.customOptions` block, and do not assume stock Fastify behaviour when reading the tests.
-- **`e2e/` is one Playwright spec and it asserts counts, not presence.** It drives the
-  real `tether serve` (`e2e/serve.ts` calls the CLI's own `main`) inside a scratch
+- **`e2e/` is two Playwright specs and they assert counts, not presence.** They drive
+  the real `tether serve` (`e2e/serve.ts` calls the CLI's own `main`) inside a scratch
   `HOME`/state dir/tmux socket, with `e2e/stub-agent.ts` on `PATH` as `claude` — so the
   session is created through the production path and **CI still never runs a live
-  agent**. What it checks that nothing else can is the reload: `toContainText` passes
-  just as happily on a view that replayed itself twice. Two things not to
-  "strengthen" by accident: the locators are scoped to `.conv` and `.xterm-rows`
-  because both panes stay mounted, and the terminal comparison is of the **rendered
-  screen** before versus after — the buffer above it legitimately holds the capture
-  _under_ tmux's repaint, and byte-exactness of the recipe is `terminal.test.ts`'s job.
-  `retries: 0` is deliberate. `npm ci` does not fetch the browser (npm 12 blocks
-  playwright's postinstall); `npx playwright install chromium` does, and CI runs it.
+  agent**. What `session.spec.ts` checks that nothing else can is the reload, and what
+  `permission.spec.ts` checks is the hook chain end to end: `toContainText` passes just
+  as happily on a view that replayed itself twice, and on two cards for one tool call.
+  Three things not to "strengthen" by accident: the locators are scoped to `.conv` and
+  `.xterm-rows` because both panes stay mounted; the terminal comparison is of the
+  **rendered screen** before versus after — the buffer above it legitimately holds the
+  capture _under_ tmux's repaint, and byte-exactness of the recipe is
+  `terminal.test.ts`'s job; and the two specs share one server and one session list, so
+  each takes its own directory and reopens its session **by name**, never `.row-open`.
+  The stub knows nothing about where tether's shim, secret or endpoint are — it runs
+  whatever `.claude/settings.local.json` lists — so a broken installer fails the test
+  rather than quietly proving nothing. `retries: 0` is deliberate. `npm ci` does not
+  fetch the browser (npm 12 blocks playwright's postinstall);
+  `npx playwright install chromium` does, and CI runs it.
 
 ## Maintaining this file
 

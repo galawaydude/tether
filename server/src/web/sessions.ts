@@ -11,7 +11,10 @@
 import type { FastifyInstance } from 'fastify';
 import type { DatabaseSync } from 'node:sqlite';
 
+import type { Session, SessionState } from '@tether/shared';
+
 import { LOCAL_MACHINE, getSession, listSessions, reconcileWithTmux } from '../machine/registry.ts';
+import { readSessionStatus } from '../providers/claude-code/status.ts';
 import {
   NoProviderSessionError,
   PROVIDER_COMMANDS,
@@ -19,7 +22,7 @@ import {
   startSession,
   stopSession,
 } from '../machine/sessions.ts';
-import { DEFAULT_SOCKET, InvalidCwdError } from '../machine/tmux.ts';
+import { DEFAULT_SOCKET, InvalidCwdError, listPanes } from '../machine/tmux.ts';
 
 export type SessionRoutesOptions = {
   /** The registry database, schema already applied. */
@@ -77,6 +80,36 @@ type MachineParams = { machineId: string };
 type SessionParams = MachineParams & { id: string };
 type CreateBody = { cwd: string; title?: string; provider?: string };
 
+/**
+ * `busy` / `idle` / `waiting` per live session, from the provider's own session
+ * registry file (report §4e). Sent beside the sessions rather than on them: the
+ * row shape *is* the wire shape, declared once in `shared/`, and this is derived
+ * from a file the registry knows nothing about.
+ *
+ * Absent for a session whose file is missing or stale — the caller shows no
+ * badge rather than a wrong one, and the pid guards live in `status.ts`.
+ */
+async function statesFor(
+  sessions: readonly Session[],
+  socket: string,
+): Promise<Record<string, { state: SessionState }>> {
+  const live = sessions.filter((session) => session.deadAt === null);
+  if (live.length === 0) return {};
+  const panes = await listPanes(socket).catch(() => []);
+  const pids = new Map(panes.filter((pane) => !pane.dead).map((pane) => [pane.session, pane.pid]));
+  const states: Record<string, { state: SessionState }> = {};
+  await Promise.all(
+    live.map(async (session) => {
+      const pid = pids.get(session.tmuxName);
+      if (pid === undefined) return;
+      const state = await readSessionStatus(pid, { expectSessionId: session.providerSessionId });
+      if (state === undefined) return;
+      states[session.id] = { state };
+    }),
+  );
+  return states;
+}
+
 export function registerSessionRoutes(app: FastifyInstance, options: SessionRoutesOptions): void {
   const { db } = options;
   const socket = options.socket ?? DEFAULT_SOCKET;
@@ -89,7 +122,8 @@ export function registerSessionRoutes(app: FastifyInstance, options: SessionRout
       // Reconcile first, exactly as `tether ls` does, so the list never reports a
       // session that died while tether was not running.
       await reconcileWithTmux(db, socket);
-      return { sessions: listSessions(db) };
+      const sessions = listSessions(db);
+      return { sessions, states: await statesFor(sessions, socket) };
     },
   );
 

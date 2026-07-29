@@ -130,6 +130,48 @@ export function setProviderSessionId(
 }
 
 /**
+ * The live row that owns this provider session id. What a hook payload joins on:
+ * it names the provider's session, and the registry is the only thing that knows
+ * which tether session that is.
+ */
+export function getSessionByProviderSessionId(
+  db: DatabaseSync,
+  providerSessionId: string,
+): Session | undefined {
+  return rows(
+    db,
+    `SELECT ${COLUMNS} FROM sessions WHERE provider_session_id = ? AND dead_at IS NULL
+     ORDER BY created_at DESC LIMIT 1`,
+    providerSessionId,
+  )[0];
+}
+
+/**
+ * The one live row in `cwd` that has no provider session id yet — a *candidate*
+ * for adoption, and nothing more. Used when a hook arrives for a session the
+ * transcript scan has not reached, which is the normal case for the *first* tool
+ * call, since a `PreToolUse` can precede the transcript's first flush.
+ *
+ * Exactly one candidate or nothing: two unclaimed sessions in one directory is
+ * ambiguous, and guessing there would attach a conversation to the wrong session,
+ * which is worse than a card that arrives a second later by the usual route.
+ *
+ * The `cwd` match is not on its own evidence that the hook came from this row's
+ * pane — an agent the user started by hand in the same directory posts the same
+ * `cwd`. The caller confirms that before binding anything; see
+ * `Conversations.ownsProviderSession`.
+ */
+export function unclaimedSessionInCwd(db: DatabaseSync, cwd: string): Session | undefined {
+  const candidates = rows(
+    db,
+    `SELECT ${COLUMNS} FROM sessions
+     WHERE cwd = ? AND provider_session_id IS NULL AND dead_at IS NULL LIMIT 2`,
+    cwd,
+  );
+  return candidates.length === 1 ? candidates[0] : undefined;
+}
+
+/**
  * Every provider session id already bound to a row other than `exceptId`. What
  * transcript discovery needs and cannot work out from timestamps: a transcript
  * this registry has already given to one session is not available to another.

@@ -4,7 +4,7 @@
  * sync for nothing.
  */
 
-import type { Session } from '@tether/shared';
+import type { Session, SessionState } from '@tether/shared';
 import { useCallback, useEffect, useState } from 'preact/hooks';
 
 import * as api from './api.ts';
@@ -14,6 +14,17 @@ import { STATUS_TEXT, TerminalView, type Status } from './terminal.tsx';
 
 /** How often the list refreshes. tmux reconciliation happens server-side per read. */
 const POLL_MS = 5000;
+
+/**
+ * What the agent is doing, in the user's words rather than the provider's.
+ * `waiting` is the one that matters — it is the whole reason PR #10 exists — so
+ * it is the one that gets a banner rather than a chip.
+ */
+export const STATE_TEXT: Record<SessionState, string> = {
+  busy: 'Working',
+  idle: 'Idle',
+  waiting: 'Waiting for you',
+};
 
 function messageOf(error: unknown): string {
   return error instanceof ApiError ? error.message : 'Something went wrong. Try again.';
@@ -79,14 +90,20 @@ function SessionScreen({
 }) {
   const [tab, setTab] = useState<Tab>('conversation');
   // One chip, two channels: it reports on whichever pane is in front, because
-  // "Reconnecting…" is only actionable about the thing being looked at. PR #10
-  // adds the agent's own busy/idle/waiting badge beside it.
+  // "Reconnecting…" is only actionable about the thing being looked at. The
+  // agent's own busy/idle/waiting chip sits beside it and is a different fact.
   const [status, setStatus] = useState<Record<Tab, Status>>({
     conversation: 'connecting',
     terminal: 'connecting',
   });
   const report = (id: Tab) => (next: Status) =>
     setStatus((current) => (current[id] === next ? current : { ...current, [id]: next }));
+
+  // The agent's own state, from the `conv` channel's `state` frame. It sits
+  // above the tabs rather than inside the conversation pane: the terminal is
+  // where a permission prompt is answered, so the tab a user is *not* on is
+  // exactly the one they need this on.
+  const [agent, setAgent] = useState<{ state: SessionState; detail?: string }>({ state: 'idle' });
 
   return (
     <div class="screen">
@@ -98,10 +115,23 @@ function SessionScreen({
           <strong>{session.title}</strong>
           <span class="muted">{session.cwd}</span>
         </div>
+        <span class={`chip chip-agent-${agent.state}`}>{STATE_TEXT[agent.state]}</span>
         <span class={`chip chip-${status[tab]}`} role="status">
           {STATUS_TEXT[status[tab]]}
         </span>
       </header>
+
+      {agent.state === 'waiting' && (
+        <p class="waiting" role="status">
+          <strong>Waiting for you.</strong>{' '}
+          {agent.detail ?? 'The agent has stopped and wants an answer.'}{' '}
+          {tab === 'conversation' && (
+            <button class="link" onClick={() => setTab('terminal')}>
+              Open the terminal
+            </button>
+          )}
+        </p>
+      )}
 
       {/* Toggle buttons rather than an ARIA tablist: a tablist owes a screen
           reader roving tabindex and arrow-key navigation, and two pressed-state
@@ -124,7 +154,17 @@ function SessionScreen({
         {TABS.map(({ id }) => (
           <div key={id} class={id === tab ? 'pane' : 'pane pane-off'}>
             {id === 'conversation' ? (
-              <ConversationView sessionId={session.id} onStatus={report('conversation')} />
+              <ConversationView
+                sessionId={session.id}
+                onStatus={report('conversation')}
+                onState={(state, detail) =>
+                  setAgent((current) =>
+                    current.state === state && current.detail === detail
+                      ? current
+                      : { state, ...(detail === undefined ? {} : { detail }) },
+                  )
+                }
+              />
             ) : (
               <TerminalView
                 session={session}
@@ -201,12 +241,15 @@ function Sessions({
   onSignedOut: () => void;
 }) {
   const [sessions, setSessions] = useState<Session[] | null>(null);
+  const [states, setStates] = useState<api.SessionStates>({});
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
-      setSessions(await api.listSessions());
+      const listed = await api.listSessions();
+      setSessions(listed.sessions);
+      setStates(listed.states);
       setError(null);
     } catch (failure) {
       if (failure instanceof ApiError && failure.status === 401) return onSignedOut();
@@ -261,9 +304,18 @@ function Sessions({
               <span class="row-title">{session.title}</span>
               <span class="muted row-cwd">{session.cwd}</span>
             </button>
-            <span class={session.deadAt === null ? 'chip chip-live' : 'chip chip-ended'}>
-              {session.deadAt === null ? 'live' : 'dead'}
-            </span>
+            {/* The agent's own state where there is one, and only the
+                live/dead fact where there is not: a session whose provider is
+                not reporting must not be badged "idle", which is a claim. */}
+            {session.deadAt !== null ? (
+              <span class="chip chip-ended">dead</span>
+            ) : states[session.id] === undefined ? (
+              <span class="chip chip-live">live</span>
+            ) : (
+              <span class={`chip chip-agent-${states[session.id]!.state}`}>
+                {STATE_TEXT[states[session.id]!.state]}
+              </span>
+            )}
             {session.deadAt === null && (
               <button class="ghost danger" onClick={() => kill(session)} aria-label="Kill session">
                 Kill

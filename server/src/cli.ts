@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 
 import { databasePath, stateDir } from './db.ts';
+import { writeHookEndpoint } from './providers/claude-code/hooks.ts';
 import {
   DEFAULT_PROVIDER,
   type Session,
@@ -315,6 +316,14 @@ async function serve(db: DatabaseSync, auth: AuthStore, args: ServeArgs): Promis
     );
     return 1;
   }
+
+  // Written after `listen`, so it names a port that is actually bound. The shim
+  // reads it at hook time, which is what lets a session spawned under one
+  // `tether serve` reach the next one. Always loopback: `/internal/hook` refuses
+  // anything else, and a server bound *only* to a non-loopback address simply
+  // gets no hooks — the same as no server at all, which the shim already
+  // survives silently.
+  await writeHookEndpoint(stateDir(), `http://127.0.0.1:${config.port}/internal/hook`);
 
   process.stdout.write(`${formatBanner(config, hasPassword)}\n`);
   const warning = offLoopbackWarning(config);
