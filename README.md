@@ -68,6 +68,13 @@ the reason, while the agent is waiting on a permission prompt, where a message
 would answer the dialog rather than the agent, when the message is too long for
 the wire to carry, and once the session has ended or the server no longer has it;
 mid-turn it is fine, and the agent queues it.
+
+The phone is still the primary target and gets one screen at a time — the list,
+then the session you opened. A laptop gets a different shape rather than a
+stretched one: past 900px the session list stays on screen as a rail beside the
+open session, so switching sessions costs no trip back, and the conversation is
+capped to a readable column instead of running the full width of the window.
+
 This milestone is being built one focused PR at a time.
 
 ```
