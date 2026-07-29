@@ -310,6 +310,30 @@ test('a deny reaches the held hook as a deny', async (t) => {
   assert.equal(await decision, 'deny');
 });
 
+test('the client saying it is on the terminal tab is what stops the hold', async (t) => {
+  const h = await harness(t);
+  await writeFile(h.transcript, userRecord(1));
+  const socket = new WebSocket(`ws://${h.host}/api/sessions/${ID}/conv?since=0`, {
+    headers: { cookie: `${SESSION_COOKIE}=${h.token}` },
+  } as unknown as string[]);
+  t.after(() => socket.close());
+  // The first frame, not the handshake: the route subscribes before it starts
+  // reading, so a frame sent between the two would be shouted at nobody.
+  await new Promise<void>((resolve) => socket.addEventListener('message', () => resolve()));
+
+  // Both panes stay mounted, so the tab going to Terminal is a frame rather than
+  // a close — and everything that is not that frame is dropped in silence.
+  socket.send('not json');
+  socket.send(JSON.stringify({ c: 'watch', watching: 'no' }));
+  socket.send(JSON.stringify({ c: 'watch' }));
+  socket.send(JSON.stringify({ c: 'watch', watching: false }));
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  const before = Date.now();
+  assert.equal(await h.conversations.hook(getSession(h.db, ID)!, preToolUse()), undefined);
+  assert.ok(Date.now() - before < 2000, 'the agent was not stalled behind a card nobody is on');
+});
+
 test('an answer for a call nothing is waiting on is a 409, not a decision', async (t) => {
   const h = await harness(t);
   const response = await h.post(`/api/sessions/${ID}/permission`, {

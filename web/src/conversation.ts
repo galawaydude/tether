@@ -280,10 +280,14 @@ export function addPending(state: Rows, e: ToolCallEvent, deadline?: Timestamp):
   const existing = state.byCall.get(e.callId);
   if (existing !== undefined) {
     // The record beat the proposal, or a reconnect replayed it. Nothing about
-    // the card changes except whether it can still be answered — which it can,
-    // because the agent is blocked on it whatever the transcript says.
-    if (deadline === undefined) return state;
-    existing.answerable = { callId: e.callId, deadline };
+    // the card changes except whether it can still be answered — and the frame
+    // is authoritative in both directions: a `deadline` means the agent is
+    // blocked on it whatever the transcript says, and its *absence* means tether
+    // is not holding this call, so buttons a reconnect would otherwise bring
+    // back for a hold that ended while the socket was down have to go.
+    const answerable = deadline === undefined ? null : { callId: e.callId, deadline };
+    if (existing.answerable === null && answerable === null) return state;
+    existing.answerable = answerable;
     return { ...state, rows: [...state.rows] };
   }
   const row: ToolRow = {
@@ -310,10 +314,19 @@ export function addPending(state: Rows, e: ToolCallEvent, deadline?: Timestamp):
  * every viewer, so a second phone showing the same card stops offering an answer
  * the moment the first one gives it — and so does this one when the answer came
  * from the timer or from the terminal instead.
+ *
+ * Applied to a card with no buttons too, because that is how a reconnect learns
+ * how a hold it missed ended: the replayed proposal clears the buttons and this
+ * says which of the three things happened.
  */
 export function addAnswer(state: Rows, callId: string, outcome: PermissionOutcome): Rows {
   const row = state.byCall.get(callId);
-  if (row === undefined || row.answerable === null) return state;
+  if (row === undefined) return state;
+  // A card with no buttons and an outcome already on it is settled, and stays
+  // settled: a second frame for one call is the replay or a second socket, never
+  // a second answer. A card with no buttons and *no* outcome is the replayed
+  // proposal above, which is exactly what this is here to complete.
+  if (row.answerable === null && row.outcome !== null) return state;
   row.answerable = null;
   row.outcome = outcome;
   return { ...state, rows: [...state.rows] };

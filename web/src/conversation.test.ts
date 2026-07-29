@@ -511,6 +511,22 @@ test('an answer takes the buttons away, whoever gave it', () => {
   }
 });
 
+test('a hold that ended while the socket was down comes back dead, not wearing buttons', () => {
+  // The screen lock: the only viewer went, which released the agent to its own
+  // prompt, and the phone came back to a replay. The server replays the proposal
+  // with no deadline — it is not holding this call any more — followed by the
+  // answer that ended it, and the card has to read as the over thing it is.
+  const held = addPending(noRows(), PROPOSED, DEADLINE);
+  const replayed = addPending(held, PROPOSED);
+  assert.equal((replayed.rows[0] as ToolRow).answerable, null, 'the buttons are gone');
+
+  const settled = addAnswer(replayed, 'toolu_1', 'timeout');
+  const row = settled.rows[0] as ToolRow;
+  assert.equal(row.outcome, 'timeout');
+  assert.equal(toolState(row), 'in terminal');
+  assert.match(toolResult(row), /asking in the terminal/);
+});
+
 test('an answer for a card this client never built is ignored, not a crash', () => {
   const held = addPending(noRows(), PROPOSED, DEADLINE);
   assert.equal(addAnswer(held, 'toolu_unknown', 'allow'), held);

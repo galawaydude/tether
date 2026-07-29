@@ -46,6 +46,7 @@ const STICK_PX = 80;
 export function ConversationView({
   sessionId,
   provider,
+  watching,
   onStatus,
   onState,
   sender,
@@ -54,6 +55,13 @@ export function ConversationView({
   sessionId: string;
   /** Whose name goes over an assistant message. Nothing else here reads it. */
   provider: string;
+  /**
+   * Whether this pane is the one in front. Both panes stay mounted, so the
+   * socket alone cannot tell the server — and the server holds the agent on a
+   * permission prompt only while somebody is looking at the surface that answers
+   * it, so a user working in the terminal must not stall every tool call.
+   */
+  watching: boolean;
   onStatus: (status: Status) => void;
   /**
    * What the agent is doing, straight off the `state` frame. Reported up rather
@@ -83,6 +91,19 @@ export function ConversationView({
   status.current = onStatus;
   const reportState = useRef(onState);
   reportState.current = onState;
+  // The live socket and the tab in front, both through refs: the effect below
+  // owns the socket for the life of the session, so switching tabs must send one
+  // frame rather than tear it down and cost a replay.
+  const live = useRef<WebSocket | null>(null);
+  const inFront = useRef(watching);
+  inFront.current = watching;
+
+  useEffect(() => {
+    const socket = live.current;
+    if (socket !== null && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ c: 'watch', watching }));
+    }
+  }, [watching]);
 
   useEffect(() => {
     let socket: WebSocket | null = null;
@@ -128,9 +149,13 @@ export function ConversationView({
     const connect = () => {
       const ws = new WebSocket(convSocketUrl(sessionId, since));
       socket = ws;
+      live.current = ws;
       ws.onopen = () => {
         backoff = RECONNECT_MIN_MS;
         status.current('live');
+        // Said on every open rather than only on a change: a reconnect is a new
+        // subscription on the server, and it defaults to watching.
+        ws.send(JSON.stringify({ c: 'watch', watching: inFront.current }));
       };
       ws.onmessage = (event: MessageEvent) => {
         const frame = parse(event.data);
@@ -141,6 +166,7 @@ export function ConversationView({
           ws.onclose = null;
           ws.close();
           socket = null;
+          live.current = null;
           void load();
           return;
         }
@@ -170,6 +196,7 @@ export function ConversationView({
       };
       ws.onclose = () => {
         socket = null;
+        live.current = null;
         if (closed) return;
         // Unlike the terminal channel this does not probe for an expired cookie:
         // both views are mounted together and the terminal already does it, so a
@@ -189,6 +216,7 @@ export function ConversationView({
     return () => {
       closed = true;
       clearTimeout(reconnect);
+      live.current = null;
       if (socket !== null) {
         socket.onclose = null;
         socket.close();
@@ -424,8 +452,10 @@ function ToolCard({ row, sessionId }: { row: ToolRow; sessionId: string }) {
  * The countdown is not decoration. Tapping nothing is a real outcome with a real
  * consequence — the question goes back to the agent's own prompt in the terminal
  * — and a user who cannot see it coming would read the buttons vanishing as a
- * bug. It counts against the server's own deadline rather than a local timer, so
- * a phone that was asleep resumes with the truth.
+ * bug. It counts down to the server's own deadline rather than from a duration
+ * started at render, so a phone that was asleep resumes near the truth — as near
+ * as the two clocks agree, which is the one thing this cannot check. What ends
+ * the hold is the `answer` frame either way; this number only describes it.
  *
  * Both buttons disable on the first tap. The server refuses a second answer
  * anyway (one hold, one settle), but a button that still looks tappable after it

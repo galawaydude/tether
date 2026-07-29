@@ -653,6 +653,62 @@ test('the last viewer leaving releases the agent rather than stranding it', asyn
   assert.equal(await decision, undefined, 'the phone went away, so the terminal has the question');
 });
 
+test('a subscriber looking at the terminal pane does not stall the agent', async (t) => {
+  const h = await held(t, { permissionTimeoutMs: 60_000 });
+  // Both panes stay mounted (`web/src/app.tsx`), so the socket is subscribed for
+  // the whole time a user works in the terminal — which is where the provider's
+  // own prompt already is. Holding then would stall every Edit, Write and Bash
+  // in front of the very surface that answers them.
+  h.conversations.watch(h.session.id, h.client.send, false);
+
+  const before = Date.now();
+  assert.equal(await h.conversations.hook(h.session, preToolUse()), undefined);
+  assert.ok(Date.now() - before < 1000, 'it returned at once rather than waiting out the hold');
+  await h.client.waitForOther(h.client.pendings, 1);
+  assert.equal(h.client.pendings[0]?.deadline, undefined, 'reported, with no button to offer');
+});
+
+test('switching to the terminal mid-hold releases the agent rather than denying for it', async (t) => {
+  const h = await held(t, { permissionTimeoutMs: 60_000 });
+  const decision = h.conversations.hook(h.session, preToolUse());
+  await h.client.waitForOther(h.client.pendings, 1);
+
+  // Exactly what the last viewer leaving does: the question goes back to the
+  // provider's own prompt, which is on the tab the user has just switched to.
+  h.conversations.watch(h.session.id, h.client.send, false);
+  assert.equal(await decision, undefined, 'no decision, so Claude Code’s own rules apply');
+  assert.equal(h.client.answers[0]?.outcome, 'timeout', 'released, never denied');
+
+  // And switching back holds again: the socket never dropped, so there is
+  // nothing to re-establish.
+  h.conversations.watch(h.session.id, h.client.send, true);
+  const second = h.conversations.hook(h.session, preToolUse('toolu_second'));
+  await h.client.waitForOther(h.client.pendings, 2);
+  assert.ok(h.client.pendings[1]?.deadline !== undefined, 'held again');
+  assert.equal(h.conversations.answer(h.session.id, 'toolu_second', 'allow'), true);
+  assert.equal(await second, 'allow');
+});
+
+test('a hold that ended while the socket was down comes back as the answer, not as buttons', async (t) => {
+  const h = await held(t, { permissionTimeoutMs: 60_000 });
+  const decision = h.conversations.hook(h.session, preToolUse());
+  await h.client.waitForOther(h.client.pendings, 1);
+
+  // The phone's screen locked. The last viewer leaving releases the agent.
+  h.leave();
+  assert.equal(await decision, undefined);
+
+  const again = sink();
+  const stop = await h.conversations.subscribe(h.session, 1, again.send);
+  t.after(stop);
+  await again.waitForOther(again.pendings, 1);
+  assert.equal(again.pendings[0]?.deadline, undefined, 'no deadline: the hold is long over');
+  // Without this the card comes back with live-looking buttons over an expired
+  // countdown, and a tap on it is a 409 the user has no way to have predicted.
+  await again.waitForOther(again.answers, 1);
+  assert.equal(again.answers[0]?.outcome, 'timeout', 'and it says how it ended');
+});
+
 test('a reconnect mid-hold gets the buttons back, deadline and all', async (t) => {
   const h = await held(t, { permissionTimeoutMs: 60_000 });
   void h.conversations.hook(h.session, preToolUse());

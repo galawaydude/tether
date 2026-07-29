@@ -383,16 +383,34 @@ export type InstallResult = {
   backupPath?: string;
   /** Events tether's entry was added to; empty when it was already on all of them. */
   added: string[];
+  /**
+   * Events where tether's *existing* entry was reconciled rather than appended —
+   * today that is only its `timeout`, which has to move when the hold does.
+   * Separate from `added` because "tether put a hook in your repository" and
+   * "tether corrected the one it had already put there" are different sentences.
+   */
+  updated: string[];
 };
 
 /**
  * Put tether's hook in a project, and make sure the shim and the secret exist.
  *
  * Idempotent, and it has to be: `startSession` calls this on every spawn in the
- * directory, so a second call re-writes the shim (an upgrade updates it) and adds
- * nothing to the settings file. Appended rather than inserted, and every other
+ * directory, so a second call re-writes the shim (an upgrade updates it) and
+ * never appends a second entry. Appended rather than inserted, and every other
  * key of the file is preserved — this file is the user's, and it commonly holds
  * their own `permissions` block.
+ *
+ * Idempotent is not the same as untouched, and the difference is the `timeout`.
+ * The shim is rewritten on every spawn with an abort derived from the *current*
+ * hold, so a settings file still carrying the number some earlier hold wrote
+ * breaks the nesting the whole safety argument rests on (see
+ * {@link hookTimeoutSeconds}): Claude Code kills the hook first, asks in the
+ * terminal, and tether goes on showing live buttons for a hold the agent has
+ * stopped waiting on. So tether's own entry is *reconciled* rather than skipped.
+ * Only that one field, only on tether's own handler — every other key, event and
+ * party's handler comes out byte-for-byte as it went in — and when nothing has
+ * to move, nothing is written and nothing is backed up.
  *
  * `now` is only for tests, which need a backup name they can predict.
  */
@@ -417,22 +435,35 @@ export async function installHook(options: {
   await chmod(shim, 0o700);
   await ensureHookSecret(options.stateDir);
 
+  const timeout = hookTimeoutSeconds(holdMs);
   const hooks: Record<string, HookGroup[]> = { ...(file.hooks ?? {}) };
   const added: string[] = [];
+  const updated: string[] = [];
   for (const event of HOOK_EVENTS) {
     const groups = [...(hooks[event] ?? [])];
-    if (groups.some((group) => group.hooks.some((handler) => isOurs(handler, shim)))) continue;
+    const ours = groups.flatMap((group) => group.hooks).filter((handler) => isOurs(handler, shim));
+    if (ours.length > 0) {
+      // Asked before it is written: a spawn at the same hold must leave the
+      // user's file byte-identical, or `startSession` rewrites it on every run.
+      if (ours.every((handler) => handler['timeout'] === timeout)) continue;
+      for (const handler of ours) handler['timeout'] = timeout;
+      hooks[event] = groups;
+      updated.push(event);
+      continue;
+    }
     groups.push({
       // `matcher` selects tools, so it is meaningful for `PreToolUse` and not
       // for `Notification`, which has none.
       ...(event === 'PreToolUse' ? { matcher: '*' } : {}),
-      hooks: [{ type: 'command', command: shimCommand(shim), timeout: hookTimeoutSeconds(holdMs) }],
+      hooks: [{ type: 'command', command: shimCommand(shim), timeout }],
     });
     hooks[event] = groups;
     added.push(event);
   }
 
-  if (added.length === 0) return { settingsPath: path, shimPath: shim, added };
+  if (added.length === 0 && updated.length === 0) {
+    return { settingsPath: path, shimPath: shim, added, updated };
+  }
 
   let backupPath: string | undefined;
   if (existing !== undefined) {
@@ -449,5 +480,6 @@ export async function installHook(options: {
     shimPath: shim,
     ...(backupPath === undefined ? {} : { backupPath }),
     added,
+    updated,
   };
 }

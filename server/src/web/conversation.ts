@@ -19,7 +19,7 @@
  * already built against.
  */
 
-import type { PermissionDecision } from '@tether/shared';
+import type { ConvClientFrame, PermissionDecision, ServerFrame } from '@tether/shared';
 import type { FastifyInstance } from 'fastify';
 import type { DatabaseSync } from 'node:sqlite';
 
@@ -79,6 +79,20 @@ const ANSWER_SCHEMA = {
 
 /** Close codes above 4000 are application-defined; these match `term-socket.ts`. */
 export const CLOSE_NO_SESSION = 4404;
+
+/** The channel's whole client vocabulary, parsed the same way the terminal's is. */
+export function parseWatch(raw: string): ConvClientFrame | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof value !== 'object' || value === null) return null;
+  const frame = value as Record<string, unknown>;
+  if (frame['c'] !== 'watch' || typeof frame['watching'] !== 'boolean') return null;
+  return { c: 'watch', watching: frame['watching'] };
+}
 
 type Params = { id: string };
 
@@ -151,17 +165,40 @@ export function registerConvSocket(
       }
 
       const alive = () => socket.readyState === socket.OPEN;
+      const send = (frame: ServerFrame) => {
+        if (alive()) socket.send(JSON.stringify(frame));
+      };
+      // The only thing a client says on this channel: which pane is in front.
+      // Validated by hand rather than trusted after `JSON.parse`, as on the
+      // terminal socket — reaching this route is equivalent to a shell — and
+      // anything else is dropped in silence.
+      //
+      // Listening before subscribing, and remembering the answer: subscribing
+      // spans a file read, and a client that says "I am on the terminal" inside
+      // that window would otherwise be heard by nobody and have the agent held
+      // for it anyway.
+      let watching = true;
+      socket.on('message', (data: Buffer, isBinary: boolean) => {
+        if (isBinary) return;
+        const frame = parseWatch(data.toString());
+        if (frame === null) return;
+        watching = frame.watching;
+        conversations.watch(session.id, send, frame.watching);
+      });
+
       const unsubscribe = await conversations.subscribe(
         session,
         Number(request.query.since ?? '0'),
-        (frame) => {
-          if (alive()) socket.send(JSON.stringify(frame));
-        },
+        send,
       );
-      // Subscribing spans a file read, and a client that gave up inside that
-      // window would otherwise stay subscribed for the life of the process.
-      if (!alive()) unsubscribe();
-      else socket.on('close', unsubscribe);
+      // A client that gave up inside that same window would otherwise stay
+      // subscribed for the life of the process.
+      if (!alive()) {
+        unsubscribe();
+        return;
+      }
+      socket.on('close', unsubscribe);
+      if (!watching) conversations.watch(session.id, send, false);
     },
   );
 }

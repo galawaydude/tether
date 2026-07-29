@@ -220,12 +220,23 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   throughout — says whether Claude Code was going to prompt, so a blanket hold
   costs the timeout on every auto-allowed call. `NEVER_HELD` in
   `providers/claude-code/events.ts` skips the read-only burst tools and
-  `#holdFor` skips a session nobody is subscribed to. Do not "fix" this by
+  `#holdFor` skips a session nobody is **watching** — which is not the same as
+  subscribed, because the session screen keeps both panes mounted, so the `conv`
+  socket is open the whole time a user works in the terminal. The client sends
+  `{c:'watch'}` (the channel's whole client vocabulary) when the tab changes, and
+  switching away mid-hold releases like the last viewer leaving does — a
+  `timeout`, never a deny. Do not "fix" this by
   re-deriving Claude Code's permission rules; they are the user's own settings
   and the provider's to apply. **(2) Three timeouts, nested:** server hold <
   the shim's `AbortSignal` < the settings-file `timeout`, all derived from
   `permissionTimeoutMs()`. A hook killed at its `timeout` falls through, so the
-  outer two are nets rather than mechanisms. **(3) The fallback is neither allow
+  outer two are nets rather than mechanisms. The shim is rewritten on every
+  spawn, so `installHook` **reconciles its own settings entry's `timeout`**
+  rather than skipping a project that already has one — otherwise an upgraded
+  project keeps the old number and Claude Code kills the hook while tether is
+  still showing live buttons. Reconciled means that one field of tether's own
+  handler and nothing else; at an unchanged hold the file is not written at all.
+  **(3) The fallback is neither allow
   nor deny** — saying nothing hands the question back to the provider's own
   rules; a reachable-then-failed tether says so through `systemMessage`, a
   refused connection stays silent because tether not running is ordinary.
@@ -239,7 +250,11 @@ CI runs exactly those (`.github/workflows/ci.yml`).
 - **`{c:'pending'}`'s `deadline` is what puts buttons on a card, not `pending`.**
   tether reports far more proposals than it holds, and `{c:'answer'}` is how
   every viewer learns a hold is over — so neither frame carries a `seq`, for the
-  same reason `state` does not. `web/src/conversation.ts` owns the wording
+  same reason `state` does not. Both are replayed on subscribe, and a
+  deadline-less `pending` is **authoritative**: it clears the buttons, and the
+  `answer` behind it says how the hold ended, so a phone that reconnects after
+  one is over does not come back tapping a dead card.
+  `web/src/conversation.ts` owns the wording
   (`toolState`/`toolResult`), because what a card says about a permission it is
   holding is the most consequential copy in the product and a decision made in
   the `.tsx` leaves the test suite. An answerable card is the one card that opens

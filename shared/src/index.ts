@@ -163,7 +163,20 @@ export type ServerFrame =
   | { c: 'ack'; seq: number };
 
 /**
- * Client → server control frames, also JSON text frames.
+ * Client → server on the `conv` channel — a vocabulary of one, and separate from
+ * {@link ClientFrame} because the two sockets share none of it: there is no
+ * sequencing here and nothing to ack.
+ *
+ * `watching` is whether the conversation pane is the one in front. The session
+ * screen keeps both panes mounted, so being subscribed says nothing about it,
+ * and the server holds a permission prompt only for someone who is actually
+ * looking at the surface that answers it. Absent, the server assumes `true`:
+ * that is the tab the app opens on.
+ */
+export type ConvClientFrame = { c: 'watch'; watching: boolean };
+
+/**
+ * Client → server control frames on the terminal channel, also JSON text frames.
  *
  * `seq` is per client and monotonic, and the client retries until the matching
  * `ack` arrives. Input is the one channel where at-least-once is not good

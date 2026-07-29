@@ -106,12 +106,93 @@ test('installing twice adds nothing the second time', async () => {
   // that appended again would grow the user's file without bound.
   const again = await installHook({ cwd, stateDir });
   assert.deepEqual(again.added, []);
-  assert.equal(await readFile(settingsPath(cwd), 'utf8'), before);
+  assert.deepEqual(again.updated, [], 'and nothing had to be reconciled either');
+  assert.equal(await readFile(settingsPath(cwd), 'utf8'), before, 'byte-identical');
+  assert.equal(again.backupPath, undefined);
   assert.deepEqual(
     (await readdir(join(cwd, '.claude'))).filter((n) => n.includes('backup')),
     [],
     'and made no backup, because it changed nothing',
   );
+});
+
+test('a reinstall at a new hold moves the timeout instead of leaving a stale one', async () => {
+  const { cwd, stateDir } = await dirs();
+  await mkdir(join(cwd, '.claude'), { recursive: true });
+  const original = {
+    permissions: { allow: ['Bash(npm test)'] },
+    hooks: {
+      PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'their-own-hook' }] }],
+      Stop: [{ hooks: [{ type: 'command', command: 'notify-send done' }] }],
+    },
+  };
+  await writeFile(settingsPath(cwd), JSON.stringify(original, null, 2));
+
+  await installHook({ cwd, stateDir, holdMs: 5000 });
+  // The upgrade path, which is where everyone ends up: the shim is rewritten on
+  // every spawn with an abort derived from the *current* hold, so a settings file
+  // still carrying the old number means Claude Code kills the hook and asks in
+  // the terminal while tether goes on showing a live countdown and live buttons.
+  const again = await installHook({
+    cwd,
+    stateDir,
+    holdMs: 20_000,
+    now: new Date('2026-07-29T08:30:00.000Z'),
+  });
+  assert.deepEqual(again.added, [], 'nothing was added — it was already installed');
+  assert.deepEqual(again.updated, [...HOOK_EVENTS], 'and the result says so rather than lying');
+  assert.equal(
+    again.backupPath,
+    settingsBackupPath(stateDir, cwd, '2026-07-29T08-30-00-000Z'),
+    'backed up first, exactly as a fresh install does',
+  );
+
+  const file = await settings(cwd);
+  const hooks = file['hooks'] as Record<
+    string,
+    { matcher?: string; hooks: Record<string, unknown>[] }[]
+  >;
+  assert.equal(hooks['PreToolUse']!.length, 2, 'still one tether entry, not a second one');
+  assert.equal(
+    hooks['PreToolUse']![1]!.hooks[0]!['timeout'],
+    hookTimeoutSeconds(20_000),
+    'tether’s own entry moved with the hold',
+  );
+  // The file belongs to the user, and reconciling one field of one handler is
+  // the whole of what tether is allowed to do to it.
+  assert.deepEqual(file['permissions'], original.permissions, 'an unrelated key is untouched');
+  assert.deepEqual(hooks['Stop'], original.hooks.Stop, 'an unrelated event is untouched');
+  assert.deepEqual(
+    hooks['PreToolUse']![0],
+    original.hooks.PreToolUse[0],
+    'and another party’s handler, timeout-less as they wrote it',
+  );
+
+  // And a third spawn at that same hold is back to changing nothing.
+  const before = await readFile(settingsPath(cwd), 'utf8');
+  const third = await installHook({ cwd, stateDir, holdMs: 20_000 });
+  assert.deepEqual([third.added, third.updated], [[], []]);
+  assert.equal(await readFile(settingsPath(cwd), 'utf8'), before);
+});
+
+test('raising TETHER_PERMISSION_TIMEOUT reaches a project that was already installed', async (t) => {
+  const { cwd, stateDir } = await dirs();
+  const before = process.env['TETHER_PERMISSION_TIMEOUT'];
+  t.after(() => {
+    if (before === undefined) delete process.env['TETHER_PERMISSION_TIMEOUT'];
+    else process.env['TETHER_PERMISSION_TIMEOUT'] = before;
+  });
+
+  process.env['TETHER_PERMISSION_TIMEOUT'] = '5';
+  await installHook({ cwd, stateDir });
+  process.env['TETHER_PERMISSION_TIMEOUT'] = '45';
+  assert.deepEqual((await installHook({ cwd, stateDir })).updated, [...HOOK_EVENTS]);
+
+  const hooks = (await settings(cwd))['hooks'] as Record<
+    string,
+    { hooks: Record<string, unknown>[] }[]
+  >;
+  assert.equal(hooks['PreToolUse']![0]!.hooks[0]!['timeout'], hookTimeoutSeconds(45_000));
 });
 
 test('the user’s own settings are preserved, and backed up before being touched', async () => {
@@ -362,6 +443,11 @@ test('a tether that never replies is bounded by the shim’s own abort', async (
 
 test('the three timeouts stay ordered: hold < the shim’s abort < Claude Code’s kill', async () => {
   const { cwd, stateDir } = await dirs();
+  // Against a *reinstalled* project, because that is the case a fresh install
+  // cannot fail: the shim is rewritten every spawn and the settings entry is not
+  // appended again, so only reconciling it keeps the three ordered on the path
+  // every user is on after their first upgrade.
+  await installHook({ cwd, stateDir, holdMs: 5000 });
   await installHook({ cwd, stateDir, holdMs: 20_000 });
   const hooks = (await settings(cwd))['hooks'] as Record<
     string,
