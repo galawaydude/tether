@@ -305,12 +305,22 @@ export class Conversations {
    * re-checked ends up naming a file nothing writes to any more — the
    * conversation view then shows a conversation that simply stopped, while the
    * terminal beside it carries on. The row follows the pane, always.
+   *
+   * What is already bound is read from the *live* row where there is one, never
+   * from the caller's copy: `bindProviderSession` snapshots the rows before it
+   * awaits a pane read, and Claude Code runs tool calls in parallel, so two hook
+   * posts for one not-yet-recorded session both arrive holding a pre-bind
+   * snapshot. Comparing against those has each of them restart the same `Live` —
+   * two tailers on one transcript, every line ingested twice, and the one that
+   * loses the `live.tailer` field left running for the life of the process.
    */
   #bind(session: Session, running: string | undefined): boolean {
-    if (running === undefined || running === session.providerSessionId) return false;
-    setProviderSessionId(this.#db, session.id, running);
-    session.providerSessionId = running;
+    if (running === undefined) return false;
     const live = this.#live.get(session.id);
+    const bound = live === undefined ? session.providerSessionId : live.session.providerSessionId;
+    session.providerSessionId = running;
+    if (running === bound) return false;
+    setProviderSessionId(this.#db, session.id, running);
     if (live !== undefined) live.session.providerSessionId = running;
     return true;
   }
@@ -341,6 +351,11 @@ export class Conversations {
     const panes = await this.#panes();
     for (const session of listSessions(this.#db)) {
       if (session.deadAt !== null) continue;
+      // Claude Code only, as in `#syncFromPane`: Codex publishes no per-pid
+      // registry file, so a `~/.claude/sessions/<pid>.json` found under a Codex
+      // pane's pid is a dead agent's leftover under a reused pid, and binding it
+      // would write a foreign id into the row that `resume` reads.
+      if (session.provider === CODEX) continue;
       const pid = this.#pidOf(panes, session);
       if (pid === undefined) continue;
       if ((await readSessionId(pid, this.#home())) !== providerSessionId) continue;
@@ -783,12 +798,17 @@ export class Conversations {
       live.tailer = undefined;
       await tailer?.stop();
       if (live.stopped) return;
+      // Nothing has been sent when the row is being bound for the *first* time —
+      // the ordinary path, where `#syncFromPane` and the poller's first tick race
+      // to read one pane file. A refetch there costs a client that holds nothing
+      // a socket close and an empty history for no invalidation at all.
+      const held = live.seq > 0;
       live.seq = 0;
       live.lines = 0;
       live.tail = [];
       live.seen.clear();
       live.memo.clear();
-      for (const send of live.subscribers) send({ c: 'refetch' });
+      if (held) for (const send of live.subscribers) send({ c: 'refetch' });
       live.ready = this.#start(live);
     })();
   }

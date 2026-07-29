@@ -102,6 +102,13 @@ async function statesFor(
     live.map(async (session) => {
       const pid = pids.get(session.tmuxName);
       if (pid === undefined) return;
+      // The re-bind that keeps a row naming what its pane is really running lives
+      // in the conversation poller, which only a conversation subscriber starts.
+      // So a `/resume` typed with no conversation view open anywhere leaves this
+      // badge blank — `waiting` included — until one is opened, which re-binds the
+      // row and heals it. Deliberately deferred: the alternatives are dropping
+      // `expectSessionId` here, which is the pid-reuse guard, or giving this hot
+      // route a bind of its own.
       const state = await readSessionStatus(pid, { expectSessionId: session.providerSessionId });
       if (state === undefined) return;
       states[session.id] = { state };
