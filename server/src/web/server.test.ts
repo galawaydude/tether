@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 
+import { applyRegistrySchema } from '../machine/registry.ts';
 import { createAuthStore } from './auth.ts';
 import { defaultAllowedHosts } from './guards.ts';
 import { SESSION_COOKIE, buildServer } from './server.ts';
@@ -11,10 +12,15 @@ const PASSWORD = 'correct horse battery staple';
 const HOST = 'localhost:8787';
 
 async function harness(overrides: Partial<ServerOptions> = {}) {
-  const auth = createAuthStore(new DatabaseSync(':memory:'));
+  // One database for both, as in production: the auth store and the registry share
+  // the single SQLite file.
+  const db = new DatabaseSync(':memory:');
+  applyRegistrySchema(db);
+  const auth = createAuthStore(db);
   await auth.setPassword(PASSWORD);
   const app = buildServer({
     auth,
+    db,
     allowedHosts: defaultAllowedHosts('127.0.0.1'),
     // Tests must not spend 250ms per login attempt; the delay itself is
     // asserted separately.
@@ -372,9 +378,11 @@ test('the fixed login delay applies to every attempt', async (t) => {
 });
 
 test('login still fails closed when no password has been set', async (t) => {
-  const auth = createAuthStore(new DatabaseSync(':memory:'));
+  const db = new DatabaseSync(':memory:');
+  applyRegistrySchema(db);
   const app = buildServer({
-    auth,
+    auth: createAuthStore(db),
+    db,
     allowedHosts: defaultAllowedHosts('127.0.0.1'),
     loginDelayMs: 0,
   });

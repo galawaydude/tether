@@ -24,6 +24,9 @@ import {
 } from './registry.ts';
 import { killServer, newSession } from './tmux.ts';
 
+/** The sessions here start in temporary directories, not under the default root. */
+process.env['TETHER_ALLOWED_ROOTS'] = tmpdir();
+
 /** A database of our own, in a directory removed however the test ends. */
 async function dbPathFor(t: TestContext): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'tether-state-'));

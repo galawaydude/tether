@@ -72,8 +72,13 @@ const COLUMNS = `
  */
 export function openRegistry(path?: string): DatabaseSync {
   const db = openDatabase(path);
-  db.exec(SCHEMA);
+  applyRegistrySchema(db);
   return db;
+}
+
+/** The same schema on a database someone else opened. For tests and `:memory:`. */
+export function applyRegistrySchema(db: DatabaseSync): void {
+  db.exec(SCHEMA);
 }
 
 function rows(db: DatabaseSync, sql: string, ...params: string[]): Session[] {
