@@ -36,10 +36,12 @@ jobs:
       # yet by dereferencing that NULL window, so every detached `new-session` kills
       # the server (fixed upstream in 3.7's resize.c). ubuntu-latest's apt tmux is 3.4,
       # so build the pinned release instead.
+      # `build-essential` and `python3` are also what node-gyp needs: `node-pty`
+      # ships no Linux prebuild, so `npm ci` compiles it from source.
       - name: Install tmux
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential bison libevent-dev libncurses-dev pkg-config
+          sudo apt-get install -y build-essential python3 bison libevent-dev libncurses-dev pkg-config
           tarball="tmux-${TMUX_VERSION}.tar.gz"
           curl -sSfL -o "${RUNNER_TEMP}/${tarball}" \
             "https://github.com/tmux/tmux/releases/download/${TMUX_VERSION}/${tarball}"
@@ -52,6 +54,13 @@ jobs:
           tmux -V
 
       - run: npm ci
+
+      # npm 12 blocks dependency install scripts unless approved, and an
+      # unapproved or unbuildable `node-pty` fails as a missing native module at
+      # the first attach — long after this job has gone green. Fail here instead.
+      - name: Verify node-pty built
+        run: |
+          node -e "require('node-pty').spawn('/bin/true', [], { cols: 80, rows: 24 })"
 
       - name: Typecheck
         run: npm run typecheck

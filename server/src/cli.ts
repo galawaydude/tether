@@ -16,6 +16,7 @@ import {
   reconcileWithTmux,
 } from './machine/registry.ts';
 import { startSession, stopSession } from './machine/sessions.ts';
+import { PtyUnavailableError, createTerminals, loadPty } from './machine/terminal.ts';
 import { DEFAULT_SOCKET, allowedRoots } from './machine/tmux.ts';
 import { MIN_PASSWORD_LENGTH, createAuthStore } from './web/auth.ts';
 import type { AuthStore } from './web/auth.ts';
@@ -173,9 +174,22 @@ async function serve(db: DatabaseSync, auth: AuthStore, args: ServeArgs): Promis
     return 1;
   }
 
+  // Checked before listening rather than on the first attach: node-pty ships no
+  // Linux prebuild, so a `npm ci` without a C++ toolchain leaves it unbuilt, and
+  // a terminal that fails to open is the whole product failing. Say so as an
+  // instruction, not as a stack trace out of an import.
+  try {
+    await loadPty();
+  } catch (error) {
+    if (!(error instanceof PtyUnavailableError)) throw error;
+    process.stderr.write(`${error.message}\n`);
+    return 1;
+  }
+
   const app = buildServer({
     auth,
     db,
+    terminals: createTerminals(socket),
     allowedHosts: config.allowedHosts,
     trustedProxies: config.trustedProxies,
     socket,

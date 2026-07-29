@@ -3,6 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 
 import { applyRegistrySchema } from '../machine/registry.ts';
+import type { Terminals } from '../machine/terminal.ts';
 import { createAuthStore } from './auth.ts';
 import { defaultAllowedHosts } from './guards.ts';
 import { SESSION_COOKIE, buildServer } from './server.ts';
@@ -11,6 +12,38 @@ import type { ServerOptions } from './server.ts';
 const PASSWORD = 'correct horse battery staple';
 const HOST = 'localhost:8787';
 
+/**
+ * A `Terminals` that records instead of driving tmux. What is under test here is
+ * the socket's guards and framing; `machine/terminal.test.ts` drives the real
+ * thing against a real tmux.
+ */
+function recordingTerminals() {
+  const calls: string[] = [];
+  let emit: ((bytes: Uint8Array) => void) | undefined;
+  const terminals: Terminals = {
+    async attach(session, viewer) {
+      if (session === 'missing') throw new Error('no such session');
+      calls.push(`attach ${session}`);
+      emit = viewer;
+      viewer(Buffer.from('replay-héllo', 'utf8'));
+      return () => calls.push(`detach ${session}`);
+    },
+    async resize(session, cols, rows) {
+      calls.push(`resize ${session} ${cols}x${rows}`);
+    },
+    async input(session, clientId, seq, text) {
+      calls.push(`input ${session} ${clientId} ${seq} ${JSON.stringify(text)}`);
+      return true;
+    },
+    async key(session, clientId, seq, keys) {
+      calls.push(`key ${session} ${clientId} ${seq} ${keys.join('+')}`);
+      return true;
+    },
+    closeAll() {},
+  };
+  return { terminals, calls, push: (bytes: Uint8Array) => emit?.(bytes) };
+}
+
 async function harness(overrides: Partial<ServerOptions> = {}) {
   // One database for both, as in production: the auth store and the registry share
   // the single SQLite file.
@@ -18,16 +51,18 @@ async function harness(overrides: Partial<ServerOptions> = {}) {
   applyRegistrySchema(db);
   const auth = createAuthStore(db);
   await auth.setPassword(PASSWORD);
+  const recorder = recordingTerminals();
   const app = buildServer({
     auth,
     db,
+    terminals: recorder.terminals,
     allowedHosts: defaultAllowedHosts('127.0.0.1'),
     // Tests must not spend 250ms per login attempt; the delay itself is
     // asserted separately.
     loginDelayMs: 0,
     ...overrides,
   });
-  return { auth, app };
+  return { auth, app, terminal: recorder };
 }
 
 function login(app: ReturnType<typeof buildServer>, password = PASSWORD, headers = {}) {
@@ -383,6 +418,7 @@ test('login still fails closed when no password has been set', async (t) => {
   const app = buildServer({
     auth: createAuthStore(db),
     db,
+    terminals: recordingTerminals().terminals,
     allowedHosts: defaultAllowedHosts('127.0.0.1'),
     loginDelayMs: 0,
   });
@@ -396,4 +432,147 @@ test('login still fails closed when no password has been set', async (t) => {
   });
   assert.notEqual(res.statusCode, 200);
   assert.equal(res.cookies.length, 0);
+});
+
+// ── The `term` WebSocket ──────────────────────────────────────────────────────
+// An upgrade carries cookies but is not a CORS request and is not a
+// state-changing method, so it would sail past both browser-side and
+// method-based defences. Reaching this route is a shell (report section 7), so
+// every rejection below is load-bearing.
+
+const TERM_URL = '/api/sessions/s1/term?client=phone';
+
+async function sessionToken(app: ReturnType<typeof buildServer>): Promise<string> {
+  const res = await login(app);
+  return res.cookies.find((c) => c.name === SESSION_COOKIE)!.value as string;
+}
+
+type Frame = { data: Buffer; binary: boolean };
+
+/**
+ * The replay is sent the instant the socket opens, so the listener is attached
+ * in `onInit` — before the handshake completes — and frames are queued. A
+ * listener added after `injectWS` resolves misses it.
+ */
+function openTerm(
+  app: ReturnType<typeof buildServer>,
+  headers: Record<string, string>,
+  url = TERM_URL,
+) {
+  const queued: Frame[] = [];
+  const waiting: ((frame: Frame) => void)[] = [];
+  const socket = app.injectWS(
+    url,
+    { headers: { host: HOST, origin: `http://${HOST}`, ...headers } },
+    {
+      onInit: (ws) =>
+        ws.on('message', (data: Buffer, binary: boolean) => {
+          const frame = { data: Buffer.from(data), binary };
+          const next = waiting.shift();
+          if (next === undefined) queued.push(frame);
+          else next(frame);
+        }),
+    },
+  );
+  const next = async (): Promise<Frame> =>
+    queued.shift() ?? (await new Promise<Frame>((resolve) => waiting.push(resolve)));
+  return { socket, next };
+}
+
+test('an unauthenticated terminal upgrade is refused', async (t) => {
+  const { app } = await harness();
+  t.after(() => app.close());
+  await app.ready();
+
+  await assert.rejects(openTerm(app, {}).socket, /401/, 'no cookie, no shell');
+});
+
+test('a terminal upgrade with a stale session cookie is refused', async (t) => {
+  const { app, auth } = await harness();
+  t.after(() => app.close());
+  await app.ready();
+
+  const token = await sessionToken(app);
+  auth.revokeSession(token);
+  await assert.rejects(openTerm(app, { cookie: `${SESSION_COOKIE}=${token}` }).socket, /401/);
+});
+
+test('a terminal upgrade from a foreign origin is refused', async (t) => {
+  const { app } = await harness();
+  t.after(() => app.close());
+  await app.ready();
+
+  const token = await sessionToken(app);
+  await assert.rejects(
+    openTerm(app, { cookie: `${SESSION_COOKIE}=${token}`, origin: 'http://evil.example' }).socket,
+    /403/,
+    'a page on another origin cannot open this socket with the victim cookie',
+  );
+});
+
+test('a terminal upgrade with an unallowed Host is refused', async (t) => {
+  const { app } = await harness();
+  t.after(() => app.close());
+  await app.ready();
+
+  const token = await sessionToken(app);
+  await assert.rejects(
+    openTerm(app, { cookie: `${SESSION_COOKIE}=${token}`, host: 'rebind.example' }).socket,
+    /403/,
+  );
+});
+
+test('terminal output arrives as binary frames and input is ACKed', async (t) => {
+  const { app, terminal } = await harness();
+  t.after(() => app.close());
+  await app.ready();
+
+  const token = await sessionToken(app);
+  const term = openTerm(app, { cookie: `${SESSION_COOKIE}=${token}` });
+  const socket = await term.socket;
+  t.after(() => socket.close());
+
+  const replay = await term.next();
+  assert.equal(replay.binary, true, 'terminal bytes are binary frames, never text');
+  assert.equal(replay.data.toString('utf8'), 'replay-héllo');
+
+  // A glyph split across two PTY chunks must reach the client as the same bytes
+  // it left as — nothing in this path may decode.
+  const glyph = Buffer.from('─', 'utf8');
+  terminal.push(glyph.subarray(0, 1));
+  assert.deepEqual((await term.next()).data, Buffer.from([glyph[0]!]));
+  terminal.push(glyph.subarray(1));
+  assert.deepEqual((await term.next()).data, Buffer.from(glyph.subarray(1)));
+
+  socket.send(JSON.stringify({ c: 'input', seq: 1, text: 'first\nsecond' }));
+  const ack = await term.next();
+  assert.equal(ack.binary, false);
+  assert.deepEqual(JSON.parse(ack.data.toString('utf8')), { c: 'ack', seq: 1 });
+
+  socket.send(JSON.stringify({ c: 'resize', cols: 100, rows: 30 }));
+  socket.send(JSON.stringify({ c: 'key', seq: 2, keys: ['C-c'] }));
+  assert.deepEqual(JSON.parse((await term.next()).data.toString('utf8')), {
+    c: 'ack',
+    seq: 2,
+  });
+
+  assert.deepEqual(terminal.calls, [
+    'attach s1',
+    'input s1 phone 1 "first\\nsecond"',
+    'resize s1 100x30',
+    'key s1 phone 2 C-c',
+  ]);
+});
+
+test('a malformed session name or missing client id never reaches tmux', async (t) => {
+  const { app, terminal } = await harness();
+  t.after(() => app.close());
+  await app.ready();
+
+  const cookie = { cookie: `${SESSION_COOKIE}=${await sessionToken(app)}` };
+  // `:` and `.` are tmux target syntax, and an absent client id would collapse
+  // every viewer's input sequence into one.
+  await assert.rejects(openTerm(app, cookie, '/api/sessions/a:b/term?client=phone').socket, /400/);
+  await assert.rejects(openTerm(app, cookie, '/api/sessions/s1/term').socket, /400/);
+  assert.deepEqual(terminal.calls, []);
 });

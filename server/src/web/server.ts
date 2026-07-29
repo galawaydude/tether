@@ -1,12 +1,15 @@
 import cookie from '@fastify/cookie';
+import websocket from '@fastify/websocket';
 import Fastify from 'fastify';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { DatabaseSync } from 'node:sqlite';
 import { setTimeout as delay } from 'node:timers/promises';
 
+import type { Terminals } from '../machine/terminal.ts';
 import type { AuthStore } from './auth.ts';
 import { isHostAllowed, isOriginAllowed, isStateChanging } from './guards.ts';
 import { registerSessionRoutes } from './sessions.ts';
+import { registerTermSocket } from './term-socket.ts';
 
 declare module 'fastify' {
   interface FastifyContextConfig {
@@ -21,6 +24,8 @@ export type ServerOptions = {
   auth: AuthStore;
   /** The registry database (the same file the auth store uses). */
   db: DatabaseSync;
+  /** Backs the `term` WebSocket channel. */
+  terminals: Terminals;
   /** Accepted `Host` header hostnames — see `defaultAllowedHosts`. */
   allowedHosts: Iterable<string>;
   /** tmux socket the session routes drive. Tests point this at their own. */
@@ -59,6 +64,17 @@ const EMPTY_BODY_SCHEMA = {
   body: { type: ['object', 'null'], additionalProperties: false, properties: {} },
 } as const;
 
+/**
+ * A WebSocket upgrade carries cookies but is a `GET`, so the Origin guard below
+ * would skip it, and it is not a CORS request, so the browser will not stop it
+ * either. Every other check it does get: `@fastify/websocket` dispatches the
+ * upgrade through the normal router, so the Host allowlist and the default-deny
+ * `preParsing` hook both run.
+ */
+function isUpgrade(request: FastifyRequest): boolean {
+  return request.headers.upgrade?.toLowerCase() === 'websocket';
+}
+
 export function buildServer(options: ServerOptions): FastifyInstance {
   const { auth } = options;
   const allowedHosts = new Set(options.allowedHosts);
@@ -85,6 +101,7 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   });
 
   app.register(cookie);
+  app.register(websocket);
 
   // ── Host allowlist and Origin guard, before anything else touches a request ──
   app.addHook('onRequest', async (request, reply) => {
@@ -92,7 +109,7 @@ export function buildServer(options: ServerOptions): FastifyInstance {
       return reply.code(403).send({ error: 'forbidden_host' });
     }
     if (
-      isStateChanging(request.method) &&
+      (isStateChanging(request.method) || isUpgrade(request)) &&
       !isOriginAllowed(request.headers.origin, request.headers.host)
     ) {
       return reply.code(403).send({ error: 'forbidden_origin' });
@@ -202,6 +219,14 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     socket: options.socket,
     allowedRoots: options.allowedRoots,
   });
+
+  // In `after`, not inline: `@fastify/websocket` upgrades a route through an
+  // `onRoute` hook it only installs once its own registration has run, and a
+  // route added before that silently stays a plain HTTP route.
+  app.after(() => registerTermSocket(app, options.terminals));
+  // Closing the server must take the attach PTYs with it, or `npm test` leaves
+  // tmux clients behind and the process never exits.
+  app.addHook('onClose', async () => options.terminals.closeAll());
 
   return app;
 }
