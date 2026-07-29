@@ -876,12 +876,16 @@ async function waitForState(
 
 test('a file the poller cannot read leaves the waiting it found alone', async (t) => {
   const p = await polling(t, POLL);
-  await writeStatus(p.home, p.pid, { status: 'busy' });
   await writeFile(p.transcript, userRecord(1));
 
+  // No registry file exists yet, and none that says anything is written until
+  // the assertion below has been made. That ordering is the test, not a detail:
+  // a file the poller *can* read is one it may truthfully announce, so leaving
+  // one readable anywhere before the count is taken races the tick timer for it
+  // — and the announcement that wins is a real `busy`, not the bug this guards.
   const client = sink();
   await p.conversations.subscribe(p.session, 0, client.send);
-  await waitForState(client.states, 'busy');
+  await client.waitForOther(client.states, 1);
 
   p.conversations.hook(p.session, {
     hook_event_name: 'Notification',
@@ -894,7 +898,7 @@ test('a file the poller cannot read leaves the waiting it found alone', async (t
 
   // The two ways the file says nothing: gone, and a status this build does not
   // know. Both are "tether cannot say", and neither may answer for the hook.
-  await rm(sessionStatusPath(p.pid, p.home));
+  // Whatever the poller does across these ticks, only silence is correct.
   await new Promise((resolve) => setTimeout(resolve, POLL * 6));
   await writeStatus(p.home, p.pid, { status: 'compacting' });
   await new Promise((resolve) => setTimeout(resolve, POLL * 6));
@@ -902,7 +906,8 @@ test('a file the poller cannot read leaves the waiting it found alone', async (t
   assert.equal(client.states[announced - 1]?.detail, 'Claude needs your permission');
 
   // A state the file really does carry still moves it, and takes the sentence
-  // that belonged to the state it replaced with it.
+  // that belonged to the state it replaced with it. This is also what proves
+  // the poller was alive for all of the above rather than quietly stopped.
   await writeStatus(p.home, p.pid, { status: 'idle' });
   const idle = await waitForState(client.states, 'idle');
   assert.equal(idle.detail, undefined);

@@ -296,7 +296,16 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `)`. Anything unreadable or unverifiable is `undefined` — "tether cannot say"
   — never a guess: a session wrongly reported `waiting` is a phone notification
   that should not have fired. The file also carries `waitingFor`, which nothing
-  reads yet.
+  reads yet. `undefined` is the _only_ thing the poller may not announce: a
+  status it really read stands even over a `waiting` a `Notification` hook just
+  set, because the file publishes `waiting` itself while a dialog is up (report
+  §4e) and a `busy` after one is the user having answered — teach the poller to
+  protect `waiting` from `busy` and the badge sticks forever instead. That makes
+  a readable status file a _live announcer_, which is the trap in the poller's
+  own test: it is the one test that runs with the poller on (every other passes
+  `statusPollMs: 0`), and any moment where the file is readable before a
+  "nothing was announced" count is a race with the tick timer that the truthful
+  announcement wins. Write no status file until after the count.
 
 - **`{c:'state'}` and `{c:'pending'}` are not `conv` frames, and must not become
   one.** `seq` is a position in the mapped transcript; the evidence for `waiting`
