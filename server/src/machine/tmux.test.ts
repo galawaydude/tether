@@ -76,6 +76,17 @@ test('create, discover through list-panes, kill', async (t) => {
   assert.equal(pane.path, resolved);
   assert.equal(pane.dead, false);
 
+  // tmux sanitizes non-printable bytes to `_` for a client whose locale is not
+  // UTF-8, which turns the \x1f-separated row into an unparseable one. `-u` is what
+  // stops that depending on the environment the server happens to be started in.
+  const locale = process.env['LC_ALL'];
+  process.env['LC_ALL'] = 'C';
+  t.after(() => {
+    if (locale === undefined) delete process.env['LC_ALL'];
+    else process.env['LC_ALL'] = locale;
+  });
+  assert.deepEqual(await listPanes(socket), panes);
+
   await killSession(socket, 's1');
   assert.deepEqual(await listSessions(socket), []);
   assert.deepEqual(await listPanes(socket), []);

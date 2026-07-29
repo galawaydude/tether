@@ -44,8 +44,10 @@ is being built one focused PR at a time.
 
 ## Development
 
-Requires the Node version in [`.nvmrc`](.nvmrc) (`nvm use`) and `tmux` — the
-tmux driver's tests drive a real server on a private socket, not a mock.
+Requires the Node version in [`.nvmrc`](.nvmrc) (`nvm use`) and **tmux 3.7 or
+newer** — the tmux driver's tests drive a real server on a private socket, not a
+mock, and older tmux crashes on the `window-size manual` that `tether.conf` sets
+(so does tether itself; 3.7 is a hard floor, not just a test one).
 
 ```sh
 npm ci        # installs all workspaces; builds shared/ declarations

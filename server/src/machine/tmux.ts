@@ -90,7 +90,10 @@ function checkSessionName(name: string): void {
 }
 
 function run(socket: string, args: readonly string[], input?: string): Promise<string> {
-  const argv = ['-L', socket, '-f', TMUX_CONF, ...args];
+  // `-u` because tether's pipeline is UTF-8 end to end but tmux decides that per
+  // client from LC_ALL/LC_CTYPE/LANG: under a C locale it sanitizes non-printable
+  // bytes to `_`, which turns `listPanes`' \x1f separator into an unparseable row.
+  const argv = ['-u', '-L', socket, '-f', TMUX_CONF, ...args];
   return new Promise((fulfil, reject) => {
     // Inside the executor, so a bad argument rejects rather than throwing synchronously
     // out of the wrappers that are not `async`.

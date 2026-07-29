@@ -37,6 +37,11 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   not copy it — `server`'s `build` script does, and anything that moves the file must
   move that `cp` too. The reason for each rule is in the module's own comments; the
   traps they defend against are in report §2/§3/§7.
+- **tmux 3.7 is a hard floor.** `tether.conf` sets `window-size manual`, and tmux
+  before 3.7 sizes a not-yet-created window through a NULL pointer, so every detached
+  `new-session` dies with `server exited unexpectedly`. Ubuntu 24.04 ships 3.4, hence
+  the source build in `.github/workflows/ci.yml`. That message from any tmux command
+  means the tmux on `PATH` is too old, not that the argv was wrong.
 - **Tests run straight from TypeScript** via `node --test` and Node's built-in type
   stripping. There is no test build step; relative imports carry the `.ts` extension.
 
