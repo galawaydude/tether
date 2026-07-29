@@ -174,5 +174,11 @@ test('resume is idempotent — a second call does not start a second pane', asyn
   assert.equal(second.deadAt, null);
   assert.deepEqual(await listTmuxSessions(socket), [started.tmuxName]);
   assert.equal((await listPanes(socket)).filter((p) => p.session === started.tmuxName).length, 1);
+  // `new-session -d` returns once tmux has forked the pane, not once the stub has
+  // written its line — so wait for the one line, then assert there is only one.
+  await waitFor(
+    async () => (await argvLog()).includes('--resume'),
+    'the provider to be started with --resume',
+  );
   assert.equal((await argvLog()).split('\n').filter((l) => l.includes('--resume')).length, 1);
 });

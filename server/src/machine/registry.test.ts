@@ -20,6 +20,7 @@ import {
   openRegistry,
   reconcile,
   reconcileWithTmux,
+  revive,
   setProviderSessionId,
 } from './registry.ts';
 import { killServer, newSession } from './tmux.ts';
@@ -185,4 +186,24 @@ test('reconcile never judges a row created after the snapshot it is judging agai
 
   assert.equal(reconcile(db, [], snapshotAt), 0);
   assert.equal(getSession(db, fresh.id)!.deadAt, null);
+});
+
+test('reconcile never re-kills a row revived after the snapshot it is judging against', async (t) => {
+  const db = openRegistry(await dbPathFor(t));
+  t.after(() => db.close());
+
+  const row = createSession(db, sample());
+  markDead(db, row.id);
+
+  // The interleaving: `tether ls` reads the panes (this row's is gone) and is then
+  // overtaken by a `tether resume`, which starts the pane and revives the row. The
+  // stale UPDATE must not undo that — nothing else ever clears dead_at, so the row
+  // would be stuck dead with its agent running, and resume could not fix it.
+  const snapshotAt = Date.now();
+  // Clock resolution, so the revive lands strictly after the snapshot as it would.
+  await new Promise((r) => setTimeout(r, 2));
+  revive(db, row.id);
+
+  assert.equal(reconcile(db, [], snapshotAt), 0);
+  assert.equal(getSession(db, row.id)!.deadAt, null);
 });

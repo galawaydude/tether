@@ -144,7 +144,15 @@ export async function resumeSession(
     command: resume(current.providerSessionId),
     roots,
   });
-  revive(db, current.id);
+  try {
+    revive(db, current.id);
+  } catch (error) {
+    // Same rule as `startSession`: a pane the registry does not point at is
+    // invisible garbage — worse here, because the row stays dead and every later
+    // resume then trips over the tmux name this one left behind.
+    await killSession(socket, current.tmuxName).catch(() => {});
+    throw error;
+  }
   return getSession(db, current.id)!;
 }
 

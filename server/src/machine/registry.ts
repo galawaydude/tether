@@ -174,13 +174,16 @@ export function revive(db: DatabaseSync, id: string): void {
  * the design chose SQLite over a JSON file was atomic update, and a
  * read-modify-write here would hand that back.
  *
- * `snapshotAt` is when `liveTmuxNames` was read, and only rows that already
- * existed then are judged. Atomicity covers the database, not the tmux snapshot
- * the verdict is derived from: without this, a `tether new` that lands between
- * another process's pane read and its UPDATE has its brand-new row marked dead
- * while its agent runs. The only thing that clears `dead_at` is `revive`, on an
- * explicit resume — nothing un-kills a row on its own, which is exactly why a
- * false positive here has to be impossible.
+ * `snapshotAt` is when `liveTmuxNames` was read, and only rows that were already
+ * in their present state then are judged. Atomicity covers the database, not the
+ * tmux snapshot the verdict is derived from: without this, a `tether new` that
+ * lands between another process's pane read and its UPDATE has its brand-new row
+ * marked dead while its agent runs, and a `tether resume` that lands in that same
+ * window has its just-revived row re-killed. `updated_at` is what catches the
+ * second case — `revive` bumps it — and it subsumes the first, since
+ * `createSession` sets it equal to `created_at`. The only thing that clears
+ * `dead_at` is `revive`, on an explicit resume — nothing un-kills a row on its
+ * own, which is exactly why a false positive here has to be impossible.
  */
 export function reconcile(
   db: DatabaseSync,
@@ -194,9 +197,9 @@ export function reconcile(
   const result = db
     .prepare(
       `UPDATE sessions SET dead_at = ?, updated_at = ?
-       WHERE dead_at IS NULL AND created_at <= ? ${alive}`,
+       WHERE dead_at IS NULL AND created_at <= ? AND updated_at <= ? ${alive}`,
     )
-    .run(now, now, snapshotAt, ...liveTmuxNames);
+    .run(now, now, snapshotAt, snapshotAt, ...liveTmuxNames);
   return Number(result.changes);
 }
 
