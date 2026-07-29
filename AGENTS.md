@@ -72,6 +72,40 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   in a temp directory set `TETHER_ALLOWED_ROOTS` rather than bypassing it.
   `machine/sessions.ts` holds the one create/delete sequence — tmux plus registry,
   rollback on a failed insert — that both the CLI and the HTTP routes call.
+- **Terminal input is `text` frames plus `key` frames, and the split is
+  load-bearing.** Every printable character a user types goes in a `text` frame
+  (`web/src/keys.ts` → `Terminals.text`), never as a tmux key name, because tmux's
+  lexer eats some arguments before the command sees them. What it eats is
+  `mangledByLexer` in `server/src/machine/tmux.ts`: a standalone `;`, `{` or `}`,
+  **or any argument ending in `;`**. An exact-match check is not enough and the
+  failure is silent — tmux 3.7b strips a trailing `;`, eats the backslash of a
+  trailing `\;`, and exits 0 either way, so `git status;` loses its `;` with
+  nothing to catch. The rule has exactly one home, behind `checkArgs` and the
+  exported `isSeparatorArgument`; `machine/terminal.ts` asks it, and routes what it
+  flags — plus anything with a line break — through the paste buffer, which reaches
+  tmux on stdin and is never argv. The guard is not relaxed for this and must not
+  be. Its other half is blast radius: a frame the guard refuses is an undeliverable
+  **frame**, not a dead attach, so `web/term-socket.ts` logs, ACKs and drops it and
+  keeps the socket open — only a genuinely gone attach closes with
+  `CLOSE_ATTACH_FAILED`. That is why a stray Alt+`;` costs one keystroke instead of
+  a reconnect and a full replay, and it is the easiest thing here to undo by
+  accident. On the browser side, `xterm.onData` is **not only the keyboard** — it
+  also carries xterm's replies to terminal queries (OSC colour reports, DA, cursor
+  position, focus in/out). `keys.ts` maps the sequences a keyboard really produces,
+  modifier-encoded cursor keys included, and drops every other escape sequence,
+  because typing one of those into a pane puts `;rgb:0000/0000/0000` in the agent's
+  prompt. It also keeps a bracketed paste whole — markers consumed, newlines kept,
+  one `text` frame — so the paste lands as a paste; splitting it submits a pasted
+  prompt line by line. All of it is covered by `keys.test.ts`, `server.test.ts` and
+  `terminal.test.ts` against real tmux.
+- **The browser app is served by two named routes, not a wildcard**
+  (`server/src/web/static.ts`). `@fastify/static` is registered with
+  `serve: false` purely for `reply.sendFile`; `/` and `/assets/:file` are the only
+  routes marked `public` besides `/api/login`. A wildcard would answer every
+  unmatched path publicly and hand an unauthenticated caller a 404-vs-401 oracle
+  for which API routes exist. `web`'s `prepare` builds `web/dist` on `npm ci` for
+  the same reason `server`'s does — `tether serve` reads it at startup and only
+  warns if it is absent.
 - **All persistent state is one SQLite file outside the repo**, opened by
   `server/src/db.ts` — `~/.local/state/tether/tether.sqlite`, file `0600` in a `0700`
   directory (`$XDG_STATE_HOME`, or `$TETHER_STATE_DIR`, which tests and any manual run

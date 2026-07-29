@@ -17,6 +17,7 @@ import type { FastifyInstance } from 'fastify';
 import type { ClientFrame, ServerFrame } from '@tether/shared';
 
 import type { Terminals } from '../machine/terminal.ts';
+import { UnsafeArgumentError } from '../machine/tmux.ts';
 
 /** Enough for a pasted prompt; short enough that a socket cannot be a memory hog. */
 const MAX_TEXT = 64 * 1024;
@@ -70,8 +71,9 @@ export function parseClientFrame(raw: string): ClientFrame | null {
 
   switch (frame['c']) {
     case 'input':
+    case 'text':
       return seqOk && typeof frame['text'] === 'string' && frame['text'].length <= MAX_TEXT
-        ? { c: 'input', seq: seq as number, text: frame['text'] }
+        ? { c: frame['c'], seq: seq as number, text: frame['text'] }
         : null;
     case 'key':
       return seqOk &&
@@ -143,9 +145,12 @@ export function registerTermSocket(app: FastifyInstance, terminals: Terminals): 
       async function apply(frame: ClientFrame): Promise<void> {
         if (frame.c === 'resize') return terminals.resize(session, frame.cols, frame.rows);
         if (frame.c === 'input') await terminals.input(session, clientId, frame.seq, frame.text);
+        else if (frame.c === 'text') await terminals.text(session, clientId, frame.seq, frame.text);
         else await terminals.key(session, clientId, frame.seq, frame.keys);
         // ACKed whether or not it was applied: a replay is already durable,
-        // and the client must stop retrying it either way.
+        // and the client must stop retrying it either way. The same holds for a
+        // frame the driver refuses outright, which is ACKed from the caller's
+        // error path below rather than here.
         send({ c: 'ack', seq: frame.seq });
       }
 
@@ -158,6 +163,16 @@ export function registerTermSocket(app: FastifyInstance, terminals: Terminals): 
         const frame = parseClientFrame(data.toString());
         if (frame === null) return;
         void apply(frame).catch((error: unknown) => {
+          // Two different failures used to share one outcome. A value the tmux
+          // driver's argv guard refuses is an undeliverable *frame* — the pane
+          // is untouched and the attach is fine — so it costs one dropped
+          // keystroke, not a close the client answers with `term.reset()` and a
+          // full replay. Everything else does mean the attach is gone.
+          if (error instanceof UnsafeArgumentError) {
+            app.log.warn({ err: error, session, frame: frame.c }, 'terminal frame refused');
+            if (frame.c !== 'resize') send({ c: 'ack', seq: frame.seq });
+            return;
+          }
           app.log.warn({ err: error, session }, 'terminal frame failed');
           socket.close(CLOSE_ATTACH_FAILED, 'terminal command failed');
         });

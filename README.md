@@ -40,11 +40,14 @@ targets, session sharing, usage dashboards, a mobile app.
 ## Status
 
 Toolchain, CI, the tmux driver, authentication, the session registry, the HTTP
-session API, the terminal transport and the conversation data layer. There is no
-web UI yet — but every session the CLI can start, list, kill and resume can now be
-driven over HTTP by an authenticated client, attached over the `term` WebSocket
-channel, and followed as structured conversation events over `conv`. This
-milestone is being built one focused PR at a time.
+session API, the terminal transport, the conversation data layer, and the browser
+app. Run `tether serve`, open the address it prints, and you can log in, see the
+sessions on this machine, start one in a directory you name, and drive it in a live
+terminal — with a bar for the keys a phone keyboard has not got (Esc, Tab, arrows,
+Ctrl-C). Conversation events are already served over `conv`, but nothing renders
+them yet: the conversation view and the composer are still to come, and so is the
+_working_/_idle_/_waiting_ state, so a session shows only **live** or **dead** for
+now. This milestone is being built one focused PR at a time.
 
 ```
 GET    /api/machines/local/sessions            every session, live and dead
@@ -154,9 +157,17 @@ one). A toolchain, because `node-pty` ships no Linux prebuild and is compiled
 during install.
 
 ```sh
-npm ci        # installs all workspaces; builds shared/, server/ (the CLI) and node-pty
+npm ci        # installs all workspaces; builds shared/, server/ (the CLI), web/ and node-pty
 npm test      # node:test across every package
-npm run build # server (tsc) and web (vite) — rerun after editing server sources
+npm run build # server (tsc) and web (vite) — rerun after editing either
+```
+
+`tether serve` serves the built app out of `web/dist`, so after editing `web/`
+either rebuild it or run Vite's dev server alongside, which proxies `/api` and
+the terminal WebSocket to a `tether serve` on the default port:
+
+```sh
+npm run dev -w @tether/web   # http://localhost:5173, hot reload, real server behind it
 ```
 
 `node-pty`'s install script is approved in the root `package.json` under
@@ -174,11 +185,11 @@ npm run format:check # prettier --check   (npm run format to fix)
 
 ### Layout
 
-| Package   | What it is                                                               |
-| --------- | ------------------------------------------------------------------------ |
-| `shared/` | Types both sides import: `ConversationEvent`, the WebSocket frame shapes |
-| `server/` | The single Node process: HTTP, WebSockets, tmux, provider adapters       |
-| `web/`    | The browser app                                                          |
+| Package   | What it is                                                                    |
+| --------- | ----------------------------------------------------------------------------- |
+| `shared/` | Types both sides import: `Session`, `ConversationEvent`, the WebSocket frames |
+| `server/` | The single Node process: HTTP, WebSockets, tmux, provider adapters            |
+| `web/`    | The browser app                                                               |
 
 Inside `server/src/`, `web/` is the HTTP and WebSocket layer and `machine/` (from
 PR #2) drives tmux. `machine/` and `providers/` never import from `web/` — that

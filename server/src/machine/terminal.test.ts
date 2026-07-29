@@ -300,6 +300,45 @@ test('input is applied once: replays and out-of-order sequences are dropped', as
   );
 });
 
+test('typed text reaches the pane verbatim, separators included, and never submits', async (t) => {
+  const socket = socketFor(t);
+  const terminals = terminalsFor(t, socket);
+  const cwd = await mkdtemp(join(tmpdir(), 'tether-term-'));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+
+  const out = join(cwd, 'out.txt');
+  await newSession(socket, {
+    name: 's1',
+    cwd,
+    command: ['/bin/sh', '-c', `cat > ${out}`],
+    roots: [cwd],
+  });
+  const detach = await terminals.attach('s1', () => {});
+  t.after(() => detach());
+
+  // A standalone `;`, `{` or `}` is a command separator to tmux's own lexer, and
+  // a trailing `;` is eaten by it too, so `send-keys` can never carry either —
+  // the driver's argv guard refuses them before tmux gets the chance to silently
+  // drop the character. They are also characters a user types constantly, so each
+  // one has to arrive, and arrive as itself.
+  const typed = ['const x = 1', ';', ' ', '{', '}', ' héllo ✅', ' git status;'];
+  for (const [index, text] of typed.entries()) {
+    assert.equal(await terminals.text('s1', 'phone', index + 1, text), true, text);
+  }
+  // A replayed sequence is dropped here exactly as it is for `input`.
+  assert.equal(await terminals.text('s1', 'phone', 1, 'a replayed retry'), false);
+
+  // Nothing above submitted anything: `cat` has written no line yet. Enter is a
+  // key, and it is what makes the pane act on what was typed.
+  await terminals.key('s1', 'phone', 100, ['Enter']);
+
+  await waitFor(
+    async () => (await readFile(out, 'utf8')).includes('\n'),
+    'the typed text to reach the pane',
+  );
+  assert.equal(await readFile(out, 'utf8'), 'const x = 1; {} héllo ✅ git status;\n');
+});
+
 test('two viewers of one session cannot interleave their input', async (t) => {
   const socket = socketFor(t);
   const terminals = terminalsFor(t, socket);

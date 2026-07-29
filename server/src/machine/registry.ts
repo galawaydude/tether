@@ -9,35 +9,20 @@
  * is stronger than an ignore rule (report section 7).
  */
 
+import type { Session } from '@tether/shared';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { openDatabase } from '../db.ts';
 import { listPanes } from './tmux.ts';
+
+/** The row shape is the wire shape; it is declared once, in `shared/`. */
+export type { Session };
 
 /** The only machine there is in M1 — see the `machine_id` note on the schema. */
 export const LOCAL_MACHINE = 'local';
 
 /** The one provider in M1. */
 export const DEFAULT_PROVIDER = 'claude-code';
-
-/** A registry row. `deadAt` non-null means the tmux session is gone. */
-export interface Session {
-  id: string;
-  machineId: string;
-  provider: string;
-  /**
-   * The provider's own session id. Null until the provider has one: Codex creates
-   * no session identity until the first user message, so tether holds a
-   * provisional row from spawn and back-fills it later.
-   */
-  providerSessionId: string | null;
-  cwd: string;
-  title: string;
-  tmuxName: string;
-  createdAt: number;
-  updatedAt: number;
-  deadAt: number | null;
-}
 
 /**
  * `machine_id` is here on day one and is always `'local'`. It costs one column and
