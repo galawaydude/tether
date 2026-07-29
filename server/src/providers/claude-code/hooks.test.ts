@@ -7,10 +7,12 @@
  */
 
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { promisify } from 'node:util';
 
 import {
   HOOK_EVENTS,
@@ -20,6 +22,7 @@ import {
   hookShimPath,
   installHook,
   readHookSecret,
+  settingsBackupPath,
   settingsPath,
   writeHookEndpoint,
 } from './hooks.ts';
@@ -53,7 +56,7 @@ test('a fresh project gets both events, and the shim by absolute path', async ()
     { matcher?: string; hooks: { command: string }[] }[]
   >;
   assert.deepEqual(Object.keys(hooks).sort(), ['Notification', 'PreToolUse']);
-  assert.equal(hooks['PreToolUse']![0]!.hooks[0]!.command, hookShimPath(stateDir));
+  assert.equal(hooks['PreToolUse']![0]!.hooks[0]!.command, `'${hookShimPath(stateDir)}'`);
   assert.equal(hooks['PreToolUse']![0]!.matcher, '*', 'a tool matcher, where tools exist');
   assert.equal(hooks['Notification']![0]!.matcher, undefined, 'and none where they do not');
 });
@@ -121,8 +124,17 @@ test('the user’s own settings are preserved, and backed up before being touche
   const result = await installHook({ cwd, stateDir, now: new Date('2026-07-29T08:30:00.000Z') });
   const backupPath = result.backupPath;
   assert.ok(backupPath !== undefined, 'an existing file is backed up before it is changed');
-  assert.ok(backupPath.endsWith('.tether-backup-2026-07-29T08-30-00-000Z'));
+  assert.equal(
+    backupPath,
+    settingsBackupPath(stateDir, cwd, '2026-07-29T08-30-00-000Z'),
+    'under tether’s own state directory',
+  );
   assert.deepEqual(JSON.parse(await readFile(backupPath, 'utf8')), original);
+
+  // The conventional gitignore entry is the literal path
+  // `.claude/settings.local.json`, so a backup beside it would be an untracked,
+  // unignored copy of the user's settings that `git add .` sweeps up.
+  assert.deepEqual(await readdir(join(cwd, '.claude')), ['settings.local.json']);
 
   const file = await settings(cwd);
   assert.deepEqual(file['permissions'], original.permissions, 'an unrelated key is untouched');
@@ -130,7 +142,29 @@ test('the user’s own settings are preserved, and backed up before being touche
   assert.deepEqual(hooks['Stop'], original.hooks.Stop, 'an unrelated event is untouched');
   assert.equal(hooks['PreToolUse']!.length, 2, 'appended beside theirs, not replacing it');
   assert.equal(hooks['PreToolUse']![0]!.hooks[0]!.command, 'their-own-hook', 'and after it');
-  assert.equal(hooks['PreToolUse']![1]!.hooks[0]!.command, hookShimPath(stateDir));
+  assert.equal(hooks['PreToolUse']![1]!.hooks[0]!.command, `'${hookShimPath(stateDir)}'`);
+});
+
+test('a state directory with a space in it still runs the hook', async () => {
+  const { root, cwd } = await dirs();
+  // Reachable through `$HOME` alone — `/Users/First Last/.local/state/tether` —
+  // and Claude Code runs a hook's command through a shell, so an unquoted path
+  // is word-split and the hook silently never fires.
+  const stateDir = join(root, 'state dir');
+  await installHook({ cwd, stateDir });
+
+  const hooks = (await settings(cwd))['hooks'] as Record<
+    string,
+    { hooks: { command: string }[] }[]
+  >;
+  const command = hooks['PreToolUse']![0]!.hooks[0]!.command;
+  assert.equal(command, `'${hookShimPath(stateDir)}'`);
+  // Proof rather than assertion: the shell this is handed to finds the file.
+  const { stdout } = await promisify(execFile)('/bin/sh', ['-c', `test -x ${command} && echo ok`]);
+  assert.equal(stdout.trim(), 'ok');
+
+  // And the quoted form is still recognised as tether's own on the next spawn.
+  assert.deepEqual((await installHook({ cwd, stateDir })).added, []);
 });
 
 test('a settings file tether does not understand is left exactly as it was', async () => {

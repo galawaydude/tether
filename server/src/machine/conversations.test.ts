@@ -6,18 +6,28 @@
 
 import type { ServerFrame } from '@tether/shared';
 import assert from 'node:assert/strict';
-import { appendFile, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { appendFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 
+import { sessionStatusPath } from '../providers/claude-code/status.ts';
 import { projectDir } from '../providers/claude-code/transcript.ts';
 import { Conversations, stderrWarn, TAIL_EVENTS } from './conversations.ts';
 import { applyRegistrySchema, createSession, getSession, type Session } from './registry.ts';
+import { killServer, listPanes, newSession } from './tmux.ts';
 
 const PROVIDER_SESSION = '11111111-2222-4333-8444-555555555555';
 const POLL = 15;
+
+/**
+ * The poller tests below start a real tmux session in a temporary directory, and
+ * `resolveCwd` confines sessions to the user's home unless this widens it. The
+ * confinement itself is `tmux.test.ts`'s subject; nothing here bypasses it.
+ */
+process.env['TETHER_ALLOWED_ROOTS'] = tmpdir();
 
 /**
  * Stamped from the clock rather than a fixed instant: `findTranscript` identifies
@@ -65,7 +75,7 @@ async function harness(t: TestContext) {
   });
   t.after(() => conversations.closeAll());
 
-  return { db, session, conversations, transcript, warnings };
+  return { db, session, conversations, transcript, warnings, home, cwd };
 }
 
 /**
@@ -568,4 +578,122 @@ test('a hook payload the mapper cannot use changes nothing and does not throw', 
     'unknown hook event SubagentStop',
     'hook payload is not an object',
   ]);
+});
+
+/**
+ * The status poller, against a real tmux pane and a real registry file.
+ *
+ * Everything above turns it off (`statusPollMs: 0`) because it shells out to
+ * tmux, so this is the only place the path runs at all — and the case that
+ * matters is the one where the file says nothing. `undefined` from
+ * `readSessionStatus` is "tether cannot say"; reading it as `idle` would erase
+ * the `waiting` a `Notification` hook had just set, one tick after the banner
+ * this whole feature exists for appeared.
+ */
+async function polling(t: TestContext, statusPollMs: number) {
+  const h = await harness(t);
+  const socket = `tether-conv-${randomUUID().slice(0, 8)}`;
+  t.after(async () => {
+    await killServer(socket);
+    await rm(join(tmpdir(), `tmux-${process.getuid?.() ?? ''}`, socket), { force: true });
+  });
+  await newSession(socket, { name: h.session.tmuxName, cwd: h.cwd, command: ['/bin/sh'] });
+  const pid = (await listPanes(socket)).find((pane) => pane.session === h.session.tmuxName)?.pid;
+  assert.ok(pid !== undefined, 'the pane tether would have spawned');
+
+  const conversations = new Conversations(h.db, {
+    home: h.home,
+    pollMs: POLL,
+    socket,
+    statusPollMs,
+    warn: (message) => h.warnings.push(message),
+  });
+  t.after(() => conversations.closeAll());
+  return { ...h, conversations, pid };
+}
+
+/** A registry file for `pid`, as Claude Code 2.1.220 writes one. */
+async function writeStatus(
+  home: string,
+  pid: number,
+  fields: Record<string, unknown> = {},
+): Promise<void> {
+  await mkdir(join(home, '.claude', 'sessions'), { recursive: true });
+  const stat = await readFile(`/proc/${pid}/stat`, 'utf8');
+  await writeFile(
+    sessionStatusPath(pid, home),
+    JSON.stringify({
+      pid,
+      sessionId: PROVIDER_SESSION,
+      procStart: stat.slice(stat.lastIndexOf(') ') + 2).split(' ')[19],
+      status: 'busy',
+      ...fields,
+    }),
+  );
+}
+
+/** The last state announced, once it is the one being waited for. */
+async function waitForState(
+  states: readonly Extract<ServerFrame, { c: 'state' }>[],
+  state: string,
+): Promise<Extract<ServerFrame, { c: 'state' }>> {
+  for (let i = 0; i < 200 && states[states.length - 1]?.state !== state; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  const last = states[states.length - 1];
+  assert.equal(last?.state, state, `expected ${state}, got ${JSON.stringify(states)}`);
+  return last!;
+}
+
+test('a file the poller cannot read leaves the waiting it found alone', async (t) => {
+  const p = await polling(t, POLL);
+  await writeStatus(p.home, p.pid, { status: 'busy' });
+  await writeFile(p.transcript, userRecord(1));
+
+  const client = sink();
+  await p.conversations.subscribe(p.session, 0, client.send);
+  await waitForState(client.states, 'busy');
+
+  p.conversations.hook(p.session, {
+    hook_event_name: 'Notification',
+    session_id: PROVIDER_SESSION,
+    message: 'Claude needs your permission',
+  });
+  const waiting = await waitForState(client.states, 'waiting');
+  assert.equal(waiting.detail, 'Claude needs your permission');
+  const announced = client.states.length;
+
+  // The two ways the file says nothing: gone, and a status this build does not
+  // know. Both are "tether cannot say", and neither may answer for the hook.
+  await rm(sessionStatusPath(p.pid, p.home));
+  await new Promise((resolve) => setTimeout(resolve, POLL * 6));
+  await writeStatus(p.home, p.pid, { status: 'compacting' });
+  await new Promise((resolve) => setTimeout(resolve, POLL * 6));
+  assert.equal(client.states.length, announced, 'nothing was announced over the hook');
+  assert.equal(client.states[announced - 1]?.detail, 'Claude needs your permission');
+
+  // A state the file really does carry still moves it, and takes the sentence
+  // that belonged to the state it replaced with it.
+  await writeStatus(p.home, p.pid, { status: 'idle' });
+  const idle = await waitForState(client.states, 'idle');
+  assert.equal(idle.detail, undefined);
+});
+
+test('a pane that is not running this session cannot be adopted by it', async (t) => {
+  // The poller is off: what is under test is the lookup the hook route asks
+  // before it binds a provider session id to a row that has none.
+  const p = await polling(t, 0);
+  await writeStatus(p.home, p.pid, {});
+
+  assert.equal(await p.conversations.ownsProviderSession(p.session, PROVIDER_SESSION), true);
+  assert.equal(
+    await p.conversations.ownsProviderSession(p.session, '00000000-0000-4000-8000-000000000000'),
+    false,
+    'the pane is running a different session',
+  );
+
+  // An agent the user started by hand writes no registry file for tether's own
+  // pane, so there is nothing to confirm it with and nothing is adopted.
+  await rm(sessionStatusPath(p.pid, p.home));
+  assert.equal(await p.conversations.ownsProviderSession(p.session, PROVIDER_SESSION), false);
 });

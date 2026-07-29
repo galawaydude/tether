@@ -55,9 +55,19 @@ async function harness(t: { after: (fn: () => unknown) => void }) {
   await auth.setPassword('correct horse battery staple');
 
   const seen: { sessionId: string; payload: unknown }[] = [];
+  /**
+   * Which session the pane tether spawned is really running, as Claude Code's
+   * own session file would say. Unset is the honest default: a hand-run agent
+   * writes no such file for tether's pane. `conversations.test.ts` drives the
+   * real lookup against real tmux.
+   */
+  const pane: { running?: string } = {};
   const conversations = {
     hook(session: { id: string }, payload: unknown) {
       seen.push({ sessionId: session.id, payload });
+    },
+    async ownsProviderSession(_session: { id: string }, providerSessionId: string) {
+      return pane.running === providerSessionId;
     },
     closeAll: async () => {},
   } as unknown as Conversations;
@@ -74,7 +84,7 @@ async function harness(t: { after: (fn: () => unknown) => void }) {
   t.after(() => app.close());
 
   const secret = await ensureHookSecret(stateDir);
-  return { app, db, stateDir, secret, seen };
+  return { app, db, stateDir, secret, seen, pane };
 }
 
 function preToolUse(overrides: Record<string, unknown> = {}) {
@@ -183,8 +193,10 @@ test('a valid secret is still not permission to speak for an unknown session', a
 test('a hook for a session tether has not identified yet adopts the one row in that cwd', async (t) => {
   const h = await harness(t);
   // The first tool call of a new session: `PreToolUse` can arrive before the
-  // transcript scan has claimed the row, so the payload's own cwd is the join.
+  // transcript scan has claimed the row. The cwd narrows it to one row, and the
+  // row's own pane confirms it is running this very session.
   const id = liveSession(h.db, null);
+  h.pane.running = PROVIDER_SESSION;
 
   const res = await post(h);
   assert.equal(res.statusCode, 204);
@@ -193,6 +205,25 @@ test('a hook for a session tether has not identified yet adopts the one row in t
     getSession(h.db, id)?.providerSessionId,
     PROVIDER_SESSION,
     'and the row is back-filled, so the next hook takes the direct join',
+  );
+});
+
+test('an agent run by hand in the same directory does not take the row', async (t) => {
+  const h = await harness(t);
+  // The shim stays installed in a project after tether is done with it, so a
+  // `claude` started by hand there posts a matching cwd and an unknown session
+  // id. Binding the row to it would point the conversation view at a foreign
+  // transcript and make `resume` restore somebody else's session — so the cwd
+  // is not enough, and tether's own pane is not running this session.
+  const id = liveSession(h.db, null);
+
+  const res = await post(h);
+  assert.equal(res.statusCode, 204, 'dropped as an unknown session, which is not an error');
+  assert.deepEqual(h.seen, [], 'and nothing reached the conversation');
+  assert.equal(
+    getSession(h.db, id)?.providerSessionId,
+    null,
+    'the row is still unclaimed, and its own transcript can still claim it',
   );
 });
 

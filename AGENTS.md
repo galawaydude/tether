@@ -206,8 +206,13 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   authorisation lives at the endpoint instead**: loopback checked against the
   real peer address (never `request.ip`, which `trustProxy` lets a header
   forge), constant-time secret compare, then a payload accepted only for a live
-  registry row. A hook whose `session_id` is unknown adopts the one unclaimed
-  row in its `cwd`, which is how the _first_ tool call of a session is not lost.
+  registry row. A hook whose `session_id` is unknown may adopt the one unclaimed
+  row in its `cwd` — which is how the _first_ tool call of a session is not
+  lost — but the `cwd` alone never binds it: an agent run by hand in that
+  directory posts the same one, and a row bound to a foreign transcript is a
+  `resume` that hands back somebody else's conversation. The pane tether spawned
+  has to confirm it is running that session (`Conversations.ownsProviderSession`,
+  via `readSessionId`); unconfirmed is dropped as unknown.
 - **`~/.claude/sessions/<pid>.json` outlives its process, so both guards in
   `providers/claude-code/status.ts` are mandatory.** It is deleted on a graceful
   exit and left behind by a `SIGKILL` or a reboot, and pids are reused — so

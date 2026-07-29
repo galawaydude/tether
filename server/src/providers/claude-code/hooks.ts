@@ -49,7 +49,7 @@
 
 import { randomBytes } from 'node:crypto';
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 /**
  * The two events tether registers, and no more. Every hook installed in someone
@@ -160,12 +160,13 @@ function isObject(value: unknown): value is Record<string, unknown> {
  * a merge's name. The caller treats a refusal as "no accelerator", not "no
  * session".
  */
-async function readSettings(path: string): Promise<SettingsFile> {
+async function readSettings(path: string): Promise<{ file: SettingsFile; text?: string }> {
   const text = await readFile(path, 'utf8').catch((error: NodeJS.ErrnoException) => {
     if (error.code === 'ENOENT') return undefined;
     throw new SettingsFileError(path, `it could not be read (${error.message})`);
   });
-  if (text === undefined || text.trim() === '') return {};
+  if (text === undefined) return { file: {} };
+  if (text.trim() === '') return { file: {}, text };
 
   let parsed: unknown;
   try {
@@ -191,19 +192,49 @@ async function readSettings(path: string): Promise<SettingsFile> {
       }
     }
   }
-  return parsed as SettingsFile;
+  // The text comes back with the parse, so the backup below is the same bytes
+  // the merge was computed from rather than a second, possibly newer, read.
+  return { file: parsed as SettingsFile, text };
 }
 
-/** Same directory, so the rename is atomic. */
+/**
+ * Same directory, so the rename is atomic. The temporary name is unique per
+ * call: two sessions spawning at once install the same shim, and a shared
+ * scratch name would let them interleave into it.
+ */
 async function writeAtomically(path: string, text: string, mode: number): Promise<void> {
-  const temporary = `${path}.tether-tmp`;
+  const temporary = `${path}.tether-tmp-${randomBytes(6).toString('hex')}`;
   await writeFile(temporary, text, { mode });
   await rename(temporary, path);
 }
 
+/**
+ * What goes in the settings file's `command`. Claude Code runs it through a
+ * shell, so the path is quoted: a state directory under a home with a space in
+ * it — `/Users/First Last/...`, or any `TETHER_STATE_DIR` — would otherwise be
+ * word-split, and the hook would silently never run.
+ */
+function shimCommand(shim: string): string {
+  return `'${shim.replaceAll("'", `'\\''`)}'`;
+}
+
 /** tether's own entry: the only one whose command is tether's shim. */
 function isOurs(handler: HookHandler, shim: string): boolean {
-  return handler.command === shim;
+  return handler.command === shimCommand(shim) || handler.command === shim;
+}
+
+/**
+ * Where a project's settings file is copied before tether appends to it.
+ *
+ * Deliberately not beside the original. The conventional gitignore entry is the
+ * literal path `.claude/settings.local.json`, which does not match a suffixed
+ * name — so a backup written there is an untracked, unignored copy of the user's
+ * settings sitting in their repository, one `git add .` from being committed. A
+ * path that is not in the repository cannot be committed by accident.
+ */
+export function settingsBackupPath(stateDir: string, cwd: string, stamp: string): string {
+  const project = cwd.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  return join(stateDir, 'claude-settings-backups', `${project}-${stamp}.json`);
 }
 
 /**
@@ -248,7 +279,10 @@ export async function writeHookEndpoint(stateDir: string, url: string): Promise<
 export type InstallResult = {
   settingsPath: string;
   shimPath: string;
-  /** Where the previous settings file was copied, or undefined if there was none. */
+  /**
+   * Where the previous settings file was copied — under tether's state
+   * directory, never beside the original — or undefined if there was none.
+   */
   backupPath?: string;
   /** Events tether's entry was added to; empty when it was already on all of them. */
   added: string[];
@@ -274,11 +308,12 @@ export async function installHook(options: {
   const shim = hookShimPath(options.stateDir);
   // Read and validate before writing anything, so a file tether refuses to touch
   // also leaves no shim and no secret behind.
-  const file = await readSettings(path);
-  const existing = await readFile(path, 'utf8').catch(() => undefined);
+  const { file, text: existing } = await readSettings(path);
 
   await mkdir(options.stateDir, { recursive: true, mode: 0o700 });
-  await writeFile(shim, SHIM_SOURCE, { mode: 0o700 });
+  // Atomically: a hook firing in another project at this instant execs this
+  // file, and a truncated ESM module is a parse error in the user's session.
+  await writeAtomically(shim, SHIM_SOURCE, 0o700);
   await chmod(shim, 0o700);
   await ensureHookSecret(options.stateDir);
 
@@ -291,7 +326,7 @@ export async function installHook(options: {
       // `matcher` selects tools, so it is meaningful for `PreToolUse` and not
       // for `Notification`, which has none.
       ...(event === 'PreToolUse' ? { matcher: '*' } : {}),
-      hooks: [{ type: 'command', command: shim, timeout: TIMEOUT_SECONDS }],
+      hooks: [{ type: 'command', command: shimCommand(shim), timeout: TIMEOUT_SECONDS }],
     });
     hooks[event] = groups;
     added.push(event);
@@ -302,7 +337,8 @@ export async function installHook(options: {
   let backupPath: string | undefined;
   if (existing !== undefined) {
     const stamp = (options.now ?? new Date()).toISOString().replace(/[:.]/g, '-');
-    backupPath = `${path}.tether-backup-${stamp}`;
+    backupPath = settingsBackupPath(options.stateDir, options.cwd, stamp);
+    await mkdir(dirname(backupPath), { recursive: true, mode: 0o700 });
     await writeFile(backupPath, existing, { mode: 0o600 });
   }
 

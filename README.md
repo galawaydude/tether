@@ -120,9 +120,11 @@ looking at your phone. So when tether starts a Claude Code session it registers
 a hook, and the view shows the tool call it is asking about while it is asking.
 
 It writes one thing into your project: two entries in
-`.claude/settings.local.json`, appended after anything already there, with your
-file backed up first. If that file is not a shape tether recognises, it changes
-nothing at all and says so — you get the session without the accelerator.
+`.claude/settings.local.json`, appended after anything already there. Your file
+is backed up first — under `~/.local/state/tether/`, not beside the original, so
+nothing tether writes can end up in a commit. If that file is not a shape tether
+recognises, it changes nothing at all and says so — you get the session without
+the accelerator.
 `.claude/settings.local.json` is git-ignored by convention, and tether keeps it
 worth ignoring:
 

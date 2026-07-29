@@ -17,7 +17,10 @@
  * 2. **The shared secret**, compared in constant time.
  * 3. **A session that exists**, resolved from the payload's own `session_id`.
  *    This is the per-session authorisation: a valid secret does not let a caller
- *    say anything about a session tether does not have a live row for.
+ *    say anything about a session tether does not have a live row for. A row
+ *    that has no provider session id yet can be bound to one here, but only
+ *    where the pane tether spawned confirms it is running that session — see
+ *    `adopt` below.
  *
  * The `Host` allowlist and the Origin guard in `server.ts` run on `onRequest`,
  * before any of this, so they cover this route too — a cross-origin page's POST
@@ -36,7 +39,13 @@ import type { FastifyInstance } from 'fastify';
 
 import { stateDir as defaultStateDir } from '../db.ts';
 import type { Conversations } from '../machine/conversations.ts';
-import { adoptProviderSessionId, getSessionByProviderSessionId } from '../machine/registry.ts';
+import {
+  getSession,
+  getSessionByProviderSessionId,
+  setProviderSessionId,
+  unclaimedSessionInCwd,
+  type Session,
+} from '../machine/registry.ts';
 import { readHookSecret } from '../providers/claude-code/hooks.ts';
 
 /**
@@ -59,6 +68,33 @@ function secretMatches(presented: unknown, expected: string): boolean {
   const a = Buffer.from(presented);
   const b = Buffer.from(expected);
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/**
+ * Bind a provider session id to the row a hook came from, if it can be shown to
+ * have come from that row's own pane.
+ *
+ * Two conditions, and the second is the one that matters. The registry offers at
+ * most one unclaimed live row in the directory; then the pane tether spawned for
+ * that row is asked, through Claude Code's own session file, which session it is
+ * running. A `cwd` match alone would let an agent the user started by hand in
+ * that directory take the row, after which its conversation view tails a foreign
+ * transcript and `resume` restores the wrong session — data loss wearing a
+ * feature's clothes. Unconfirmed is dropped as an unknown session, which costs
+ * at most the first tool card of a session, recovered by transcript discovery a
+ * moment later.
+ */
+async function adopt(
+  db: DatabaseSync,
+  conversations: Conversations,
+  cwd: string,
+  providerSessionId: string,
+): Promise<Session | undefined> {
+  const candidate = unclaimedSessionInCwd(db, cwd);
+  if (candidate === undefined) return undefined;
+  if (!(await conversations.ownsProviderSession(candidate, providerSessionId))) return undefined;
+  setProviderSessionId(db, candidate.id, providerSessionId);
+  return getSession(db, candidate.id);
 }
 
 export function registerHookRoute(
@@ -97,7 +133,9 @@ export function registerHookRoute(
       // since `PreToolUse` can precede the transcript's first flush.
       const session =
         getSessionByProviderSessionId(db, providerSessionId) ??
-        (typeof cwd === 'string' ? adoptProviderSessionId(db, cwd, providerSessionId) : undefined);
+        (typeof cwd === 'string'
+          ? await adopt(db, conversations, cwd, providerSessionId)
+          : undefined);
       // A hook for a session tether does not know is not an error. Claude Code
       // is commonly run by hand in a directory tether once managed, and the shim
       // stays installed in that project afterwards.

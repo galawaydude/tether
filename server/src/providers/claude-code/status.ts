@@ -75,22 +75,16 @@ function alive(pid: number): boolean {
 }
 
 /**
- * What the session on `pid` is doing, or `undefined` if that cannot be
- * established. Never throws: it is called once a second per live session.
+ * The record for `pid`, once it has passed every guard, or `undefined` where it
+ * cannot be believed. Both readers below go through here, so the liveness and
+ * pid-reuse checks are asked in one place rather than once per question.
  *
- * `expectSessionId` is the registry row's `provider_session_id` where tether
- * has one. It is the last guard — a pid that is alive, whose start time matches
- * and whose file names a *different* session is not this session's status.
+ * Never throws: it is called once a second per live session.
  */
-export async function readSessionStatus(
-  pid: number,
-  options: { home?: string; expectSessionId?: string | null } = {},
-): Promise<SessionState | undefined> {
+async function readRecord(pid: number, home: string): Promise<Record<string, unknown> | undefined> {
   if (!Number.isInteger(pid) || pid <= 0) return undefined;
 
-  const text = await readFile(sessionStatusPath(pid, options.home ?? homedir()), 'utf8').catch(
-    () => undefined,
-  );
+  const text = await readFile(sessionStatusPath(pid, home), 'utf8').catch(() => undefined);
   if (text === undefined) return undefined;
 
   let record: unknown;
@@ -108,18 +102,49 @@ export async function readSessionStatus(
   // gets shown.
   if (fields['pid'] !== pid) return undefined;
 
+  // Both must pass — a live pid alone proves nothing once pids are reused,
+  // which is the failure this file is most prone to.
+  if (!alive(pid)) return undefined;
+  const started = await procStart(pid);
+  if (started !== undefined && fields['procStart'] !== started) return undefined;
+
+  return fields;
+}
+
+/**
+ * What the session on `pid` is doing, or `undefined` if that cannot be
+ * established.
+ *
+ * `expectSessionId` is the registry row's `provider_session_id` where tether
+ * has one. It is the last guard — a pid that is alive, whose start time matches
+ * and whose file names a *different* session is not this session's status.
+ */
+export async function readSessionStatus(
+  pid: number,
+  options: { home?: string; expectSessionId?: string | null } = {},
+): Promise<SessionState | undefined> {
+  const fields = await readRecord(pid, options.home ?? homedir());
+  if (fields === undefined) return undefined;
+
   const expected = options.expectSessionId;
   if (expected != null && fields['sessionId'] !== expected) return undefined;
 
   const state = fields['status'];
   if (typeof state !== 'string' || !STATES.has(state)) return undefined;
-
-  // Liveness and identity last: they cost a syscall and a small read, and every
-  // check above is cheaper. Both must pass — a live pid alone proves nothing
-  // once pids are reused, which is the failure this file is most prone to.
-  if (!alive(pid)) return undefined;
-  const started = await procStart(pid);
-  if (started !== undefined && fields['procStart'] !== started) return undefined;
-
   return state as SessionState;
+}
+
+/**
+ * Which session Claude Code says is running on `pid` — the same guards asked the
+ * other way round, and the only evidence tether has about *which process* a hook
+ * payload came from. A hook carries a `cwd`, and a `cwd` is not proof: an agent
+ * a user started by hand in a directory tether once managed posts the same one.
+ */
+export async function readSessionId(
+  pid: number,
+  options: { home?: string } = {},
+): Promise<string | undefined> {
+  const fields = await readRecord(pid, options.home ?? homedir());
+  const sessionId = fields?.['sessionId'];
+  return typeof sessionId === 'string' && sessionId !== '' ? sessionId : undefined;
 }

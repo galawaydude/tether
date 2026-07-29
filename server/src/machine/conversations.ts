@@ -20,7 +20,7 @@ import type { DatabaseSync } from 'node:sqlite';
 
 import { stateDir as defaultStateDir } from '../db.ts';
 import { mapHook, mapLines as mapClaudeLines } from '../providers/claude-code/events.ts';
-import { readSessionStatus } from '../providers/claude-code/status.ts';
+import { readSessionId, readSessionStatus } from '../providers/claude-code/status.ts';
 import { findTranscript, type StartMemo } from '../providers/claude-code/transcript.ts';
 import { mapLines as mapCodexLines } from '../providers/codex/events.ts';
 import { hookLogPath } from '../providers/codex/hooks.ts';
@@ -219,6 +219,27 @@ export class Conversations {
     return panes.find((pane) => pane.session === session.tmuxName && !pane.dead)?.pid;
   }
 
+  /**
+   * Whether `providerSessionId` is the session running in the pane tether
+   * spawned for this row. The hook route's gate before it binds a provider
+   * session id to a row that has none: the payload's `cwd` matches just as well
+   * for an agent the user started by hand in the same directory, and a row bound
+   * to a foreign transcript is a `resume` that hands back somebody else's
+   * conversation — the one failure that silently costs a user their work.
+   *
+   * Asked here rather than in `web/` because the pane pid and the provider's
+   * home both already live on this class, and `#panePid` is the only place that
+   * knows to skip a dead pane.
+   */
+  async ownsProviderSession(session: Session, providerSessionId: string): Promise<boolean> {
+    const pid = await this.#panePid(session);
+    if (pid === undefined) return false;
+    const running = await readSessionId(pid, {
+      ...(this.#options.home === undefined ? {} : { home: this.#options.home }),
+    });
+    return running === providerSessionId;
+  }
+
   async #find(session: Session, memo?: StartMemo) {
     const claimed = claimedProviderSessionIds(this.#db, session.id);
     const found =
@@ -415,14 +436,16 @@ export class Conversations {
         expectSessionId: session.providerSessionId,
       });
       if (live.stopped) return;
-      // A stale or absent file says nothing, and `idle` is the honest reading of
-      // "this session is not doing anything tether can see".
-      //
+      // A stale, absent or unmatched file is "tether cannot say", never `idle`:
+      // reading it as a state would erase, one tick later, the `waiting` a
+      // `Notification` hook had just set — which is the moment this whole path
+      // exists for. The last thing actually known stands until something knows
+      // better, as it does for the session list's own badge.
+      if (state === undefined) return;
       // The detail is kept while the state stands: the *waiting* message is the
       // `Notification` hook's, and the registry file has no such field, so
       // re-reading it must not erase the one sentence that says what is wanted.
-      const next = state ?? 'idle';
-      this.#setState(live, next, next === live.state ? live.detail : undefined);
+      this.#setState(live, state, state === live.state ? live.detail : undefined);
     };
     void tick();
     live.statusPoll = setInterval(() => void tick(), every);
