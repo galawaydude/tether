@@ -14,8 +14,13 @@ import type { SeqEvent } from './conversation.ts';
 
 export type { Session };
 
-/** What each live session is doing, beside the rows rather than on them. */
-export type SessionStates = Record<string, { state: SessionState; detail?: string }>;
+/**
+ * What each live session is doing, beside the rows rather than on them. No
+ * detail: the registry file the list is built from has no such field, and the
+ * one sentence that says *what* is wanted arrives on the session's own `state`
+ * frame, from the `Notification` hook.
+ */
+export type SessionStates = Record<string, { state: SessionState }>;
 
 /** The only machine there is in M1; the API is addressed by machine regardless. */
 const MACHINE = 'local';

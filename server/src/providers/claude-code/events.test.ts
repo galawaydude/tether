@@ -214,9 +214,16 @@ function hooksOf(name: string): unknown[] {
   return HOOKS.filter((h) => (h as { hook_event_name?: string }).hook_event_name === name);
 }
 
+/** By tool rather than by position: the fixture's order is the session's, not a contract. */
+function preToolUse(tool: string): unknown {
+  const found = hooksOf('PreToolUse').find((h) => (h as { tool_name?: string }).tool_name === tool);
+  assert.ok(found, `the fixture has a ${tool} PreToolUse`);
+  return found;
+}
+
 test('a real PreToolUse becomes the tool card the transcript has not written yet', () => {
   const warnings: string[] = [];
-  const signal = mapHook(hooksOf('PreToolUse')[1], (m) => warnings.push(m), 1234);
+  const signal = mapHook(preToolUse('Write'), (m) => warnings.push(m), 1234);
 
   assert.deepEqual(warnings, []);
   assert.deepEqual(signal, {
@@ -225,15 +232,15 @@ test('a real PreToolUse becomes the tool card the transcript has not written yet
       kind: 'tool_call',
       // Not a transcript uuid, and it must not look like one: this event never
       // enters the `seq` stream.
-      id: 'pending:toolu_012hUcdAk6Z4RcnbNgrC7PH4',
+      id: 'pending:toolu_01RMgXSU9fEUYVSU1gccJJKQ',
       at: 1234,
       tool: 'Write',
       input: {
         file_path:
-          '/tmp/claude-1000/-home-galawaydude--treehouse-tether-0d5314-1-tether/24f38aca-700a-4da2-987d-18aebe4a0467/scratchpad/hookspike/out.txt',
+          '/tmp/claude-1000/-home-galawaydude--treehouse-tether-0d5314-5-tether/50041aee-df95-443c-86c4-1e37819eea10/scratchpad/hookspike/out.txt',
         content: 'hello\n',
       },
-      callId: 'toolu_012hUcdAk6Z4RcnbNgrC7PH4',
+      callId: 'toolu_01RMgXSU9fEUYVSU1gccJJKQ',
     },
   });
 });
@@ -254,7 +261,7 @@ test('a tool_use_id joins the hook to the transcript record that follows it', ()
   // The same call, from both sources. This is the whole reconciliation contract:
   // if these two ever stop agreeing, the optimistic card duplicates instead of
   // being replaced.
-  const hook = mapHook(hooksOf('PreToolUse')[1]);
+  const hook = mapHook(preToolUse('Write'));
   assert.equal(hook?.signal, 'pending');
   const fromTranscript = mapLines(SESSION).events.find((e) => e.kind === 'tool_call');
   assert.ok(fromTranscript, 'the fixture session has a tool call to compare the shape against');

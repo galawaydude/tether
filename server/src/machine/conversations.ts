@@ -75,12 +75,13 @@ export type ConversationsOptions = {
   codexHome?: string;
   /** Where tether's Codex hook writes. Defaults to tether's state directory. */
   stateDir?: string;
-  /** tmux socket, for the pane pid a Codex `SessionStart` is joined by. */
+  /**
+   * tmux socket, for the pane pid both providers join by: a Codex
+   * `SessionStart`, and the Claude Code registry file that is named by it.
+   */
   socket?: string | undefined;
   warn?: (message: string) => void;
-  /** tmux socket, for the pane pid the provider's status file is keyed by. */
-  socket?: string | undefined;
-  /** How often that status file is re-read; 0 turns the poller off. */
+  /** How often Claude Code's status file is re-read; 0 turns the poller off. */
   statusPollMs?: number;
 };
 
@@ -409,13 +410,19 @@ export class Conversations {
         live.pid = await this.#panePid(session);
         if (live.pid === undefined) return;
       }
-      const status = await readSessionStatus(live.pid, {
+      const state = await readSessionStatus(live.pid, {
         ...(this.#options.home === undefined ? {} : { home: this.#options.home }),
+        expectSessionId: session.providerSessionId,
       });
       if (live.stopped) return;
       // A stale or absent file says nothing, and `idle` is the honest reading of
       // "this session is not doing anything tether can see".
-      this.#setState(live, status?.state ?? 'idle', status?.detail);
+      //
+      // The detail is kept while the state stands: the *waiting* message is the
+      // `Notification` hook's, and the registry file has no such field, so
+      // re-reading it must not erase the one sentence that says what is wanted.
+      const next = state ?? 'idle';
+      this.#setState(live, next, next === live.state ? live.detail : undefined);
     };
     void tick();
     live.statusPoll = setInterval(() => void tick(), every);

@@ -92,22 +92,19 @@ type CreateBody = { cwd: string; title?: string; provider?: string };
 async function statesFor(
   sessions: readonly Session[],
   socket: string,
-): Promise<Record<string, { state: SessionState; detail?: string }>> {
+): Promise<Record<string, { state: SessionState }>> {
   const live = sessions.filter((session) => session.deadAt === null);
   if (live.length === 0) return {};
   const panes = await listPanes(socket).catch(() => []);
   const pids = new Map(panes.filter((pane) => !pane.dead).map((pane) => [pane.session, pane.pid]));
-  const states: Record<string, { state: SessionState; detail?: string }> = {};
+  const states: Record<string, { state: SessionState }> = {};
   await Promise.all(
     live.map(async (session) => {
       const pid = pids.get(session.tmuxName);
       if (pid === undefined) return;
-      const status = await readSessionStatus(pid);
-      if (status === undefined) return;
-      states[session.id] = {
-        state: status.state,
-        ...(status.detail === undefined ? {} : { detail: status.detail }),
-      };
+      const state = await readSessionStatus(pid, { expectSessionId: session.providerSessionId });
+      if (state === undefined) return;
+      states[session.id] = { state };
     }),
   );
   return states;
