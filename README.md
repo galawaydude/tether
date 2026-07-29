@@ -30,14 +30,14 @@ file.
 
 Concretely: authentication, session list with live status, create session,
 conversation view, terminal view, send input, detach, re-attach, and a UI that is
-genuinely usable one-handed on a phone. Claude Code is the only provider in M1;
+genuinely usable one-handed on a phone. Claude Code is the first provider in M1;
 OpenAI Codex is the second, and is what turned "provider-neutral" from an
 intention into a fact.
 
-Out of scope for M1: other providers, multiple machines, multi-user accounts, any
-hosted component, push notifications, TLS inside tether, git worktree isolation,
-scheduled re-prompting, file browsing, image attachments, Docker or SSH session
-targets, session sharing, usage dashboards, a mobile app.
+Out of scope for M1: providers beyond those two, multiple machines, multi-user
+accounts, any hosted component, push notifications, TLS inside tether, git
+worktree isolation, scheduled re-prompting, file browsing, image attachments,
+Docker or SSH session targets, session sharing, usage dashboards, a mobile app.
 
 ## Status
 
@@ -50,9 +50,9 @@ and a collapsed card per tool call that opens onto its input and result — and 
 live **Terminal**, with a bar for the keys a phone keyboard has not got (Esc, Tab,
 arrows, Ctrl-C). Answering a permission prompt still means the terminal tab: Claude
 Code does not write a pending tool call to its transcript until you have answered.
-The composer is still to come, and so is the _working_/_idle_/_waiting_ state, so a
-session shows only **live** or **dead** for now. This milestone is being built one
-focused PR at a time.
+The composer is still to come, and a Codex session's _working_/_idle_/_waiting_
+state is served over `conv` but not rendered yet, so a session shows only **live**
+or **dead** for now. This milestone is being built one focused PR at a time.
 
 ```
 GET    /api/machines/local/sessions            every session, live and dead
@@ -75,7 +75,8 @@ detail — never the session, and never the terminal, which depends on none of i
 and is always correct.
 
 `conv` also carries `{"c":"state","state":"busy"|"idle"|"waiting"}`, which is the
-session's current state rather than a record of anything. It deliberately has no
+session's current state rather than a record of anything — Codex sessions today,
+since a Claude Code session has no state source yet. It deliberately has no
 `seq`: a sequence number is a position in the transcript, and some of the evidence
 for `waiting` does not come from the transcript at all.
 
@@ -134,7 +135,7 @@ anything — so that when Codex asks you to trust the hook, you are answering a
 question you already understand. It adds one entry, appended after your existing
 ones, backs up your `hooks.json` first, and never changes anything else in it.
 The hook it registers is a script under `~/.local/state/tether/`; it appends one
-JSON line per event to a log in that same directory and does nothing else.
+JSON line per event to a log under that same directory and does nothing else.
 
 **Declining is a supported answer, not a broken setup.** You lose the live
 _waiting for you_ badge for Codex sessions and nothing else, and tether will

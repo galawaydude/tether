@@ -109,10 +109,12 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   for which API routes exist. `web`'s `prepare` builds `web/dist` on `npm ci` for
   the same reason `server`'s does — `tether serve` reads it at startup and only
   warns if it is absent.
-- **All persistent state is one SQLite file outside the repo**, opened by
-  `server/src/db.ts` — `~/.local/state/tether/tether.sqlite`, file `0600` in a `0700`
-  directory (`$XDG_STATE_HOME`, or `$TETHER_STATE_DIR`, which tests and any manual run
-  must set rather than touch the real one). Never write runtime state into the repo; a
+- **All persistent state lives outside the repo, and nearly all of it is one SQLite
+  file**, opened by `server/src/db.ts` — `~/.local/state/tether/tether.sqlite`, file
+  `0600` in a `0700` directory (`$XDG_STATE_HOME`, or `$TETHER_STATE_DIR`, which tests
+  and any manual run must set rather than touch the real one). The rest is the Codex
+  hook's shim and its per-session logs in that same directory, owned by
+  `providers/codex/hooks.ts`. Never write runtime state into the repo; a
   path that is not in the repo cannot be committed by accident. `db.ts` owns the path
   and the mode bits — `machine/registry.ts` only adds its schema on top, applied on
   every open (`CREATE TABLE IF NOT EXISTS`). There is no migration framework, so a
