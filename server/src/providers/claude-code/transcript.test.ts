@@ -20,6 +20,11 @@ async function temp(t: TestContext): Promise<string> {
 /** Poll fast, so a test that depends on the fallback is not a slow test. */
 const POLL = 15;
 
+/** A transcript record stamped at `at` — which is what identifies the file. */
+function record(at: number): string {
+  return `${JSON.stringify({ type: 'user', uuid: 'u1', timestamp: new Date(at).toISOString() })}\n`;
+}
+
 async function until(predicate: () => boolean, what: string): Promise<void> {
   for (let i = 0; i < 200; i += 1) {
     if (predicate()) return;
@@ -92,7 +97,7 @@ test('finding a transcript names the provider’s own session id', async (t) => 
   assert.equal(await findTranscript({ cwd, createdAt, home }), undefined, 'nothing yet');
 
   const id = '11111111-2222-4333-8444-555555555555';
-  await writeFile(join(dir, `${id}.jsonl`), '{"type":"user"}\n');
+  await writeFile(join(dir, `${id}.jsonl`), record(createdAt + 5));
   const found = await findTranscript({ cwd, createdAt, home });
   assert.equal(found?.providerSessionId, id);
   assert.equal(found?.path, join(dir, `${id}.jsonl`));
@@ -110,7 +115,7 @@ test('finding a transcript names the provider’s own session id', async (t) => 
   );
 });
 
-test('the mtime tolerance is a fallback for a coarse filesystem, never a preference', async (t) => {
+test('a transcript is identified by where its records begin, not by its mtime', async (t) => {
   const home = await temp(t);
   const cwd = join(home, 'work');
   await mkdir(cwd);
@@ -118,31 +123,52 @@ test('the mtime tolerance is a fallback for a coarse filesystem, never a prefere
   await mkdir(dir, { recursive: true });
 
   const createdAt = Date.now();
-  const stamp = async (id: string, at: number) => {
+  const write = async (id: string, began: number, mtime: number) => {
     const path = join(dir, `${id}.jsonl`);
-    await writeFile(path, '{"type":"user"}\n');
-    await utimes(path, new Date(at), new Date(at));
+    await writeFile(path, record(began));
+    await utimes(path, new Date(mtime), new Date(mtime));
   };
 
-  // What a filesystem that rounds an mtime down does to this session's own
-  // transcript: written after `createdAt`, stamped before it.
-  const rounded = '11111111-1111-4111-8111-111111111111';
-  await stamp(rounded, createdAt - 500);
+  // A filesystem whose mtime granularity rounds the stamp below `createdAt`, on
+  // a transcript whose own records begin after it. mtime says no, and mtime is
+  // not what is being asked.
+  const mine = '11111111-1111-4111-8111-111111111111';
+  await write(mine, createdAt + 5, createdAt - 1500);
+  assert.equal((await findTranscript({ cwd, createdAt, home }))?.providerSessionId, mine);
+
+  // And the race the whole thing is for: another session's transcript, flushed a
+  // moment ago so it sorts first, but begun an hour before this session existed.
+  const theirs = '22222222-2222-4222-8222-222222222222';
+  await write(theirs, createdAt - 3_600_000, createdAt + 1000);
   assert.equal(
     (await findTranscript({ cwd, createdAt, home }))?.providerSessionId,
-    rounded,
-    'the only candidate there is, rather than no conversation at all',
+    mine,
+    'somebody else’s conversation is not this session’s, however fresh the file looks',
   );
 
-  // A transcript that genuinely qualifies takes it back.
-  const qualifies = '22222222-2222-4222-8222-222222222222';
-  await stamp(qualifies, createdAt + 10);
-  assert.equal((await findTranscript({ cwd, createdAt, home }))?.providerSessionId, qualifies);
-
-  // And the tolerance is a tolerance: past it, an older session's transcript is
-  // still not this one's, and `#start` waits for one that is.
-  const stale = new Date(createdAt - 5000);
-  await utimes(join(dir, `${qualifies}.jsonl`), stale, stale);
-  await utimes(join(dir, `${rounded}.jsonl`), stale, stale);
+  // With nothing else to adopt, the answer is to wait rather than to guess.
+  await rm(join(dir, `${mine}.jsonl`));
   assert.equal(await findTranscript({ cwd, createdAt, home }), undefined);
+});
+
+test('a transcript with nothing timestamped yet is waited for, not adopted', async (t) => {
+  const home = await temp(t);
+  const cwd = join(home, 'work');
+  await mkdir(cwd);
+  const dir = projectDir(cwd, home);
+  await mkdir(dir, { recursive: true });
+
+  const createdAt = Date.now();
+  const path = join(dir, '33333333-3333-4333-8333-333333333333.jsonl');
+  // The first flush routinely is a record with no timestamp at all, plus however
+  // much of the next one the timer caught.
+  await writeFile(path, `${JSON.stringify({ type: 'summary' })}\n{"type":"user","time`);
+  assert.equal(
+    await findTranscript({ cwd, createdAt, home }),
+    undefined,
+    'unverifiable is not disqualified — `#start` looks again',
+  );
+
+  await appendFile(path, `stamp":"${new Date(createdAt + 5).toISOString()}"}\n`);
+  assert.ok(await findTranscript({ cwd, createdAt, home }), 'and it is found once it can be');
 });

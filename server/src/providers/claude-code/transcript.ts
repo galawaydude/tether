@@ -32,17 +32,21 @@ export const CAPTURED_VERSION = '2.1.220';
 export const DEFAULT_POLL_MS = 1000;
 
 /**
- * How much older than the session a transcript's mtime may look and still be it.
- * A filesystem's timestamp granularity is not the clock's — ext3, HFS+ and FAT
- * all round an mtime down, by up to a second or two — so a transcript written
- * moments *after* `Date.now()` can carry a stamp moments before it. Without this
- * the file is invisible and the conversation view stays empty for the life of
- * the session, on nothing but which filesystem the user happens to be on.
+ * How much before its session's `createdAt` a transcript's own first record may
+ * be stamped and still belong to that session. The registry row is stamped after
+ * tmux has already started the provider, so the provider can legitimately write
+ * its first record a few milliseconds earlier.
  *
- * A tolerance and not a rule: it is consulted only when no transcript satisfies
- * the real criterion. See `findTranscript`.
+ * Generous where a tolerance against mtime had to be stingy, and safe for the
+ * reason that one was not: this is measured against the moment the file *began*,
+ * not the moment it was last touched. An unrelated session's transcript began
+ * minutes or hours ago and no plausible tolerance here admits it, whereas its
+ * mtime is whenever it last flushed — which can be a moment ago.
  */
-const MTIME_GRANULARITY_MS = 2000;
+const START_SLACK_MS = 10_000;
+
+/** How much of a transcript is read to find out when it began. */
+const PREFIX_BYTES = 64 * 1024;
 
 /**
  * Claude Code's own `sanitizePath` (`utils/sessionStoragePortable.ts`): every
@@ -71,24 +75,67 @@ export type FoundTranscript = {
 type Candidate = FoundTranscript & { mtimeMs: number };
 
 /**
+ * When the transcript at `path` begins: the timestamp of the first record that
+ * carries a parseable one, or `undefined` while nothing usable is on disk yet.
+ *
+ * A one-off identification read, and deliberately not a second tailing path —
+ * `tailLines` owns following a file. Bounded, because a transcript reaches
+ * hundreds of megabytes; only whole lines are decoded, since the budget and the
+ * flush timer both cut the last one mid-record and mid-glyph. The first record
+ * is routinely a type with no `timestamp` at all, so this scans forward rather
+ * than reading line one and giving up.
+ */
+async function startedAt(path: string): Promise<number | undefined> {
+  const handle = await open(path, 'r').catch(() => undefined);
+  if (handle === undefined) return undefined;
+  try {
+    const buffer = Buffer.allocUnsafe(PREFIX_BYTES);
+    // A candidate that cannot be read — a directory of that name, a mode that
+    // changed — is unverifiable like any other, never an error at the caller.
+    const read = await handle.read(buffer, 0, PREFIX_BYTES, 0).catch(() => undefined);
+    if (read === undefined) return undefined;
+    const lines = buffer.subarray(0, read.bytesRead).toString('utf8').split('\n');
+    lines.pop();
+    for (const line of lines) {
+      let record: unknown;
+      try {
+        record = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (typeof record !== 'object' || record === null) continue;
+      const stamp = (record as Record<string, unknown>)['timestamp'];
+      const at = Date.parse(typeof stamp === 'string' ? stamp : '');
+      if (!Number.isNaN(at)) return at;
+    }
+    return undefined;
+  } finally {
+    await handle.close().catch(() => {});
+  }
+}
+
+/**
  * Find the transcript of the Claude Code session tether started in `cwd`.
  *
- * With a known `providerSessionId` this is a single path. Without one it is the
- * newest transcript in the project directory written after tether created the
- * session — the file's own name *is* the provider's session id, so finding it
- * back-fills the registry row and the guess is made once.
+ * With a known `providerSessionId` this is a single path. Without one, the
+ * transcript is identified by **when its own records begin**, not by when the
+ * file was last written: `mtime` answers "when did this last flush", which is
+ * rounded down by coarse-granularity filesystems and says nothing about whose
+ * session the file is. A transcript's records carry ISO timestamps from the
+ * provider's clock, so they are immune to both. mtime survives only as an
+ * ordering hint — candidates are considered newest first, so the ordinary case
+ * reads exactly one file.
  *
- * That criterion is the rule. Only when nothing in the directory satisfies it is
- * the search repeated with `MTIME_GRANULARITY_MS` of slack, for the filesystems
- * whose mtime rounds down past the moment the session was created — so the
- * tolerance can rescue a session whose own transcript would otherwise be
- * invisible, but can never outrank a transcript that genuinely qualifies. Which
- * way this errs matters: the binding is permanent, since `Conversations`
- * back-fills the registry row on the first hit and never re-checks it.
+ * A candidate with nothing timestamped in its prefix is unverifiable rather than
+ * disqualified: it is skipped, and `Conversations`' existing retry loop looks
+ * again once more has been flushed — the same path a session with no transcript
+ * at all already takes. Erring towards waiting is the point, because the binding
+ * is permanent: the registry row is back-filled on the first hit and never
+ * re-checked, so adopting a neighbouring session's transcript would show its
+ * conversation under this session's name for good.
  *
- * ponytail: two Claude Code sessions started in the same directory within the
- * same instant would be told apart only by mtime, and the newest wins. PR #10's
- * `SessionStart` hook delivers `transcript_path` outright and retires the guess.
+ * ponytail: PR #10's `SessionStart` hook delivers `transcript_path` outright and
+ * retires the guess entirely.
  */
 export async function findTranscript(session: {
   cwd: string;
@@ -124,20 +171,14 @@ export async function findTranscript(session: {
     });
   }
 
-  function newestSince(floor: number): Candidate | undefined {
-    let best: Candidate | undefined;
-    for (const candidate of candidates) {
-      if (candidate.mtimeMs < floor) continue;
-      if (best === undefined || candidate.mtimeMs > best.mtimeMs) best = candidate;
-    }
-    return best;
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  for (const candidate of candidates) {
+    const began = await startedAt(candidate.path);
+    if (began === undefined) continue;
+    if (began < session.createdAt - START_SLACK_MS) continue;
+    return { path: candidate.path, providerSessionId: candidate.providerSessionId };
   }
-
-  const best =
-    newestSince(session.createdAt) ?? newestSince(session.createdAt - MTIME_GRANULARITY_MS);
-  return best === undefined
-    ? undefined
-    : { path: best.path, providerSessionId: best.providerSessionId };
+  return undefined;
 }
 
 export type Tail = { stop: () => Promise<void> };

@@ -19,11 +19,16 @@ import { applyRegistrySchema, createSession, getSession, type Session } from './
 const PROVIDER_SESSION = '11111111-2222-4333-8444-555555555555';
 const POLL = 15;
 
+/**
+ * Stamped from the clock rather than a fixed instant: `findTranscript` identifies
+ * a transcript by when its records begin, so a session's own must not begin
+ * before the session did.
+ */
 function userRecord(n: number): string {
   return `${JSON.stringify({
     type: 'user',
     uuid: `uuid-${n}`,
-    timestamp: new Date(1_800_000_000_000 + n).toISOString(),
+    timestamp: new Date(Date.now() + n).toISOString(),
     version: '2.1.220',
     message: { role: 'user', content: `message ${n}` },
   })}\n`;
@@ -181,11 +186,17 @@ test('a `since` ahead of the tailer is caught up, not told to refetch', async (t
 test('a transcript that exists and cannot be read is a failure, not an empty history', async (t) => {
   const h = await harness(t);
   await writeFile(h.transcript, userRecord(1));
+  // Read once so the row carries the provider's session id, which is how a real
+  // session reaches the transcript by name rather than by searching for it.
+  await h.conversations.history(h.session);
+  const known = getSession(h.db, h.session.id);
+  assert.ok(known?.providerSessionId);
+
   await rm(h.transcript);
-  // A directory in its place: it exists for `findTranscript`, and reading it fails.
+  // A directory in its place: it is still there to be named, and reading it fails.
   await mkdir(h.transcript);
 
-  await assert.rejects(() => h.conversations.history(h.session));
+  await assert.rejects(() => h.conversations.history(known));
   assert.ok(
     h.warnings.some((w) => w.startsWith('cannot read ')),
     `expected a warning, got ${JSON.stringify(h.warnings)}`,

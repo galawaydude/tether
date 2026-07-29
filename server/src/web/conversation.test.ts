@@ -25,11 +25,16 @@ const PASSWORD = 'correct horse battery staple';
 const ID = '99999999-8888-4777-8666-555555555555';
 const PROVIDER_SESSION = '11111111-2222-4333-8444-555555555555';
 
+/**
+ * Stamped from the clock rather than a fixed instant: `findTranscript` identifies
+ * a transcript by when its records begin, so a session's own must not begin
+ * before the session did.
+ */
 function userRecord(n: number): string {
   return `${JSON.stringify({
     type: 'user',
     uuid: `uuid-${n}`,
-    timestamp: '2026-07-29T04:53:41.000Z',
+    timestamp: new Date(Date.now() + n).toISOString(),
     version: '2.1.220',
     message: { role: 'user', content: `message ${n}` },
   })}\n`;
