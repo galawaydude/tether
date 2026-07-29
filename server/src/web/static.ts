@@ -8,9 +8,10 @@
  * which would hand an unauthenticated caller a 404-vs-401 oracle for which API
  * routes exist; the default-deny hook in `server.ts` exists to deny it that.
  *
- * These are the only two public routes besides `/api/login`, and they are public
- * for the obvious reason: the login screen cannot ask for a session while being
- * gated on one.
+ * These are the only two public routes besides `/api/login` and `/internal/hook`
+ * (which is authenticated by its own secret — see `hooks.ts`), and they are
+ * public for the obvious reason: the login screen cannot ask for a session while
+ * being gated on one.
  */
 
 import fastifyStatic from '@fastify/static';

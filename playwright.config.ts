@@ -4,8 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 /**
- * One spec, one browser, one worker. The end-to-end test exists to check the one
- * claim nothing else can (report §8): that a reload loses nothing.
+ * Two specs, one browser, one worker — and one server between them, which is why
+ * each spec works in its own directory. The end-to-end tests exist to check the
+ * claims nothing else can (report §8): that a reload loses nothing, and that a
+ * permission prompt is on screen before the transcript has anything to say.
  *
  * Everything below the sandbox line is deliberate. `TETHER_ALLOWED_ROOTS` is
  * resolved through `realpath` because tether resolves the directory it is given

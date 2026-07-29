@@ -48,14 +48,18 @@ you can log in, see the sessions on this machine, start one in a directory you n
 and follow it in two tabs: a **Conversation** — your prompts, the agent's replies,
 and a collapsed card per tool call that opens onto its input and result — and a
 live **Terminal**, with a bar for the keys a phone keyboard has not got (Esc, Tab,
-arrows, Ctrl-C). Answering a permission prompt still means the terminal tab: Claude
-Code does not write a pending tool call to its transcript until you have answered.
-The composer is still to come, and a Codex session's _working_/_idle_/_waiting_
-state is served over `conv` but not rendered yet, so a session shows only **live**
-or **dead** for now. This milestone is being built one focused PR at a time.
+arrows, Ctrl-C). A live session shows what its agent is doing — _Working_, _Idle_
+or _Waiting for you_ — in the session list and above both views, and just **live**
+where the provider is not saying rather than a badge that would be a guess. A
+Claude Code permission prompt puts the tool call it is asking about in the
+conversation before the transcript has it (see
+[the hook](#the-claude-code-hook-and-the-file-it-writes-in-your-project)).
+Answering it still means the terminal tab: tether shows you the question and adds
+no approve/deny of its own. The composer is still to come. This milestone is being
+built one focused PR at a time.
 
 ```
-GET    /api/machines/local/sessions            every session, live and dead
+GET    /api/machines/local/sessions            every session, live and dead, with each live one's state
 POST   /api/machines/local/sessions            {"cwd": "…", "title"?: "…", "provider"?: "…"}
 GET    /api/machines/local/sessions/:id
 POST   /api/machines/local/sessions/:id/resume restarts a dead session's conversation
@@ -71,11 +75,14 @@ the terminal — `~/.claude/projects/<slug>/<uuid>.jsonl` for Claude Code,
 append-only NDJSON, which is why they share one tailer and differ only in a
 mapper. Neither file is a public API — see [Known risks](#known-risks).
 
-`conv` also carries `{"c":"state","state":"busy"|"idle"|"waiting"}`, which is the
-session's current state rather than a record of anything — Codex sessions today,
-since a Claude Code session has no state source yet. It deliberately has no
-`seq`: a sequence number is a position in the transcript, and some of the evidence
-for `waiting` does not come from the transcript at all.
+`conv` also carries two frames that are not records of anything and deliberately
+have no `seq` — a sequence number is a position in the transcript, and neither of
+these comes from it. `{"c":"state","state":"busy"|"idle"|"waiting"}` is the
+session's current state, from the agent's own status file and its hooks.
+`{"c":"pending","e":…}` is a tool call the agent has proposed but not yet written
+down — the one you are being asked to approve; the transcript's own record for
+the same call carries the same `callId` and replaces that card rather than adding
+a second one.
 
 `conv` answers a `since` it cannot replay from memory with `{"c":"refetch"}`,
 which means "fetch the history route again"; it never sends a partial history.
@@ -348,21 +355,25 @@ npm run lint         # eslint
 npm run format:check # prettier --check   (npm run format to fix)
 
 npx playwright install chromium   # once; npm 12 blocks playwright's own postinstall
-npm run test:e2e                  # the one end-to-end spec
+npm run test:e2e                  # the end-to-end specs
 ```
 
-`e2e/` is a single Playwright spec on a phone viewport, and it is the only test
-here that is not a unit test: log in, start a session, watch it, type at it,
-**reload the page**, and assert the conversation and the terminal come back
-intact and exactly once. It runs against `e2e/stub-agent.ts` — a script that
-prints, echoes what you type at it, and writes a Claude-Code-shaped transcript —
-put on `PATH` as `claude`, so the session is created through the real code path. **CI never runs a
-real agent**: that would need real credentials and would cost money per run.
-Everything it touches (`HOME`, the state file, the tmux socket, the session root)
-is redirected into a scratch directory by `playwright.config.ts`.
+`e2e/` is two Playwright specs on a phone viewport, and they are the only tests
+here that are not unit tests. One logs in, starts a session, watches it, types at
+it, **reloads the page**, and asserts the conversation and the terminal come back
+intact and exactly once. The other acts out a permission prompt and asserts the
+proposed tool call is on screen while the transcript still has nothing about it,
+and that the transcript's own record then replaces that card rather than adding a
+second one. Both run against `e2e/stub-agent.ts` — a script that prints, echoes
+what you type at it, writes a Claude-Code-shaped transcript, publishes its own
+status file and fires whatever hook the project's settings register — put on
+`PATH` as `claude`, so the session is created through the real code path. **CI
+never runs a real agent**: that would need real credentials and would cost money
+per run. Everything they touch (`HOME`, the state file, the tmux socket, the
+session root) is redirected into a scratch directory by `playwright.config.ts`.
 
-It has no retries, deliberately. This test covers the product's core claim, and a
-flake retried into passing is worse than no test.
+They have no retries, deliberately. These tests cover the product's core claims,
+and a flake retried into passing is worse than no test.
 
 ### Layout
 

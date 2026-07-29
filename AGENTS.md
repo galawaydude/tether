@@ -104,7 +104,9 @@ CI runs exactly those (`.github/workflows/ci.yml`).
 - **The browser app is served by two named routes, not a wildcard**
   (`server/src/web/static.ts`). `@fastify/static` is registered with
   `serve: false` purely for `reply.sendFile`; `/` and `/assets/:file` are the only
-  routes marked `public` besides `/api/login`. A wildcard would answer every
+  routes marked `public` besides `/api/login` and `/internal/hook`, which is not
+  unauthenticated but authenticated differently (loopback plus the `0600` secret,
+  see the hook entry below). A wildcard would answer every
   unmatched path publicly and hand an unauthenticated caller a 404-vs-401 oracle
   for which API routes exist. `web`'s `prepare` builds `web/dist` on `npm ci` for
   the same reason `server`'s does — `tether serve` reads it at startup and only
@@ -224,11 +226,15 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   that should not have fired. The file also carries `waitingFor`, which nothing
   reads yet.
 
-- **`{c:'state'}` is not a `conv` frame, and must not become one.** `seq` is a
-  position in the mapped transcript; the evidence for `waiting` arrives by hook,
-  outside it. Giving state a `seq` makes the history route and a live tailer
-  disagree about which event is number 12. It is also why `status` is the one
-  `ConversationEvent` variant with no `id`.
+- **`{c:'state'}` and `{c:'pending'}` are not `conv` frames, and must not become
+  one.** `seq` is a position in the mapped transcript; the evidence for `waiting`
+  arrives by hook, outside it, and a pending tool call is a claim the transcript
+  will supersede rather than a record in it. Giving either a `seq` makes the
+  history route and a live tailer disagree about which event is number 12. It is
+  also why `status` is the one `ConversationEvent` variant with no `id`. The
+  pending card is keyed by `callId` in `web/src/conversation.ts` — the same index
+  a `tool_call` consults — so whichever of the two arrives second replaces the
+  card the first one made, in either order.
 - **`machine/conversations.ts` has a cursor and `machine/terminal.ts` does not.**
   The asymmetry is deliberate: tmux re-derives the terminal exactly on every
   attach, conversation events are re-derivable from nothing the client holds.
@@ -263,18 +269,24 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `coerceTypes` are on): `additionalProperties: false` strips instead of rejecting, and
   `{"password": 123}` arrives as `"123"`. `buildServer` turns both off. Do not remove that
   `ajv.customOptions` block, and do not assume stock Fastify behaviour when reading the tests.
-- **`e2e/` is one Playwright spec and it asserts counts, not presence.** It drives the
-  real `tether serve` (`e2e/serve.ts` calls the CLI's own `main`) inside a scratch
+- **`e2e/` is two Playwright specs and they assert counts, not presence.** They drive
+  the real `tether serve` (`e2e/serve.ts` calls the CLI's own `main`) inside a scratch
   `HOME`/state dir/tmux socket, with `e2e/stub-agent.ts` on `PATH` as `claude` — so the
   session is created through the production path and **CI still never runs a live
-  agent**. What it checks that nothing else can is the reload: `toContainText` passes
-  just as happily on a view that replayed itself twice. Two things not to
-  "strengthen" by accident: the locators are scoped to `.conv` and `.xterm-rows`
-  because both panes stay mounted, and the terminal comparison is of the **rendered
-  screen** before versus after — the buffer above it legitimately holds the capture
-  _under_ tmux's repaint, and byte-exactness of the recipe is `terminal.test.ts`'s job.
-  `retries: 0` is deliberate. `npm ci` does not fetch the browser (npm 12 blocks
-  playwright's postinstall); `npx playwright install chromium` does, and CI runs it.
+  agent**. What `session.spec.ts` checks that nothing else can is the reload, and what
+  `permission.spec.ts` checks is the hook chain end to end: `toContainText` passes just
+  as happily on a view that replayed itself twice, and on two cards for one tool call.
+  Three things not to "strengthen" by accident: the locators are scoped to `.conv` and
+  `.xterm-rows` because both panes stay mounted; the terminal comparison is of the
+  **rendered screen** before versus after — the buffer above it legitimately holds the
+  capture _under_ tmux's repaint, and byte-exactness of the recipe is
+  `terminal.test.ts`'s job; and the two specs share one server and one session list, so
+  each takes its own directory and reopens its session **by name**, never `.row-open`.
+  The stub knows nothing about where tether's shim, secret or endpoint are — it runs
+  whatever `.claude/settings.local.json` lists — so a broken installer fails the test
+  rather than quietly proving nothing. `retries: 0` is deliberate. `npm ci` does not
+  fetch the browser (npm 12 blocks playwright's postinstall);
+  `npx playwright install chromium` does, and CI runs it.
 
 ## Maintaining this file
 
