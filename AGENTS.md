@@ -230,12 +230,16 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   and the provider's to apply. **(2) Three timeouts, nested:** server hold <
   the shim's `AbortSignal` < the settings-file `timeout`, all derived from
   `permissionTimeoutMs()`. A hook killed at its `timeout` falls through, so the
-  outer two are nets rather than mechanisms. The shim is rewritten on every
-  spawn, so `installHook` **reconciles its own settings entry's `timeout`**
-  rather than skipping a project that already has one — otherwise an upgraded
-  project keeps the old number and Claude Code kills the hook while tether is
-  still showing live buttons. Reconciled means that one field of tether's own
-  handler and nothing else; at an unchanged hold the file is not written at all.
+  outer two are nets rather than mechanisms. The outermost lives on disk in a
+  file tether does not own, so it can drift from the hold this process holds:
+  `installHook` **reconciles its own settings entry's `timeout`** rather than
+  skipping a project that already has one, and `reconcileProviderHooks` runs it
+  for every live session at `listen`, beside `writeHookEndpoint` and for the same
+  reason — panes outlive the server, so a restart under a new
+  `TETHER_PERMISSION_TIMEOUT` is the ordinary path. Those two are the only places
+  the two values can diverge; reconcile a third there rather than patching where
+  the symptom shows. Reconciled means that one field of tether's own handler and
+  nothing else; at an unchanged hold the file is not written at all.
   **(3) The fallback is neither allow
   nor deny** — saying nothing hands the question back to the provider's own
   rules; a reachable-then-failed tether says so through `systemMessage`, a
@@ -390,7 +394,13 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   each takes its own directory and reopens its session **by name**, never `.row-open`.
   The stub knows nothing about where tether's shim, secret or endpoint are — it runs
   whatever `.claude/settings.local.json` lists — so a broken installer fails the test
-  rather than quietly proving nothing. `retries: 0` is deliberate. `npm ci` does not
+  rather than quietly proving nothing. A typed ask only **arms** the stub and a
+  trigger file fires it, because the hold needs the conversation pane in front and
+  typing needs the other tab; the stub fires when both have landed, in either
+  order, so nothing depends on which round-trip won. For the same reason the
+  timeout case never taps Terminal — that would release the hold it is watching
+  expire — and reads `.xterm-rows` through the hidden pane instead.
+  `retries: 0` is deliberate. `npm ci` does not
   fetch the browser (npm 12 blocks playwright's postinstall);
   `npx playwright install chromium` does, and CI runs it.
 

@@ -34,7 +34,7 @@
  */
 
 import { expect, test, type Page } from '@playwright/test';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
@@ -62,13 +62,34 @@ async function shoot(page: Page, name: string): Promise<void> {
 }
 
 /** Types at the pane, which is how a real prompt starts, then comes back. */
-async function askAt(page: Page, text: string): Promise<void> {
+async function typeAt(page: Page, text: string): Promise<void> {
   await page.getByRole('button', { name: 'Terminal', exact: true }).click();
   await expect(page.locator('header .chip[role="status"]')).toHaveText('Live');
   await page.locator('.xterm-screen').click();
   await page.keyboard.type(text);
   await page.keyboard.press('Enter');
   await page.getByRole('button', { name: 'Conversation', exact: true }).click();
+}
+
+/**
+ * Ask for something, in two steps, because tether holds a proposed call only
+ * while the conversation pane is the one in front — and typing needs the other
+ * tab. So the typed line only **arms** the stub, and the tool call is fired from
+ * here, out of band, once this pane is demonstrably back in front.
+ *
+ * That is a construction rather than a wait: `e2e/stub-agent.ts` fires when the
+ * armed ask and the trigger file are both present, in whichever order they land,
+ * so there is no window where the result depends on which round-trip won. A
+ * `waitForTimeout` here would only have hidden the race.
+ */
+async function askAt(page: Page, text: string): Promise<void> {
+  await typeAt(page, text);
+  await expect(page.getByRole('button', { name: 'Conversation', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  await expect(page.locator('header .chip[role="status"]')).toHaveText('Live');
+  writeFileSync(join(project, '.tether-e2e-fire'), '');
 }
 
 test('a permission prompt is answered from the conversation view, and only once', async ({
@@ -128,7 +149,7 @@ test('a permission prompt is answered from the conversation view, and only once'
   // tether's `allow` means Claude Code never showed a dialog, so there is
   // nothing there to answer — the keystroke is ordinary typing and must approve
   // nothing, least of all something else.
-  await askAt(page, ANSWER);
+  await typeAt(page, ANSWER);
   await expect(cards).toHaveCount(1, { timeout: 2000 });
   await expect(agentChip).toHaveText('Idle');
 
@@ -159,11 +180,12 @@ test('a permission prompt is answered from the conversation view, and only once'
   await expect(cards).toHaveCount(3);
   const waited = cards.nth(2);
   await expect(waited.getByRole('button', { name: 'Approve' })).toHaveCount(1);
-  // Nothing is tapped. Until the hold expires, the pane shows no dialog at all:
-  // the agent is blocked inside the hook, not waiting on a keystroke.
-  await page.getByRole('button', { name: 'Terminal', exact: true }).click();
+  // Nothing is tapped, and the tab is not left either — switching away would
+  // release the hold that is being watched expire. Both panes stay mounted, so
+  // the terminal's rendered rows are readable from here: until the deadline, the
+  // pane shows no dialog at all, because the agent is blocked inside the hook
+  // rather than waiting on a keystroke.
   await expect(page.locator('.xterm-rows')).not.toContainText('Do you want to proceed?');
-  await page.getByRole('button', { name: 'Conversation', exact: true }).click();
 
   await expect(waited.locator('.tool-state')).toHaveText('in terminal', {
     timeout: HOLD_MS + 10_000,
@@ -178,7 +200,7 @@ test('a permission prompt is answered from the conversation view, and only once'
 
   // Answering there reconciles to the same one card — the other direction of
   // the same join, and the reason neither surface may assume it won.
-  await askAt(page, ANSWER);
+  await typeAt(page, ANSWER);
   await expect(waited.locator('.tool-state')).toHaveText('✓');
   await expect(cards).toHaveCount(3);
   await expect(waited).toContainText('removed ./cache');

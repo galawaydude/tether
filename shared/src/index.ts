@@ -167,11 +167,12 @@ export type ServerFrame =
  * {@link ClientFrame} because the two sockets share none of it: there is no
  * sequencing here and nothing to ack.
  *
- * `watching` is whether the conversation pane is the one in front. The session
- * screen keeps both panes mounted, so being subscribed says nothing about it,
- * and the server holds a permission prompt only for someone who is actually
- * looking at the surface that answers it. Absent, the server assumes `true`:
- * that is the tab the app opens on.
+ * `watching` is whether the conversation pane is the one in front — which is all
+ * the client claims here, and not whether the screen is on. The session screen
+ * keeps both panes mounted, so being subscribed says nothing about it, and the
+ * server holds a permission prompt only for a viewer whose front pane is the one
+ * that answers it. Absent, the server assumes `true`: that is the tab the app
+ * opens on.
  */
 export type ConvClientFrame = { c: 'watch'; watching: boolean };
 

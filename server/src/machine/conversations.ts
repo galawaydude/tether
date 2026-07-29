@@ -553,12 +553,14 @@ export class Conversations {
    * Two conditions, and each removes a different way holding would be a cost
    * with no benefit:
    *
-   * - **Somebody is looking at the conversation.** Not merely subscribed: the
-   *   session screen keeps both panes mounted, so the socket stays open while
-   *   the user works in the terminal — and holding then would stall an agent in
-   *   front of the very surface that answers its prompts. A background session
-   *   has no subscriber and never pauses; a session being driven from the
-   *   terminal has one that says it is not watching, and does not pause either.
+   * - **Somebody has the conversation pane in front.** Not merely subscribed:
+   *   the session screen keeps both panes mounted, so the socket stays open
+   *   while the user works in the terminal — and holding then would stall an
+   *   agent in front of the very surface that answers its prompts. A background
+   *   session has no subscriber and never pauses; a session being driven from
+   *   the terminal has one that says it is not watching, and does not pause
+   *   either. Which pane is in front is all the client reports and all this
+   *   knows — not whether the screen is even on.
    * - **The tool is holdable.** `PreToolUse` fires for every call and says
    *   nothing about whether Claude Code was going to prompt (verified: see
    *   `NEVER_HELD`), so the read-only burst tools are skipped by name. Without

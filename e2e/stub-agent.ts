@@ -18,7 +18,15 @@
 
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { appendFileSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -45,6 +53,21 @@ const ANSWER = 'yes';
 
 /** What the acted-out prompts are asking for. */
 const TOOL = 'Bash';
+
+/**
+ * A typed ask only **arms** the tool call; this file is what fires it.
+ *
+ * The reason is tether's own: it holds a proposed call only while the
+ * conversation pane is the one in front, and the spec has to be on the Terminal
+ * tab to type at all. Firing inside the `line` handler would therefore race the
+ * spec's tab switch back — and a test that goes green by winning a race is worse
+ * than no test. Decoupling the trigger from the keystroke removes the race
+ * instead of hiding it: the spec types, returns to the conversation, and only
+ * then writes this file, and the poll below fires only once *both* have
+ * happened, in whichever order they land.
+ */
+const TRIGGER = join(process.cwd(), '.tether-e2e-fire');
+const POLL_MS = 100;
 
 const sessionId = randomUUID();
 
@@ -187,36 +210,50 @@ function commit(call: { command: string; callId: string }, allowed: boolean): vo
 /** The call the pane is being asked about, while Claude Code's own prompt is up. */
 let asked: { command: string; callId: string } | undefined;
 
+/** The call a typed ask has armed, waiting for {@link TRIGGER}. */
+let armed: { command: string; callId: string } | undefined;
+
+/**
+ * The moment this whole path exists for: the agent has decided to run something
+ * and is holding for an answer, with *nothing* in the transcript about it yet.
+ * `PreToolUse` fires first and blocks — tether may answer it right there, which
+ * is the tap from the conversation view. Only if it does not does the pane show
+ * a dialog, and only then is `Notification` sent.
+ */
+setInterval(() => {
+  const ask = armed;
+  if (ask === undefined || !existsSync(TRIGGER)) return;
+  armed = undefined;
+  rmSync(TRIGGER, { force: true });
+
+  publish('waiting');
+  const decision = fire('PreToolUse', {
+    permission_mode: 'default',
+    tool_name: TOOL,
+    tool_input: { command: ask.command, description: 'Clear a directory' },
+    tool_use_id: ask.callId,
+  });
+  if (decision !== undefined) {
+    commit(ask, decision === 'allow');
+    return;
+  }
+  asked = ask;
+  fire('Notification', {
+    message: `Claude needs your permission to use ${TOOL}`,
+    notification_type: 'permission_prompt',
+  });
+  process.stdout.write(`\n${TOOL} command\n  ${ask.command}\n\nDo you want to proceed? (y/n)\n`);
+}, POLL_MS);
+
 const rl = createInterface({ input: process.stdin, output: process.stdout });
 rl.on('line', (line) => {
   const text = line.trim();
   if (text === '') return;
   record('user', text);
 
-  // The moment this whole path exists for: the agent has decided to run
-  // something and is holding for an answer, with *nothing* in the transcript
-  // about it yet. `PreToolUse` fires first and blocks — tether may answer it
-  // right there, which is the tap from the conversation view. Only if it does
-  // not does the pane show a dialog, and only then is `Notification` sent.
   const ask = ASKS[text as keyof typeof ASKS];
   if (ask !== undefined) {
-    publish('waiting');
-    const decision = fire('PreToolUse', {
-      permission_mode: 'default',
-      tool_name: TOOL,
-      tool_input: { command: ask.command, description: 'Clear a directory' },
-      tool_use_id: ask.callId,
-    });
-    if (decision !== undefined) {
-      commit(ask, decision === 'allow');
-      return;
-    }
-    asked = ask;
-    fire('Notification', {
-      message: `Claude needs your permission to use ${TOOL}`,
-      notification_type: 'permission_prompt',
-    });
-    process.stdout.write(`\n${TOOL} command\n  ${ask.command}\n\nDo you want to proceed? (y/n)\n`);
+    armed = ask;
     return;
   }
 

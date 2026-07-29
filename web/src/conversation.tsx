@@ -56,10 +56,11 @@ export function ConversationView({
   /** Whose name goes over an assistant message. Nothing else here reads it. */
   provider: string;
   /**
-   * Whether this pane is the one in front. Both panes stay mounted, so the
-   * socket alone cannot tell the server — and the server holds the agent on a
-   * permission prompt only while somebody is looking at the surface that answers
-   * it, so a user working in the terminal must not stall every tool call.
+   * Whether this pane is the one in front — which is the whole of what is
+   * claimed, not that anyone is looking at it. Both panes stay mounted, so the
+   * socket alone cannot tell the server, and the server holds the agent on a
+   * permission prompt only for a viewer whose front pane is this one: a user
+   * working in the terminal must not stall every tool call.
    */
   watching: boolean;
   onStatus: (status: Status) => void;
