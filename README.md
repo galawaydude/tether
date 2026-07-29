@@ -44,8 +44,9 @@ Docker or SSH session targets, session sharing, usage dashboards, a mobile app.
 Toolchain, CI, the tmux driver, authentication, the session registry, the HTTP
 session API, the terminal transport, the conversation data layer, the browser app,
 and the conversation view. Run `tether serve`, open the address it prints, and
-you can log in, see the sessions on this machine, start one in a directory you name,
-and follow it in two tabs: a **Conversation** — your prompts, the agent's replies,
+you can log in, see the sessions on this machine — each tagged with the agent it is
+running — start one in a directory you name under either agent, and follow it in two
+tabs: a **Conversation** — your prompts, the agent's replies,
 and a collapsed card per tool call that opens onto its input and result — and a
 live **Terminal**, with a bar for the keys a phone keyboard has not got (Esc, Tab,
 arrows, Ctrl-C). A live session shows what its agent is doing — _Working_, _Idle_
@@ -147,7 +148,8 @@ tool call. You answer in the terminal, which is one tap away.
 
 ## Codex, and its optional hook
 
-`npx tether new ~/src/project --provider codex` starts Codex instead. Everything
+`npx tether new ~/src/project --provider codex` starts Codex instead, and so does
+picking **Codex** in the browser's New session sheet. Everything
 works: the conversation view, the terminal, session state while it is working and
 when it is done, and resume after a reboot.
 
@@ -167,6 +169,11 @@ question you already understand. It adds one entry, appended after your existing
 ones, backs up your `hooks.json` first, and never changes anything else in it.
 The hook it registers is a script under `~/.local/state/tether/`; it appends one
 JSON line per event to a log under that same directory and does nothing else.
+
+The New session sheet says the same thing, next to the moment you pick Codex, so
+the browser is not the one place you would meet the trust prompt unprepared. It
+says it there and nowhere else: no banner on the session list, and no warning
+beside a Codex session running happily without the hook.
 
 **Declining is a supported answer, not a broken setup.** You lose the live
 _waiting for you_ badge for Codex sessions and nothing else, and tether will

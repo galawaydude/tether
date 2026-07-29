@@ -100,8 +100,18 @@ export async function listSessions(): Promise<{ sessions: Session[]; states: Ses
   return { sessions: body.sessions, states: body.states ?? {} };
 }
 
-export async function createSession(cwd: string, title?: string): Promise<Session> {
-  const body = title !== undefined && title !== '' ? { cwd, title } : { cwd };
+export async function createSession(
+  cwd: string,
+  title?: string,
+  provider?: string,
+): Promise<Session> {
+  const body = {
+    cwd,
+    ...(title === undefined || title === '' ? {} : { title }),
+    // Omitted rather than sent as the default: the server's own default is the
+    // one that decides, and two copies of it would drift.
+    ...(provider === undefined ? {} : { provider }),
+  };
   const { session } = await request<{ session: Session }>(
     `/api/machines/${MACHINE}/sessions`,
     json('POST', body),

@@ -104,7 +104,7 @@ type MapLines = (
  * know is read as Claude Code, which is the only thing it can be: the column is
  * written by `startSession`, which refuses an unknown provider outright.
  */
-function mapperFor(provider: string): MapLines {
+export function mapperFor(provider: string): MapLines {
   return provider === CODEX ? mapCodexLines : mapClaudeLines;
 }
 

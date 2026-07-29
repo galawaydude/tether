@@ -26,6 +26,7 @@ import {
   type Rows,
   type ToolRow,
 } from './conversation.ts';
+import { whoLabel } from './providers.ts';
 import type { Status } from './terminal.tsx';
 
 /** Same shape of backoff as the terminal channel, and for the same phone. */
@@ -37,10 +38,13 @@ const STICK_PX = 80;
 
 export function ConversationView({
   sessionId,
+  provider,
   onStatus,
   onState,
 }: {
   sessionId: string;
+  /** Whose name goes over an assistant message. Nothing else here reads it. */
+  provider: string;
   onStatus: (status: Status) => void;
   /**
    * What the agent is doing, straight off the `state` frame. Reported up rather
@@ -194,7 +198,7 @@ export function ConversationView({
         <p class="muted">Nothing yet. The terminal tab shows the session as it starts.</p>
       )}
       {state.rows.map((row) => (
-        <RowView key={row.key} row={row} />
+        <RowView key={row.key} row={row} provider={provider} />
       ))}
     </div>
   );
@@ -213,12 +217,12 @@ function parse(data: unknown): ServerFrame | undefined {
   }
 }
 
-function RowView({ row }: { row: Row }) {
+function RowView({ row, provider }: { row: Row; provider: string }) {
   switch (row.row) {
     case 'message':
       return (
         <article class={`msg msg-${row.who}`}>
-          <h3 class="msg-who">{row.who === 'user' ? 'You' : 'Claude'}</h3>
+          <h3 class="msg-who">{whoLabel(row.who, provider)}</h3>
           {/* `pre-wrap`, not a markdown pipeline: the events carry plain text and
               the agent's own line breaks, and a renderer would be a dependency
               plus an injection surface for output tether does not control. */}

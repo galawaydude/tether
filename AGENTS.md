@@ -173,6 +173,13 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   answer and dropping it makes the view look duplicated, and there is no
   `isError` — success has to be _stated_ (`Process exited with code 0` /
   `Exit code: 0`), because a sandbox refusal is prose with no code in it at all.
+  The browser's half of that seam is `web/src/providers.ts` — the picker in the
+  New session sheet, the tag on a list row and the name over an assistant
+  message all read it, so nothing else in the web app spells a provider id or
+  names an agent. Its ids are literals mirroring `DEFAULT_PROVIDER` and `CODEX`,
+  because `@tether/shared` emits types and no JavaScript; the create route's
+  `enum` is the enforcement, so drift is a 400 rather than a session running the
+  wrong agent under the right name.
 
 - **`hooks.json` is a file tether does not own, and the trust gate is not
   tether's to bypass.** `providers/codex/hooks.ts` writes one entry, **appended**
@@ -183,7 +190,13 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   docs, not as a fallback; that is a captain's decision, not a preference. The
   hook buys exactly one thing, the live `waiting` badge: `busy` and `idle` come
   from the rollout, so **declining is a supported configuration** and nothing may
-  warn, retry or nag about it. `PermissionRequest` carries no `tool_use_id`, so
+  warn, retry or nag about it. Explaining the prompt before it appears binds the
+  UI as much as the CLI: `cli.ts`'s `codexHookExplanation` and `app.tsx`'s
+  `CodexHookNote` are the only two places that say it, and the second says it
+  only while Codex is the selected provider in the New session sheet. Neither may
+  grow into a banner on the session list or a warning beside a Codex session
+  running happily without the hook. Installing stays a CLI command on purpose —
+  it writes to a file tether does not own. `PermissionRequest` carries no `tool_use_id`, so
   `status.ts` correlates it to the preceding `PreToolUse` — a correlation, not a
   key, and the fixtures contain the case that proves it (two attempts, identical
   `tool_input`, different ids).
