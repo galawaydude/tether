@@ -59,6 +59,12 @@ export function ConversationView({
      * It is also the answer to `refetch`, which is why it is one function — a
      * client that has been gone longer than the server's tail starts again from
      * exactly here rather than from a second, subtly different path.
+     *
+     * It is reserved for exactly three cases — the first mount, a `refetch`, and
+     * its own failure. Every other drop resumes through `connect`, because the
+     * server's tail already answers `since` and refetching the whole transcript
+     * on each of a phone's screen-locks is the cost this protocol exists to
+     * avoid.
      */
     const load = async () => {
       status.current('connecting');
@@ -76,7 +82,7 @@ export function ConversationView({
       } catch {
         if (closed) return;
         setFailed(true);
-        retry();
+        retry(load);
       }
     };
 
@@ -113,12 +119,12 @@ export function ConversationView({
         // both views are mounted together and the terminal already does it, so a
         // second probe on every drop would only double the requests.
         status.current('retrying');
-        retry();
+        retry(connect);
       };
     };
 
-    const retry = () => {
-      reconnect = setTimeout(() => void load(), backoff);
+    const retry = (next: () => void | Promise<void>) => {
+      reconnect = setTimeout(() => void next(), backoff);
       backoff = Math.min(backoff * 2, RECONNECT_MAX_MS);
     };
 
@@ -200,9 +206,7 @@ function RowView({ row }: { row: Row }) {
       );
     case 'compaction':
       return (
-        <p class="divider" role="separator">
-          context compacted
-        </p>
+        <p class="divider">context compacted</p>
       );
     case 'note':
       return <p class="note">{row.text}</p>;

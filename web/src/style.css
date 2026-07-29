@@ -416,7 +416,25 @@ label {
   min-height: var(--tap);
   padding: 8px 12px;
   cursor: pointer;
-  list-style-position: inside;
+}
+
+/* `display: flex` above stops the UA generating a `::marker`, so the disclosure
+   affordance is drawn here instead — decorative, hence the empty alt text: the
+   `<details>` element announces its own open state. */
+.tool > summary::before {
+  content: '\25b8' / '';
+  flex: none;
+  color: var(--muted);
+  transition: transform 120ms ease;
+}
+
+.tool[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+/* Safari still lays its legacy marker out as a flex item, which would double it. */
+.tool > summary::-webkit-details-marker {
+  display: none;
 }
 
 .tool-name {
