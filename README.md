@@ -53,7 +53,7 @@ GET    /api/machines/local/sessions/:id
 POST   /api/machines/local/sessions/:id/resume restarts a dead session's conversation
 DELETE /api/machines/local/sessions/:id        kills the tmux session and marks the row dead
 GET    /api/sessions/:id/conversation          the whole conversation, with sequence numbers
-WS     /api/sessions/:id/conv?since=<seq>      conversation events from `seq` onwards
+WS     /api/sessions/:id/conv?since=<seq>      conversation events after `seq`, the last one you hold
 WS     /api/sessions/:name/term                terminal bytes, both ways
 ```
 
