@@ -68,6 +68,14 @@ test('a nonsense port is refused', () => {
   }
 });
 
+test('an empty --host is refused rather than binding every interface', () => {
+  // `--host=` would otherwise reach listen() as "any address" while the banner
+  // printed http://:8787 — the silent wildcard bind the default rules out.
+  for (const host of ['', ' ', '\t']) {
+    assert.throws(() => resolveServeConfig({ host }, true), /invalid --host/, JSON.stringify(host));
+  }
+});
+
 test('--allowed-host and --trusted-proxy reach the config', () => {
   const config = resolveServeConfig(
     { host: '0.0.0.0', allowedHosts: ['tether.example'], trustedProxies: ['10.0.0.1'] },
@@ -109,8 +117,8 @@ test('`tether set-password` stores a verifiable password in a 0600 database', as
   assert.equal(statSync(stateDir).mode & 0o777, 0o700);
 
   const auth = createAuthStore(new DatabaseSync(dbPath));
-  assert.equal(auth.verifyPassword('correct horse battery staple'), true);
-  assert.equal(auth.verifyPassword('wrong'), false);
+  assert.equal(await auth.verifyPassword('correct horse battery staple'), true);
+  assert.equal(await auth.verifyPassword('wrong'), false);
 });
 
 test('`tether set-password` refuses a short password without storing anything', async (t) => {

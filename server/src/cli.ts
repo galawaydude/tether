@@ -50,6 +50,8 @@ export type ServeArgs = {
  */
 export function resolveServeConfig(args: ServeArgs, hasPassword: boolean): ServeConfig {
   const host = args.host ?? DEFAULT_HOST;
+  // An empty --host would reach `listen` as "bind every interface", silently.
+  if (host.trim() === '') throw new Error(`invalid --host ${JSON.stringify(args.host)}`);
   const port = args.port === undefined ? DEFAULT_PORT : Number(args.port);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error(`invalid --port ${JSON.stringify(args.port)}`);
@@ -132,7 +134,7 @@ async function setPassword(auth: AuthStore): Promise<number> {
       return 1;
     }
   }
-  auth.setPassword(password);
+  await auth.setPassword(password);
   process.stdout.write(`Password set in ${databasePath()}. Existing sessions were revoked.\n`);
   return 0;
 }

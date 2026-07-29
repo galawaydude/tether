@@ -93,11 +93,16 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   });
 
   // ── Default deny. A route is reachable only if it opts out explicitly. ──
-  app.addHook('preHandler', async (request, reply) => {
+  // `preParsing`, not `preHandler`: it runs after the cookie plugin's onRequest
+  // hook but before body parsing and schema validation, so an unauthenticated
+  // caller can neither reach the body parser nor tell a real route from an
+  // unmatched one by whether it answers 400 or 401.
+  app.addHook('preParsing', async (request, reply) => {
     if (request.routeOptions.config.public === true) return undefined;
     const token = request.cookies[SESSION_COOKIE];
     if (token !== undefined && auth.validateSession(token)) return undefined;
-    return reply.code(401).send({ error: 'unauthorized' });
+    await reply.code(401).send({ error: 'unauthorized' });
+    return undefined;
   });
 
   // Per-IP failed-login counter. A password on a LAN is otherwise brute-forceable.
@@ -117,7 +122,12 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     return entry.count >= loginMaxFailures ? entry.resetAt : null;
   }
 
-  function recordFailure(ip: string, now: number): void {
+  /**
+   * Counts an attempt as it starts, not its failure once verification returns:
+   * otherwise N simultaneous requests all pass `lockedUntil` at count 0 and the
+   * limit bounds sequential guesses only.
+   */
+  function recordAttempt(ip: string, now: number): void {
     const entry = failures.get(ip);
     if (entry === undefined || entry.resetAt <= now) {
       if (failures.size >= MAX_TRACKED_IPS) {
@@ -153,10 +163,10 @@ export function buildServer(options: ServerOptions): FastifyInstance {
           .send({ error: 'too_many_attempts' });
       }
 
+      recordAttempt(request.ip, now);
       await delay(loginDelayMs);
 
-      if (!auth.verifyPassword(request.body.password)) {
-        recordFailure(request.ip, now);
+      if (!(await auth.verifyPassword(request.body.password))) {
         return reply.code(401).send({ error: 'invalid_credentials' });
       }
 

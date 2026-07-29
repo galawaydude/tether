@@ -10,9 +10,9 @@ import type { ServerOptions } from './server.ts';
 const PASSWORD = 'correct horse battery staple';
 const HOST = 'localhost:8787';
 
-function harness(overrides: Partial<ServerOptions> = {}) {
+async function harness(overrides: Partial<ServerOptions> = {}) {
   const auth = createAuthStore(new DatabaseSync(':memory:'));
-  auth.setPassword(PASSWORD);
+  await auth.setPassword(PASSWORD);
   const app = buildServer({
     auth,
     allowedHosts: defaultAllowedHosts('127.0.0.1'),
@@ -34,7 +34,7 @@ function login(app: ReturnType<typeof buildServer>, password = PASSWORD, headers
 }
 
 test('login with the right password sets a session cookie and opens the door', async (t) => {
-  const { app } = harness();
+  const { app } = await harness();
   t.after(() => app.close());
 
   const res = await login(app);
@@ -52,7 +52,7 @@ test('login with the right password sets a session cookie and opens the door', a
 });
 
 test('login with the wrong password is rejected and sets no cookie', async (t) => {
-  const { app } = harness();
+  const { app } = await harness();
   t.after(() => app.close());
 
   const res = await login(app, 'not the password');
@@ -62,7 +62,7 @@ test('login with the wrong password is rejected and sets no cookie', async (t) =
 });
 
 test('the session cookie is HttpOnly, SameSite=Strict, Path=/ and expiring', async (t) => {
-  const { app } = harness();
+  const { app } = await harness();
   t.after(() => app.close());
 
   const cookie = (await login(app)).cookies[0];
@@ -73,7 +73,7 @@ test('the session cookie is HttpOnly, SameSite=Strict, Path=/ and expiring', asy
 });
 
 test('Secure is set only when the request genuinely arrived over HTTPS', async (t) => {
-  const untrusted = harness();
+  const untrusted = await harness();
   t.after(() => untrusted.app.close());
   // A client can always send X-Forwarded-Proto. With no trusted proxy configured
   // it must not be able to make the cookie Secure (which would strand it on
@@ -81,7 +81,7 @@ test('Secure is set only when the request genuinely arrived over HTTPS', async (
   const spoofed = await login(untrusted.app, PASSWORD, { 'x-forwarded-proto': 'https' });
   assert.equal(spoofed.cookies[0]?.secure, undefined);
 
-  const trusted = harness({ trustedProxies: ['127.0.0.1'] });
+  const trusted = await harness({ trustedProxies: ['127.0.0.1'] });
   t.after(() => trusted.app.close());
   const proxied = await trusted.app.inject({
     method: 'POST',
@@ -95,7 +95,7 @@ test('Secure is set only when the request genuinely arrived over HTTPS', async (
 });
 
 test('every route is denied by default without a valid session', async (t) => {
-  const { app, auth } = harness();
+  const { app, auth } = await harness();
   t.after(() => app.close());
 
   for (const cookie of [undefined, `${SESSION_COOKIE}=nonsense`, `${SESSION_COOKIE}=`]) {
@@ -118,7 +118,7 @@ test('every route is denied by default without a valid session', async (t) => {
 });
 
 test('default-deny reaches routes that do not exist yet', async (t) => {
-  const { app } = harness();
+  const { app } = await harness();
   t.after(() => app.close());
 
   // The guarantee this PR exists to make: a route added later is protected
@@ -142,8 +142,31 @@ test('default-deny reaches routes that do not exist yet', async (t) => {
   assert.equal(rebound.statusCode, 403);
 });
 
+test('default-deny runs before the body is parsed or validated', async (t) => {
+  const { app } = await harness();
+  t.after(() => app.close());
+
+  // A schema-violating body on a real route. A 400 here would be an oracle:
+  // it distinguishes /api/logout from a path that does not exist.
+  const real = await app.inject({
+    method: 'POST',
+    url: '/api/logout',
+    headers: { host: HOST, origin: `http://${HOST}`, 'content-type': 'application/json' },
+    payload: JSON.stringify({ surprise: true }),
+  });
+  assert.equal(real.statusCode, 401);
+
+  const unmatched = await app.inject({
+    method: 'POST',
+    url: '/api/does-not-exist',
+    headers: { host: HOST, origin: `http://${HOST}`, 'content-type': 'application/json' },
+    payload: JSON.stringify({ surprise: true }),
+  });
+  assert.equal(unmatched.statusCode, 401);
+});
+
 test('logout revokes the session server-side and clears the cookie', async (t) => {
-  const { app } = harness();
+  const { app } = await harness();
   t.after(() => app.close());
 
   const token = (await login(app)).cookies[0]?.value;
@@ -160,7 +183,7 @@ test('logout revokes the session server-side and clears the cookie', async (t) =
 });
 
 test('login bodies are validated against the schema', async (t) => {
-  const { app } = harness();
+  const { app } = await harness();
   t.after(() => app.close());
 
   const bad = [
@@ -184,7 +207,7 @@ test('login bodies are validated against the schema', async (t) => {
 });
 
 test('logout rejects a body it does not expect', async (t) => {
-  const { app } = harness();
+  const { app } = await harness();
   t.after(() => app.close());
 
   const token = (await login(app)).cookies[0]?.value;
@@ -203,7 +226,7 @@ test('logout rejects a body it does not expect', async (t) => {
 });
 
 test('a disallowed Host is refused before anything else happens', async (t) => {
-  const { app } = harness();
+  const { app } = await harness();
   t.after(() => app.close());
 
   for (const host of ['attacker.example:8787', 'evil.localhost', 'not a host']) {
@@ -228,7 +251,7 @@ test('a disallowed Host is refused before anything else happens', async (t) => {
 });
 
 test('the Origin truth table is enforced on state-changing requests', async (t) => {
-  const { app } = harness();
+  const { app } = await harness();
   t.after(() => app.close());
 
   const rows: [string | undefined, number][] = [
@@ -250,7 +273,7 @@ test('the Origin truth table is enforced on state-changing requests', async (t) 
 });
 
 test('a foreign Origin does not block safe methods', async (t) => {
-  const { app } = harness();
+  const { app } = await harness();
   t.after(() => app.close());
 
   const token = (await login(app)).cookies[0]?.value;
@@ -265,7 +288,7 @@ test('a foreign Origin does not block safe methods', async (t) => {
 });
 
 test('rate limiting engages after repeated failures from one IP', async (t) => {
-  const { app } = harness({ loginMaxFailures: 3, loginWindowMs: 60_000 });
+  const { app } = await harness({ loginMaxFailures: 3, loginWindowMs: 60_000 });
   t.after(() => app.close());
 
   const attempt = (password: string, ip = '10.0.0.1') =>
@@ -293,8 +316,32 @@ test('rate limiting engages after repeated failures from one IP', async (t) => {
   assert.equal((await attempt(PASSWORD, '10.0.0.2')).statusCode, 200);
 });
 
+test('concurrent attempts from one IP cannot outrun the lockout', async (t) => {
+  const { app } = await harness({ loginMaxFailures: 3, loginWindowMs: 60_000 });
+  t.after(() => app.close());
+
+  // All twelve are in flight before any verification resolves, which is exactly
+  // the case a counter incremented on failure would let through.
+  const codes = (
+    await Promise.all(
+      Array.from({ length: 12 }, () =>
+        app.inject({
+          method: 'POST',
+          url: '/api/login',
+          remoteAddress: '10.0.0.4',
+          headers: { host: HOST, origin: `http://${HOST}` },
+          payload: { password: 'wrong' },
+        }),
+      ),
+    )
+  ).map((res) => res.statusCode);
+
+  assert.equal(codes.filter((c) => c === 401).length, 3, 'no more guesses than the limit');
+  assert.equal(codes.filter((c) => c === 429).length, 9);
+});
+
 test('a successful login clears that IP’s failure counter', async (t) => {
-  const { app } = harness({ loginMaxFailures: 3, loginWindowMs: 60_000 });
+  const { app } = await harness({ loginMaxFailures: 3, loginWindowMs: 60_000 });
   t.after(() => app.close());
 
   const attempt = (password: string) =>
@@ -315,7 +362,7 @@ test('a successful login clears that IP’s failure counter', async (t) => {
 });
 
 test('the fixed login delay applies to every attempt', async (t) => {
-  const { app } = harness({ loginDelayMs: 60 });
+  const { app } = await harness({ loginDelayMs: 60 });
   t.after(() => app.close());
 
   const started = process.hrtime.bigint();

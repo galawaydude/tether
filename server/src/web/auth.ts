@@ -1,5 +1,7 @@
-import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
+import type { BinaryLike, ScryptOptions } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import { promisify } from 'node:util';
 
 /**
  * The single account and its server-side sessions (report §7).
@@ -8,6 +10,13 @@ import type { DatabaseSync } from 'node:sqlite';
  * here is an unauthenticated RCE. This is the one module in M1 that is exempt
  * from Ponytail's minimalism; nothing below is shortened for its own sake.
  */
+
+/**
+ * Derivation runs on the libuv threadpool rather than blocking the event loop:
+ * `/api/login` is the one public route, so a burst of unauthenticated requests
+ * would otherwise stall the whole process for ~70ms each.
+ */
+const derive = promisify<BinaryLike, BinaryLike, number, ScryptOptions, Buffer>(scrypt);
 
 /**
  * scrypt work factor. ~70ms per derivation on the reference machine. `maxmem`
@@ -28,8 +37,8 @@ export type Session = { token: string; expiresAt: number };
 export type AuthStore = {
   hasPassword(): boolean;
   /** Replaces the password and revokes every existing session. */
-  setPassword(password: string): void;
-  verifyPassword(password: string): boolean;
+  setPassword(password: string): Promise<void>;
+  verifyPassword(password: string): Promise<boolean>;
   createSession(now?: number): Session;
   validateSession(token: string, now?: number): boolean;
   revokeSession(token: string): void;
@@ -90,22 +99,22 @@ export function createAuthStore(db: DatabaseSync): AuthStore {
       return readPassword() !== null;
     },
 
-    setPassword(password) {
+    async setPassword(password) {
       if (password.length < MIN_PASSWORD_LENGTH) {
         throw new Error(`password must be at least ${MIN_PASSWORD_LENGTH} characters`);
       }
       const salt = randomBytes(SALT_LEN);
-      const hash = scryptSync(password, salt, KEY_LEN, SCRYPT);
+      const hash = await derive(password, salt, KEY_LEN, SCRYPT);
       upsertPassword.run(salt, hash, SCRYPT.N, SCRYPT.r, SCRYPT.p, Date.now());
       // A password change must invalidate anyone already holding a cookie.
       deleteAllSessions.run();
     },
 
-    verifyPassword(password) {
+    async verifyPassword(password) {
       const row = readPassword();
       if (row === null) return false;
       const stored = Buffer.from(row.hash);
-      const derived = scryptSync(password, Buffer.from(row.salt), stored.length, {
+      const derived = await derive(password, Buffer.from(row.salt), stored.length, {
         N: row.n,
         r: row.r,
         p: row.p,
