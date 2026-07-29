@@ -74,17 +74,30 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   rollback on a failed insert — that both the CLI and the HTTP routes call.
 - **Terminal input is `text` frames plus `key` frames, and the split is
   load-bearing.** Every printable character a user types goes in a `text` frame
-  (`web/src/keys.ts` → `Terminals.text`), never as a tmux key name: tmux's lexer
-  eats a standalone `;`, `{` or `}` argument, so `machine/terminal.ts` routes
-  exactly those — and anything with a newline — through the paste buffer, which
-  reaches tmux on stdin and is never argv. The argv guard in `tmux.ts` is not
-  relaxed for this and must not be; `isSeparatorArgument` is how a caller asks it
-  what it would refuse. The other half is that `xterm.onData` is **not only the
-  keyboard** — it also carries xterm's replies to terminal queries (OSC colour
-  reports, DA, cursor position, focus in/out). `keys.ts` drops every escape
-  sequence it does not recognise as a keystroke, because typing one of those into
-  a pane puts `;rgb:0000/0000/0000` in the agent's prompt. Both are covered by
-  `keys.test.ts` and by `terminal.test.ts` against real tmux.
+  (`web/src/keys.ts` → `Terminals.text`), never as a tmux key name, because tmux's
+  lexer eats some arguments before the command sees them. What it eats is
+  `mangledByLexer` in `server/src/machine/tmux.ts`: a standalone `;`, `{` or `}`,
+  **or any argument ending in `;`**. An exact-match check is not enough and the
+  failure is silent — tmux 3.7b strips a trailing `;`, eats the backslash of a
+  trailing `\;`, and exits 0 either way, so `git status;` loses its `;` with
+  nothing to catch. The rule has exactly one home, behind `checkArgs` and the
+  exported `isSeparatorArgument`; `machine/terminal.ts` asks it, and routes what it
+  flags — plus anything with a line break — through the paste buffer, which reaches
+  tmux on stdin and is never argv. The guard is not relaxed for this and must not
+  be. Its other half is blast radius: a frame the guard refuses is an undeliverable
+  **frame**, not a dead attach, so `web/term-socket.ts` logs, ACKs and drops it and
+  keeps the socket open — only a genuinely gone attach closes with
+  `CLOSE_ATTACH_FAILED`. That is why a stray Alt+`;` costs one keystroke instead of
+  a reconnect and a full replay, and it is the easiest thing here to undo by
+  accident. On the browser side, `xterm.onData` is **not only the keyboard** — it
+  also carries xterm's replies to terminal queries (OSC colour reports, DA, cursor
+  position, focus in/out). `keys.ts` maps the sequences a keyboard really produces,
+  modifier-encoded cursor keys included, and drops every other escape sequence,
+  because typing one of those into a pane puts `;rgb:0000/0000/0000` in the agent's
+  prompt. It also keeps a bracketed paste whole — markers consumed, newlines kept,
+  one `text` frame — so the paste lands as a paste; splitting it submits a pasted
+  prompt line by line. All of it is covered by `keys.test.ts`, `server.test.ts` and
+  `terminal.test.ts` against real tmux.
 - **The browser app is served by two named routes, not a wildcard**
   (`server/src/web/static.ts`). `@fastify/static` is registered with
   `serve: false` purely for `reply.sendFile`; `/` and `/assets/:file` are the only
