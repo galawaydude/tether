@@ -77,6 +77,7 @@ GET    /api/machines/local/sessions/:id
 POST   /api/machines/local/sessions/:id/resume restarts a dead session's conversation
 DELETE /api/machines/local/sessions/:id        kills the tmux session and marks the row dead
 GET    /api/sessions/:id/conversation          the whole conversation, with sequence numbers
+POST   /api/sessions/:id/permission            {"callId": "…", "decision": "allow" | "deny"}
 WS     /api/sessions/:id/conv?since=<seq>      conversation events after `seq`, the last one you hold
 WS     /api/sessions/:name/term                terminal bytes, both ways
 ```
@@ -87,14 +88,19 @@ the terminal — `~/.claude/projects/<slug>/<uuid>.jsonl` for Claude Code,
 append-only NDJSON, which is why they share one tailer and differ only in a
 mapper. Neither file is a public API — see [Known risks](#known-risks).
 
-`conv` also carries two frames that are not records of anything and deliberately
-have no `seq` — a sequence number is a position in the transcript, and neither of
-these comes from it. `{"c":"state","state":"busy"|"idle"|"waiting"}` is the
-session's current state, from the agent's own status file and its hooks.
-`{"c":"pending","e":…}` is a tool call the agent has proposed but not yet written
-down — the one you are being asked to approve; the transcript's own record for
-the same call carries the same `callId` and replaces that card rather than adding
-a second one.
+`conv` also carries three frames that are not records of anything and
+deliberately have no `seq` — a sequence number is a position in the transcript,
+and none of these comes from it.
+`{"c":"state","state":"busy"|"idle"|"waiting"}` is the session's current state,
+from the agent's own status file and its hooks. `{"c":"pending","e":…}` is a tool
+call the agent has proposed but not yet written down; the transcript's own record
+for the same call carries the same `callId` and replaces that card rather than
+adding a second one. A `pending` with a `deadline` is one tether is holding the
+agent on until then, so that card is the one that gets Approve and Deny; without
+it tether is only reporting the proposal.
+`{"c":"answer","callId":…,"outcome":"allow"|"deny"|"timeout"}` says a hold is
+over — sent to every subscriber, so a second phone stops offering buttons on a
+question that has already been answered.
 
 `conv` answers a `since` it cannot replay from memory with `{"c":"refetch"}`,
 which means "fetch the history route again"; it never sends a partial history.

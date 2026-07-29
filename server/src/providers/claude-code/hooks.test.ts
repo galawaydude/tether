@@ -181,7 +181,11 @@ test('an update-only install reconciles its own entry and adds nothing anywhere'
   const reconciled = await installHook({ cwd, stateDir, holdMs: 20_000, updateOnly: true });
 
   assert.deepEqual(reconciled.added, []);
-  assert.deepEqual(reconciled.updated, [...HOOK_EVENTS], 'the entry it owns still follows the hold');
+  assert.deepEqual(
+    reconciled.updated,
+    [...HOOK_EVENTS],
+    'the entry it owns still follows the hold',
+  );
   const hooks = (await settings(cwd))['hooks'] as Record<
     string,
     { hooks: Record<string, unknown>[] }[]
