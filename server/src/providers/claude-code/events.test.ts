@@ -12,7 +12,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
-import { MAX_OUTPUT, mapLines, mapRecord } from './events.ts';
+import { MAX_OUTPUT } from '../cap.ts';
+import { mapLines, mapRecord } from './events.ts';
 import { CAPTURED_VERSION } from './transcript.ts';
 
 function fixture(name: string): string[] {

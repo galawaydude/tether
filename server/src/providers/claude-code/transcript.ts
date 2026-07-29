@@ -1,35 +1,20 @@
 /**
- * Claude Code's transcript file: where it is, and how to follow it.
+ * Claude Code's transcript file: where it is, and how to find the right one.
  *
  * Claude Code appends NDJSON to `~/.claude/projects/<sanitised cwd>/<session
  * uuid>.jsonl`, flushed on a timer — so a read lands mid-write routinely and a
- * trailing partial line is normal, not an error. This module tracks a byte
- * offset and only ever reads forward from it; it never re-reads the file to find
- * what is new.
- *
- * Two rules here are easy to remove by accident:
- *
- * - **The carry is bytes, not a string.** A flush can split a multi-byte UTF-8
- *   glyph across two reads, and decoding each read separately corrupts it
- *   silently. Only complete lines are decoded.
- * - **`fs.watch` is the fast path, not the mechanism.** It is unreliable on
- *   network and container filesystems and silently delivers nothing, so a stat
- *   poll runs alongside it. Losing the watcher costs latency; losing the poll
- *   costs the conversation.
+ * trailing partial line is normal, not an error. Following it is `../tail.ts`,
+ * which both providers share; what is Claude-Code-specific is everything below.
  *
  * Nothing in `providers/` may import from `web/` (report §5).
  */
 
-import { watch } from 'node:fs';
 import { open, readdir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 /** The version this module's fixtures were captured from. See `fixtures/`. */
 export const CAPTURED_VERSION = '2.1.220';
-
-/** How often the fallback poll asks the filesystem what it already told us. */
-export const DEFAULT_POLL_MS = 1000;
 
 /**
  * How much before its session's `createdAt` a transcript's own first record may
@@ -236,101 +221,4 @@ export async function findTranscript(session: {
     return { path: candidate.path, providerSessionId: candidate.providerSessionId };
   }
   return undefined;
-}
-
-export type Tail = { stop: () => Promise<void> };
-
-export type TailOptions = {
-  pollMs?: number;
-  /** Anything that went wrong while reading. Never thrown at the caller. */
-  onError?: (error: unknown) => void;
-};
-
-/**
- * Follow `path`, delivering complete lines as they are appended.
- *
- * Resolves once the file has been read to its current end, so a caller can
- * finish catching up before it starts fanning anything out. The initial read is
- * the same code path as every later one — there is no "load then tail" split to
- * disagree with itself.
- */
-export async function tailLines(
-  path: string,
-  onLines: (lines: string[]) => void,
-  options: TailOptions = {},
-): Promise<Tail> {
-  const handle = await open(path, 'r');
-  const onError = options.onError ?? (() => {});
-  let offset = 0;
-  /** The bytes after the last newline: an incomplete line, held until it is not. */
-  let carry = Buffer.alloc(0);
-  let reading = false;
-  let closed = false;
-
-  async function read(): Promise<void> {
-    if (reading || closed) return;
-    reading = true;
-    try {
-      for (;;) {
-        const { size } = await handle.stat();
-        // `stop()` waits for an in-flight operation to settle before it closes
-        // the handle, so without this the loop resumes onto a closed one and
-        // reports an EBADF that means nothing but "the viewer left".
-        if (closed) return;
-        if (size < offset) {
-          // The file shrank, so it is not the one we were reading. Claude Code
-          // appends and never rewrites, so this is a replaced file; start over
-          // rather than decode a new file at an old offset.
-          offset = 0;
-          carry = Buffer.alloc(0);
-        }
-        if (size <= offset) return;
-
-        const buffer = Buffer.allocUnsafe(size - offset);
-        const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
-        if (closed) return;
-        if (bytesRead === 0) return;
-        offset += bytesRead;
-
-        const data = Buffer.concat([carry, buffer.subarray(0, bytesRead)]);
-        const lines: string[] = [];
-        let start = 0;
-        for (;;) {
-          const end = data.indexOf(0x0a, start);
-          if (end === -1) break;
-          lines.push(data.subarray(start, end).toString('utf8'));
-          start = end + 1;
-        }
-        carry = Buffer.from(data.subarray(start));
-        if (lines.length > 0) onLines(lines);
-      }
-    } finally {
-      reading = false;
-    }
-  }
-
-  const poke = () => void read().catch(onError);
-  await read();
-
-  // Best effort: some filesystems refuse to watch, and the poll below is what
-  // makes that survivable rather than fatal.
-  let watcher: ReturnType<typeof watch> | undefined;
-  try {
-    watcher = watch(path, poke);
-    watcher.on('error', onError);
-  } catch (error) {
-    onError(error);
-  }
-
-  const timer = setInterval(poke, options.pollMs ?? DEFAULT_POLL_MS);
-  timer.unref();
-
-  return {
-    stop: async () => {
-      closed = true;
-      clearInterval(timer);
-      watcher?.close();
-      await handle.close().catch(() => {});
-    },
-  };
 }

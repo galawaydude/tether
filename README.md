@@ -30,7 +30,9 @@ file.
 
 Concretely: authentication, session list with live status, create session,
 conversation view, terminal view, send input, detach, re-attach, and a UI that is
-genuinely usable one-handed on a phone. Claude Code is the only provider in M1.
+genuinely usable one-handed on a phone. Claude Code is the only provider in M1;
+OpenAI Codex is the second, and is what turned "provider-neutral" from an
+intention into a fact.
 
 Out of scope for M1: other providers, multiple machines, multi-user accounts, any
 hosted component, push notifications, TLS inside tether, git worktree isolation,
@@ -63,11 +65,19 @@ WS     /api/sessions/:id/conv?since=<seq>      conversation events after `seq`, 
 WS     /api/sessions/:name/term                terminal bytes, both ways
 ```
 
-The conversation is read from Claude Code's own transcript file rather than from
-the terminal. That file is **internal to a tool that ships frequently, not a
-public API**: a release can change it, and when it does the conversation view
-loses detail — never the session, and never the terminal, which depends on none
-of it and is always correct.
+The conversation is read from the provider's own transcript file rather than from
+the terminal — `~/.claude/projects/<slug>/<uuid>.jsonl` for Claude Code,
+`~/.codex/sessions/<Y>/<M>/<D>/rollout-<ts>-<uuid>.jsonl` for Codex. Both are
+append-only NDJSON, which is why they share one tailer and differ only in a
+mapper. Those files are **internal to tools that ship frequently, not public
+APIs**: a release can change one, and when it does the conversation view loses
+detail — never the session, and never the terminal, which depends on none of it
+and is always correct.
+
+`conv` also carries `{"c":"state","state":"busy"|"idle"|"waiting"}`, which is the
+session's current state rather than a record of anything. It deliberately has no
+`seq`: a sequence number is a position in the transcript, and some of the evidence
+for `waiting` does not come from the transcript at all.
 
 `conv` answers a `since` it cannot replay from memory with `{"c":"refetch"}`,
 which means "fetch the history route again"; it never sends a partial history.
@@ -87,8 +97,9 @@ npx tether kill 1a2b3c4d          # any unambiguous id prefix
 npx tether resume 1a2b3c4d        # bring a dead session's conversation back
 ```
 
-`tether new` takes `--title` and, after `--`, a command to run instead of the
-provider's own (`npx tether new ~/src/project -- /bin/sh`).
+`tether new` takes `--title`, `--provider` (`claude-code` or `codex`) and, after
+`--`, a command to run instead of the provider's own
+(`npx tether new ~/src/project -- /bin/sh`).
 
 `ls`, `kill` and `resume` reconcile the registry against real tmux first, so a
 session that died while tether was not running shows as **dead** rather than live.
@@ -96,10 +107,41 @@ Dead rows are kept, not deleted: they are what _Resume_ works from.
 
 A reboot destroys every tmux session, so `resume` is how a machine restart stops
 being data loss. It starts the provider's own resume (`claude --resume <id>`) in a
-fresh tmux session under the same registry row, so it is the same conversation —
+fresh tmux session under the same registry row (`codex resume <id>` for Codex), so
+it is the same conversation —
 the terminal scrollback is genuinely gone, the conversation is not. A session that
 died before its first message has no conversation to restore; `resume` says so and
 refuses rather than handing back a fresh session dressed up as the old one.
+
+## Codex, and its optional hook
+
+`npx tether new ~/src/project --provider codex` starts Codex instead. Everything
+works: the conversation view, the terminal, session state while it is working and
+when it is done, and resume after a reboot.
+
+One thing needs your permission. tether cannot tell that a Codex session is
+**waiting for you** to answer a permission prompt, because Codex does not write
+that anywhere — the only way to know is a hook, and Codex trust-gates hooks. So:
+
+```sh
+npx tether codex-hook            # what is registered right now; changes nothing
+npx tether codex-hook install    # explains what it adds, then adds it
+npx tether codex-hook remove     # takes it back out
+```
+
+`install` prints exactly what it is about to write, and why, **before** it writes
+anything — so that when Codex asks you to trust the hook, you are answering a
+question you already understand. It adds one entry, appended after your existing
+ones, backs up your `hooks.json` first, and never changes anything else in it.
+The hook it registers is a script under `~/.local/state/tether/`; it appends one
+JSON line per event to a log in that same directory and does nothing else.
+
+**Declining is a supported answer, not a broken setup.** You lose the live
+_waiting for you_ badge for Codex sessions and nothing else, and tether will
+neither nag you nor retry. Codex also needs `hooks = true` under `[features]` in
+`~/.codex/config.toml` before it runs any hook at all; tether tells you so and
+leaves that file to you, since it is also where Codex records what you have
+trusted.
 
 ## Access and security
 
@@ -199,6 +241,18 @@ Inside `server/src/`, `web/` is the HTTP and WebSocket layer and `machine/` (fro
 PR #2) drives tmux. `machine/` and `providers/` never import from `web/` — that
 one rule is what makes the eventual remote-agent split a split rather than a
 rewrite.
+
+`providers/` holds one directory per provider — `claude-code/` and `codex/` —
+plus the two files they genuinely share (`tail.ts`, which follows an append-only
+file, and `cap.ts`, which bounds what a card may carry). There is no `Provider`
+interface, registry or plugin loader: adding the second provider cost two
+directories and one `switch`, which is smaller than the abstraction that would
+have been designed to avoid it and cannot be wrong about a provider nobody has
+built yet.
+
+Neither provider's tests ever run a real agent — that would need real credentials
+and cost money per CI run. Both are driven from captured fixtures, with the
+provider version recorded next to them.
 
 `shared/` is types only and emits declarations, no JavaScript. Import from it
 with `import type` — `verbatimModuleSyntax` enforces this.

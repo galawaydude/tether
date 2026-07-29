@@ -14,17 +14,21 @@
  */
 
 import type { ConversationEvent, ServerFrame } from '@tether/shared';
-import { readFile } from 'node:fs/promises';
+import { mkdir, open, readFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 
-import { mapLines } from '../providers/claude-code/events.ts';
-import {
-  findTranscript,
-  tailLines,
-  type StartMemo,
-  type Tail,
-} from '../providers/claude-code/transcript.ts';
+import { stateDir as defaultStateDir } from '../db.ts';
+import { mapLines as mapClaudeLines } from '../providers/claude-code/events.ts';
+import { findTranscript, type StartMemo } from '../providers/claude-code/transcript.ts';
+import { mapLines as mapCodexLines } from '../providers/codex/events.ts';
+import { hookLogPath } from '../providers/codex/hooks.ts';
+import { findRollout } from '../providers/codex/rollout.ts';
+import { CODEX, codexHome } from '../providers/codex/spawn.ts';
+import { CodexStatus } from '../providers/codex/status.ts';
+import { tailLines, type Tail } from '../providers/tail.ts';
 import { claimedProviderSessionIds, setProviderSessionId, type Session } from './registry.ts';
+import { DEFAULT_SOCKET, listPanes } from './tmux.ts';
 
 /**
  * How many events a reconnecting client can have missed and still be caught up
@@ -51,8 +55,29 @@ export type ConversationsOptions = {
   pollMs?: number;
   /** Home directory to look for `~/.claude/projects` under. Tests point it away. */
   home?: string;
+  /** Codex's own home. Defaults to what Codex itself would read. */
+  codexHome?: string;
+  /** Where tether's Codex hook writes. Defaults to tether's state directory. */
+  stateDir?: string;
+  /** tmux socket, for the pane pid a Codex `SessionStart` is joined by. */
+  socket?: string | undefined;
   warn?: (message: string) => void;
 };
+
+type MapLines = (
+  lines: readonly string[],
+  warn?: (message: string) => void,
+) => { events: ConversationEvent[]; title?: string; version?: string };
+
+/**
+ * Which mapper reads this session's file. Two providers, one switch — no
+ * registry, no interface, no factory (report §4). A provider tether does not
+ * know is read as Claude Code, which is the only thing it can be: the column is
+ * written by `startSession`, which refuses an unknown provider outright.
+ */
+function mapperFor(provider: string): MapLines {
+  return provider === CODEX ? mapCodexLines : mapClaudeLines;
+}
 
 /** Session ids inside a warning; folded out so the key is the complaint itself. */
 const ID_IN_MESSAGE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
@@ -88,6 +113,11 @@ export function stderrWarn(): (message: string) => void {
   };
 }
 
+function stateFrame(status: CodexStatus): ServerFrame {
+  const detail = status.detail;
+  return { c: 'state', state: status.state, ...(detail === undefined ? {} : { detail }) };
+}
+
 type Live = {
   refs: number;
   seq: number;
@@ -98,6 +128,9 @@ type Live = {
   /** Discovery's memory, so its once-a-second retry is not a re-read. */
   memo: StartMemo;
   tailer?: Tail | undefined;
+  /** Codex only: the hook log, and the fold that turns it into a state. */
+  status?: CodexStatus | undefined;
+  hookTailer?: Tail | undefined;
   retry?: NodeJS.Timeout | undefined;
   stopped: boolean;
 };
@@ -118,24 +151,59 @@ export class Conversations {
     this.#warnTo(message);
   }
 
+  /**
+   * The tmux pane's pid, which is the provider process's own.
+   *
+   * Only asked for while a Codex session has no `provider_session_id`: it is the
+   * join between a `SessionStart` hook and the row that spawned it, and once the
+   * row is back-filled nothing needs it again. A tmux that cannot be reached is
+   * not an error here — discovery falls through to identifying the rollout by
+   * its own `session_meta`, which is also the path a declined hook takes.
+   */
+  async #panePid(session: Session): Promise<number | undefined> {
+    const panes = await listPanes(this.#options.socket ?? DEFAULT_SOCKET).catch(() => []);
+    return panes.find((pane) => pane.session === session.tmuxName)?.pid;
+  }
+
   async #find(session: Session, memo?: StartMemo) {
-    const found = await findTranscript({
-      cwd: session.cwd,
-      createdAt: session.createdAt,
-      providerSessionId: session.providerSessionId,
-      // Which transcripts are spoken for is the registry's to know and this
-      // class's to pass on — `providers/` stays clear of the database.
-      claimed: claimedProviderSessionIds(this.#db, session.id),
-      ...(memo === undefined ? {} : { memo }),
-      ...(this.#options.home === undefined ? {} : { home: this.#options.home }),
-    });
-    // Back-fill the provisional row: the transcript's own name is the provider's
-    // session id, so the directory scan happens once per session and PR #12 has
-    // the id it needs to resume.
+    const claimed = claimedProviderSessionIds(this.#db, session.id);
+    const found =
+      session.provider === CODEX
+        ? await findRollout({
+            cwd: session.cwd,
+            createdAt: session.createdAt,
+            providerSessionId: session.providerSessionId,
+            codexHome: this.#codexHome(),
+            stateDir: this.#stateDir(),
+            ...(session.providerSessionId == null ? { panePid: await this.#panePid(session) } : {}),
+            claimed,
+          })
+        : await findTranscript({
+            cwd: session.cwd,
+            createdAt: session.createdAt,
+            providerSessionId: session.providerSessionId,
+            // Which transcripts are spoken for is the registry's to know and
+            // this class's to pass on — `providers/` stays clear of the database.
+            claimed,
+            ...(memo === undefined ? {} : { memo }),
+            ...(this.#options.home === undefined ? {} : { home: this.#options.home }),
+          });
+    // Back-fill the provisional row: for Claude Code the transcript's own name is
+    // the provider's session id, and for Codex it comes from the `SessionStart`
+    // hook or from the rollout's `session_meta`. Either way the scan happens once
+    // per session, and `resumeSession` then has the id it needs.
     if (found !== undefined && session.providerSessionId == null) {
       setProviderSessionId(this.#db, session.id, found.providerSessionId);
     }
     return found;
+  }
+
+  #codexHome(): string {
+    return this.#options.codexHome ?? codexHome();
+  }
+
+  #stateDir(): string {
+    return this.#options.stateDir ?? defaultStateDir();
   }
 
   /**
@@ -157,7 +225,7 @@ export class Conversations {
     const lines = text.split('\n');
     // A file being appended to right now ends mid-line; that line is not there yet.
     if (!text.endsWith('\n')) lines.pop();
-    const mapped = mapLines(lines, (message) => this.#warn(message));
+    const mapped = mapperFor(session.provider)(lines, (message) => this.#warn(message));
     return {
       seq: mapped.events.length,
       events: mapped.events.map((e, index) => ({ seq: index + 1, e })),
@@ -191,6 +259,9 @@ export class Conversations {
         if (entry.seq > since) send({ c: 'conv', seq: entry.seq, e: entry.e });
       }
     }
+    // State is not replayed and not numbered — it is the latest answer, so a
+    // client that has just arrived gets it once, here, and then on every change.
+    if (live.status !== undefined) send(stateFrame(live.status));
 
     live.subscribers.add(send);
     let released = false;
@@ -219,6 +290,7 @@ export class Conversations {
       subscribers: new Set(),
       ready: Promise.resolve(),
       memo: new Map(),
+      ...(session.provider === CODEX ? { status: new CodexStatus() } : {}),
       stopped: false,
     };
     this.#live.set(session.id, live);
@@ -244,23 +316,66 @@ export class Conversations {
       return;
     }
 
-    live.tailer = await tailLines(found.path, (lines) => this.#ingest(live, lines), {
+    const map = mapperFor(session.provider);
+    live.tailer = await tailLines(found.path, (lines) => this.#ingest(live, map, lines), {
       ...(this.#options.pollMs === undefined ? {} : { pollMs: this.#options.pollMs }),
       onError: (error) => this.#warn(`transcript tail failed: ${String(error)}`),
     }).catch((error: unknown) => {
       this.#warn(`cannot follow ${found.path}: ${String(error)}`);
       return undefined;
     });
+
+    // The hook log. It is tether's own file in tether's own state directory, so
+    // it is created empty rather than waited for: the hook may not have fired
+    // yet, may never fire because the user declined it, or may be installed
+    // while this session is already running — and an empty file being followed
+    // handles all three without a second retry loop. Nothing warns, because a
+    // hook that is not there is a supported configuration and not a fault: it
+    // costs the `waiting` badge and nothing else.
+    if (live.status !== undefined && !live.stopped) {
+      const status = live.status;
+      const path = hookLogPath(this.#stateDir(), found.providerSessionId);
+      live.hookTailer = await mkdir(dirname(path), { recursive: true, mode: 0o700 })
+        .then(() => open(path, 'a', 0o600))
+        .then((handle) => handle.close())
+        .then(() =>
+          tailLines(path, (lines) => this.#fold(live, status, lines), {
+            ...(this.#options.pollMs === undefined ? {} : { pollMs: this.#options.pollMs }),
+            onError: () => {},
+          }),
+        )
+        .catch(() => undefined);
+    }
   }
 
-  #ingest(live: Live, lines: readonly string[]): void {
-    for (const e of mapLines(lines, (message) => this.#warn(message)).events) {
+  #ingest(live: Live, map: MapLines, lines: readonly string[]): void {
+    // The rollout carries `task_started`/`task_complete` as well as conversation,
+    // so a Codex session's `busy` and `idle` come from the same lines the events
+    // do — which is what makes declining the hook cost only the `waiting` badge.
+    if (live.status !== undefined) this.#fold(live, live.status, lines);
+    for (const e of map(lines, (message) => this.#warn(message)).events) {
       live.seq += 1;
       const entry = { seq: live.seq, e };
       live.tail.push(entry);
       if (live.tail.length > TAIL_EVENTS) live.tail.shift();
       for (const send of live.subscribers) send({ c: 'conv', seq: entry.seq, e });
     }
+  }
+
+  /** Records of either vocabulary through the status fold, announced if it moved. */
+  #fold(live: Live, status: CodexStatus, lines: readonly string[]): void {
+    let changed = false;
+    for (const line of lines) {
+      if (line.trim() === '') continue;
+      try {
+        if (status.apply(JSON.parse(line))) changed = true;
+      } catch {
+        // Not JSON: the same truncated write `map` reports. One warning is enough.
+      }
+    }
+    if (!changed) return;
+    const frame = stateFrame(status);
+    for (const send of live.subscribers) send(frame);
   }
 
   async #close(id: string): Promise<void> {
@@ -271,5 +386,6 @@ export class Conversations {
     if (live.retry !== undefined) clearTimeout(live.retry);
     await live.ready.catch(() => {});
     await live.tailer?.stop();
+    await live.hookTailer?.stop();
   }
 }

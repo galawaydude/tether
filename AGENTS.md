@@ -7,7 +7,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 The product spec, stack rationale and the ordered PR breakdown for Milestone 1 live outside
 this repo at `/home/galawaydude/Documents/Projects/firstmate/data/tether-arch/report.md`.
 It is the result of verified empirical work — do not re-litigate the stack choices from it.
-`README.md` carries the parts a user needs; the report carries the reasoning.
+The Codex provider has its own empirical study next to it at
+`../tether-codex-spike/report.md`, with the binding hook-install decision in
+`../tether-codex-spike/decision-codex-hook-trust-install.md`.
+`README.md` carries the parts a user needs; the reports carry the reasoning.
 
 ## Commands and layout
 
@@ -134,21 +137,58 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   that plugin's `onRoute` hook exists; register it earlier and it silently stays a plain
   HTTP route. The Origin guard needed extending by hand, since an upgrade is a `GET` and so
   is not state-changing, and a cross-origin page's upgrade carries the victim's cookie.
-- **The conversation is read from Claude Code's transcript, and parsed
-  tolerantly on purpose.** `providers/claude-code/transcript.ts` finds and tails
-  `~/.claude/projects/<sanitised cwd>/<provider session id>.jsonl`; `events.ts`
-  maps records to `ConversationEvent`. The format is internal to a tool that
-  ships weekly, so **an unknown record type, block or shape is warned about and
-  ignored, never thrown** — a mapper that throws loses the user's session, and
-  the terminal is a complete fallback for anything dropped. Two things the tailer
-  must keep: it reads forward from a byte offset (never re-reads the file) and
-  its carry is **bytes**, because a flush lands mid-line and mid-glyph routinely.
-  `fs.watch` is only the fast path; the 1s stat poll is what makes it work on
-  filesystems where the watcher silently delivers nothing. Fixtures in
-  `providers/claude-code/fixtures/` are captured from a real session with the
-  version recorded — **CI must never run a live agent** (real credentials, money
-  per run). Verified while capturing them and worth knowing: `thinking` blocks
-  reach disk with an **empty** `thinking` string, so the event is presence-only.
+- **The conversation is read from the provider's own transcript, and parsed
+  tolerantly on purpose.** Both providers append NDJSON, so `providers/tail.ts`
+  is shared and only the paths and record vocabularies differ:
+  `claude-code/transcript.ts` finds `~/.claude/projects/<sanitised cwd>/<id>.jsonl`,
+  `codex/rollout.ts` finds `$CODEX_HOME/sessions/<Y>/<M>/<D>/rollout-<ts>-<uuid>.jsonl`,
+  and each directory's `events.ts` maps records to `ConversationEvent`. These
+  formats are internal to tools that ship weekly, so **an unknown record type,
+  block or shape is warned about and ignored, never thrown** — a mapper that
+  throws loses the user's session, and the terminal is a complete fallback for
+  anything dropped. Two things the tailer must keep: it reads forward from a byte
+  offset (never re-reads the file) and its carry is **bytes**, because a flush
+  lands mid-line and mid-glyph routinely. `fs.watch` is only the fast path; the 1s
+  stat poll is what makes it work on filesystems where the watcher silently
+  delivers nothing. Fixtures in each `fixtures/` directory are captured from a
+  real session with the version recorded — **CI must never run a live agent**
+  (real credentials, money per run). Verified while capturing them: Claude Code's
+  `thinking` blocks reach disk with an **empty** `thinking` string and Codex's
+  `reasoning` carries only `encrypted_content`, so the event is presence-only for
+  both.
+
+- **Two providers, one `switch`, and no `Provider` interface.** `providers/` has
+  one directory each (`claude-code/`, `codex/`) plus what they genuinely share —
+  `tail.ts` and `cap.ts`. `machine/sessions.ts` holds the argv per provider and
+  `machine/conversations.ts` picks the mapper; that is the whole seam, and report
+  §4 chose it over an abstraction on purpose. Adding a third provider is a third
+  directory, not a refactor. Codex specifics worth not rediscovering: it writes
+  **nothing at all** until the first user message (hence the nullable
+  `provider_session_id`), `event_msg/*` records win over the `response_item/*`
+  they duplicate, `agent_message.phase` distinguishes commentary from the final
+  answer and dropping it makes the view look duplicated, and there is no
+  `isError` — success has to be _stated_ (`Process exited with code 0` /
+  `Exit code: 0`), because a sandbox refusal is prose with no code in it at all.
+
+- **`hooks.json` is a file tether does not own, and the trust gate is not
+  tether's to bypass.** `providers/codex/hooks.ts` writes one entry, **appended**
+  (Codex keys its trust hashes by group index, so inserting re-prompts the user
+  for hooks they already trusted), after backing the file up, and refuses outright
+  rather than rewriting a `hooks.json` whose shape it does not recognise.
+  `--dangerously-bypass-hook-trust` must appear nowhere — not in code, not in
+  docs, not as a fallback; that is a captain's decision, not a preference. The
+  hook buys exactly one thing, the live `waiting` badge: `busy` and `idle` come
+  from the rollout, so **declining is a supported configuration** and nothing may
+  warn, retry or nag about it. `PermissionRequest` carries no `tool_use_id`, so
+  `status.ts` correlates it to the preceding `PreToolUse` — a correlation, not a
+  key, and the fixtures contain the case that proves it (two attempts, identical
+  `tool_input`, different ids).
+
+- **`{c:'state'}` is not a `conv` frame, and must not become one.** `seq` is a
+  position in the mapped transcript; the evidence for `waiting` arrives by hook,
+  outside it. Giving state a `seq` makes the history route and a live tailer
+  disagree about which event is number 12. It is also why `status` is the one
+  `ConversationEvent` variant with no `id`.
 - **`machine/conversations.ts` has a cursor and `machine/terminal.ts` does not.**
   The asymmetry is deliberate: tmux re-derives the terminal exactly on every
   attach, conversation events are re-derivable from nothing the client holds.

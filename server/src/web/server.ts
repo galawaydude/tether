@@ -229,7 +229,11 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     allowedRoots: options.allowedRoots,
   });
 
-  const conversations = options.conversations ?? new Conversations(options.db);
+  // The same socket the session routes drive: a Codex `SessionStart` is joined
+  // to its registry row by the tmux pane's pid, so discovery has to be asking
+  // the same tmux the sessions were started on.
+  const conversations =
+    options.conversations ?? new Conversations(options.db, { socket: options.socket });
   registerConversationRoutes(app, options.db, conversations);
 
   // In `after`, not inline: `@fastify/websocket` upgrades a route through an
