@@ -44,8 +44,10 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   means the tmux on `PATH` is too old, not that the argv was wrong.
 - **Tests run straight from TypeScript** via `node --test` and Node's built-in type
   stripping. There is no test build step; relative imports carry the `.ts` extension.
-- **HTTP routes are default-deny.** A `preHandler` in `server/src/web/server.ts` rejects
+- **HTTP routes are default-deny.** A `preParsing` hook in `server/src/web/server.ts` rejects
   every request without a valid session unless the route sets `config: { public: true }`.
+  It runs before body parsing, so an unauthenticated caller reaches neither the body parser
+  nor a 404 that would tell it which paths exist.
   Adding a route therefore protects it automatically — and marking one public is a security
   decision, not a convenience. Reaching any route is equivalent to a shell on the machine.
   This covers HTTP only: the WebSocket upgrade in PR #6 must repeat the cookie, `Host` and
