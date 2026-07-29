@@ -34,7 +34,7 @@
  * Nothing in `providers/` may import from `web/` (report §5).
  */
 
-import { chmod, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 /**
@@ -314,6 +314,13 @@ export type HookStatus = {
   /** Events tether's entry is registered for. */
   installed: string[];
   /**
+   * Why the file could not be read, when it could not be — a trailing comma, a
+   * top level that is not an object, a group of a shape tether does not know.
+   * `install` refuses for exactly this reason, so `status` is where a user
+   * should find it out rather than reading `not installed` and trying anyway.
+   */
+  unreadable?: string;
+  /**
    * Whether `config.toml` has `features.hooks = true`. Codex runs no hooks at
    * all without it, and tether does not write to `config.toml`: it is TOML that
    * also holds the trust state, and the user turning the feature on themselves
@@ -329,7 +336,11 @@ export async function hookStatus(options: {
 }): Promise<HookStatus> {
   const path = hooksJsonPath(options.codexHome);
   const shim = hookShimPath(options.stateDir);
-  const file = await readHooksFile(path).catch(() => ({}) as HooksFile);
+  let unreadable: string | undefined;
+  const file = await readHooksFile(path).catch((error: unknown) => {
+    unreadable = error instanceof Error ? error.message : String(error);
+    return {} as HooksFile;
+  });
   const installed = Object.entries(file.hooks ?? {})
     .filter(([, groups]) => groups.some((g) => g.hooks.some((h) => isOurs(h, shim))))
     .map(([event]) => event);
@@ -337,6 +348,7 @@ export async function hookStatus(options: {
     hooksPath: path,
     shimPath: shim,
     installed,
+    ...(unreadable === undefined ? {} : { unreadable }),
     featureEnabled: await featureEnabled(options.codexHome),
   };
 }
@@ -367,15 +379,26 @@ export type HookRecord = Record<string, unknown> & { at?: number; ppid?: number 
  * with no bookkeeping, nothing to go stale after a `SIGKILL` and no pid-reuse
  * window — the pid is observed live, at the moment the hook runs.
  *
- * Reading whole files rather than tailing them: one line each, read once per
- * discovery attempt, only for a session that has no `provider_session_id` yet.
+ * `notBefore` is an mtime floor in epoch milliseconds, and it is what keeps this
+ * cheap. The logs are one per Codex session, never pruned, and they grow with
+ * every tool call — while discovery retries this once a second for as long as a
+ * new session sits waiting for its first prompt. A log last written before the
+ * floor cannot hold the `SessionStart` of a session that began after it, so it
+ * is stat'd and never opened; without the floor a user with a year of Codex
+ * sessions re-reads all of them, every second. Omitting it reads everything,
+ * which is what a caller with no session to bound it by wants.
  */
-export async function sessionStarts(stateDir: string): Promise<HookRecord[]> {
+export async function sessionStarts(
+  stateDir: string,
+  notBefore = -Infinity,
+): Promise<HookRecord[]> {
   const dir = hookLogDir(stateDir);
   const names = await readdir(dir).catch(() => []);
   const found: HookRecord[] = [];
   for (const name of names) {
     if (!name.endsWith('.ndjson')) continue;
+    const info = await stat(join(dir, name)).catch(() => undefined);
+    if (info !== undefined && info.mtimeMs < notBefore) continue;
     const text = await readFile(join(dir, name), 'utf8').catch(() => '');
     for (const line of text.split('\n')) {
       if (line.trim() === '' || !line.includes('SessionStart')) continue;

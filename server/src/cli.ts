@@ -120,6 +120,9 @@ async function codexHookCommand(argv: readonly string[]): Promise<number> {
         `hooks file:  ${before.hooksPath}`,
         `hook script: ${before.shimPath}`,
         `registered:  ${before.installed.length > 0 ? before.installed.join(', ') : 'not installed'}`,
+        // The refusal, said here rather than saved for the install that will
+        // hit it: `not installed` on its own would be the wrong explanation.
+        ...(before.unreadable === undefined ? [] : [`problem:     ${before.unreadable}`]),
         `features.hooks: ${before.featureEnabled ? 'true' : 'false — Codex will not run any hook until this is set'}`,
         '',
         'Without the hook tether still shows the conversation, the terminal, and',

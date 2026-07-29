@@ -64,9 +64,17 @@ export type ConversationsOptions = {
   warn?: (message: string) => void;
 };
 
+/**
+ * `from` is the transcript line number the batch starts at. Only the Codex
+ * mapper reads it — it has no record ids of its own and synthesizes them from
+ * the line number, which has to be the file's rather than the batch's or a
+ * refetch renumbers everything the client holds. Claude Code's mapper takes ids
+ * from the records themselves and ignores it.
+ */
 type MapLines = (
   lines: readonly string[],
   warn?: (message: string) => void,
+  from?: number,
 ) => { events: ConversationEvent[]; title?: string; version?: string };
 
 /**
@@ -121,6 +129,8 @@ function stateFrame(status: CodexStatus): ServerFrame {
 type Live = {
   refs: number;
   seq: number;
+  /** Transcript lines the tailer has delivered, which is where the next batch starts. */
+  lines: number;
   tail: SeqEvent[];
   subscribers: Set<Send>;
   /** Resolved once the transcript has been read to its end at least once. */
@@ -286,6 +296,7 @@ export class Conversations {
     const live: Live = {
       refs: 0,
       seq: 0,
+      lines: 0,
       tail: [],
       subscribers: new Set(),
       ready: Promise.resolve(),
@@ -353,7 +364,9 @@ export class Conversations {
     // so a Codex session's `busy` and `idle` come from the same lines the events
     // do — which is what makes declining the hook cost only the `waiting` badge.
     if (live.status !== undefined) this.#fold(live, live.status, lines);
-    for (const e of map(lines, (message) => this.#warn(message)).events) {
+    const from = live.lines;
+    live.lines += lines.length;
+    for (const e of map(lines, (message) => this.#warn(message), from).events) {
       live.seq += 1;
       const entry = { seq: live.seq, e };
       live.tail.push(entry);

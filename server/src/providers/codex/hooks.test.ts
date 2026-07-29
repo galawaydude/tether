@@ -9,7 +9,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
@@ -168,6 +168,12 @@ test('a hooks.json tether cannot make sense of is refused, not rewritten', async
       [],
       'and no backup, no temp file, nothing else added',
     );
+
+    // And `status` says so rather than reporting `not installed`, which would be
+    // the wrong explanation for why the install the user tries next refuses.
+    const status = await hookStatus({ codexHome, stateDir });
+    assert.match(status.unreadable ?? '', /refusing to change .*hooks\.json/);
+    assert.equal(await readFile(hooksJsonPath(codexHome), 'utf8'), bad, 'status changes nothing');
   }
 });
 
@@ -198,7 +204,9 @@ test('status reports what is registered and whether Codex will run it at all', a
 
   assert.deepEqual((await hookStatus({ codexHome, stateDir })).installed, []);
   await installHook({ codexHome, stateDir });
-  assert.deepEqual((await hookStatus({ codexHome, stateDir })).installed, [...HOOK_EVENTS]);
+  const status = await hookStatus({ codexHome, stateDir });
+  assert.deepEqual(status.installed, [...HOOK_EVENTS]);
+  assert.equal(status.unreadable, undefined, 'a file tether can read has nothing to report');
 
   // `features.hooks = true` is the user's to set: tether does not write TOML,
   // and that file also holds the trust hashes.
@@ -267,4 +275,16 @@ test('the SessionStart join reads back what the shim wrote', async (t) => {
     'newest first, because that is the session a pane is running',
   );
   assert.deepEqual(new Set(starts.map((r) => r['ppid'])), new Set([process.pid]));
+
+  // The logs are one per Codex session and never pruned, so a caller with a
+  // session to bound it by says so: an untouched log cannot hold the
+  // `SessionStart` of a session that began after it, and discovery retries this
+  // once a second while a new session waits for its first prompt.
+  const old = new Date(Date.now() - 60 * 60_000);
+  await utimes(hookLogPath(stateDir, ids[0]!), old, old);
+  assert.deepEqual(
+    (await sessionStarts(stateDir, Date.now() - 5 * 60_000)).map((r) => r['session_id']),
+    [ids[1]],
+    'the stale log is stat’d and never opened',
+  );
 });

@@ -44,6 +44,11 @@ const START_SLACK_MS = 10_000;
  * last, so anything below this floor would fail the `session_meta` test anyway;
  * it can only skip reads that were going to be rejected. Deliberately generous:
  * this session's own rollout is being appended to while the search runs.
+ *
+ * It is also the floor on which *day directories* are walked at all, which is
+ * the same bound one level up: a rollout below the floor is in a day directory
+ * below the floor, and discovery retries once a second for as long as a new
+ * session waits for its first prompt.
  */
 const STALE_MTIME_MS = 5 * 60_000;
 
@@ -68,13 +73,59 @@ export function rolloutSessionId(path: string): string | undefined {
   return match?.[1];
 }
 
-/** Every `rollout-*.jsonl` under `$CODEX_HOME/sessions`, at any depth. */
-async function rolloutFiles(codexHome: string): Promise<string[]> {
-  const root = sessionsDir(codexHome);
-  const names = await readdir(root, { recursive: true }).catch(() => [] as string[]);
-  return names
-    .filter((name) => name.endsWith('.jsonl') && name.includes('rollout-'))
-    .map((name) => join(root, name));
+/** Codex files a rollout under `sessions/<Y>/<M>/<D>`: three levels of directory. */
+const DAY_DEPTH = 3;
+
+/** The `<Y>/<M>/<D>` a rollout begun at `at` is filed under — local time, as Codex names them. */
+function dayKey(at: number): string {
+  const when = new Date(at);
+  const pad = (part: number): string => String(part).padStart(2, '0');
+  return `${when.getFullYear()}/${pad(when.getMonth() + 1)}/${pad(when.getDate())}`;
+}
+
+/**
+ * The day directories under `$CODEX_HOME/sessions`, newest first.
+ *
+ * Zero-padded `<Y>`, `<M>` and `<D>` sort lexicographically in the order they
+ * sort chronologically, so descending name order is descending date order —
+ * which is what lets a caller looking for one file stop at the first hit instead
+ * of walking a year of history, and what makes `notBefore` a `break` rather than
+ * a filter: the first name below the floor puts every later name below it too.
+ */
+async function dayDirs(codexHome: string, notBefore?: string): Promise<string[]> {
+  let level = [{ path: sessionsDir(codexHome), key: '' }];
+  for (let depth = 0; depth < DAY_DEPTH; depth += 1) {
+    const next: typeof level = [];
+    for (const dir of level) {
+      const names = await readdir(dir.path, { withFileTypes: true })
+        .then((entries) =>
+          entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name),
+        )
+        .catch(() => [] as string[]);
+      names.sort().reverse();
+      for (const name of names) {
+        const key = dir.key === '' ? name : `${dir.key}/${name}`;
+        if (notBefore !== undefined && key < notBefore.slice(0, key.length)) break;
+        next.push({ path: join(dir.path, name), key });
+      }
+    }
+    level = next;
+  }
+  return level.map((dir) => dir.path);
+}
+
+/**
+ * Every `rollout-*.jsonl` under `$CODEX_HOME/sessions`, newest day first and
+ * lazily: a caller that wants one file pays for the days it had to look through
+ * to find it, and nothing is stat'd or opened on the way.
+ */
+async function* rolloutFiles(codexHome: string, notBefore?: string): AsyncGenerator<string> {
+  for (const dir of await dayDirs(codexHome, notBefore)) {
+    const names = await readdir(dir).catch(() => []);
+    for (const name of names) {
+      if (name.startsWith('rollout-') && name.endsWith('.jsonl')) yield join(dir, name);
+    }
+  }
 }
 
 /**
@@ -125,13 +176,21 @@ async function sessionMeta(path: string): Promise<{ began: number; cwd: string }
   }
 }
 
-/** The rollout for a session id tether already knows, without reading anything. */
+/**
+ * The rollout for a session id tether already knows, without reading anything.
+ *
+ * Unbounded by date on purpose, unlike the discovery scan below: a session
+ * revived after a reboot keeps the rollout it was started with, however long ago
+ * that was, and answering "not found" for it would cost the user the
+ * conversation it is there to restore. The walk is newest-first and stops at the
+ * first hit, so the common case — a session from today — reads one directory.
+ */
 async function byProviderSessionId(
   codexHome: string,
   providerSessionId: string,
 ): Promise<FoundRollout | undefined> {
   const suffix = `-${providerSessionId}.jsonl`;
-  for (const path of await rolloutFiles(codexHome)) {
+  for await (const path of rolloutFiles(codexHome)) {
     if (path.endsWith(suffix)) return { path, providerSessionId };
   }
   return undefined;
@@ -144,13 +203,18 @@ async function byProviderSessionId(
  * the pane's process. A pane whose Codex has started more than one session —
  * which `codex resume` inside the pane would do — is answered with the newest,
  * which is the one the pane is running.
+ *
+ * `createdAt` bounds which logs are read at all: a session that began then
+ * cannot have recorded its `SessionStart` in a file untouched since long before,
+ * and the logs are never pruned. See `sessionStarts`.
  */
 async function byPanePid(
   stateDir: string,
   panePid: number,
+  createdAt: number,
   claimed: ReadonlySet<string> | undefined,
 ): Promise<FoundRollout | undefined> {
-  for (const record of await sessionStarts(stateDir)) {
+  for (const record of await sessionStarts(stateDir, createdAt - STALE_MTIME_MS)) {
     if (record['ppid'] !== panePid) continue;
     const id = record['session_id'];
     const path = record['transcript_path'];
@@ -193,7 +257,12 @@ export async function findRollout(session: {
   }
 
   if (session.stateDir !== undefined && session.panePid !== undefined) {
-    const found = await byPanePid(session.stateDir, session.panePid, session.claimed);
+    const found = await byPanePid(
+      session.stateDir,
+      session.panePid,
+      session.createdAt,
+      session.claimed,
+    );
     // Only if the file is really there: `SessionStart` fires as the rollout is
     // created, and a path that does not exist yet is not one to bind to.
     if (found !== undefined && (await stat(found.path).catch(() => undefined)) !== undefined) {
@@ -204,7 +273,10 @@ export async function findRollout(session: {
   // Resolved, because `session_meta.cwd` is the path Codex resolved for itself.
   const cwd = await realpath(session.cwd).catch(() => session.cwd);
   const candidates: { path: string; providerSessionId: string; mtimeMs: number }[] = [];
-  for (const path of await rolloutFiles(session.codexHome)) {
+  for await (const path of rolloutFiles(
+    session.codexHome,
+    dayKey(session.createdAt - STALE_MTIME_MS),
+  )) {
     const providerSessionId = rolloutSessionId(path);
     if (providerSessionId === undefined) continue;
     if (session.claimed?.has(providerSessionId) === true) continue;

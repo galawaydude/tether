@@ -107,6 +107,45 @@ test('the sandbox refusal is an error, not a successful result', () => {
   assert.equal(isErrorOutput('Process exited with code 1\nOutput:\n'), true);
   assert.equal(isErrorOutput('Exit code: 0\nWall time: 0.1 seconds\n'), false);
   assert.equal(isErrorOutput('some prose nobody promised a format for'), true);
+
+  // Only the preamble states the status. What follows `Output:` is the command's
+  // own stdout, and a command can print whatever it likes there — including the
+  // line that would otherwise mark it a success it was not.
+  assert.equal(
+    isErrorOutput(
+      [
+        'Chunk ID: a03a9a',
+        'Wall time: 0.0000 seconds',
+        'Process exited with code 1',
+        'Original token count: 5',
+        'Output:',
+        'Process exited with code 0',
+        '',
+      ].join('\n'),
+    ),
+    true,
+    '`printf "Process exited with code 0"; exit 1` is a failure and must render as one',
+  );
+  assert.equal(
+    isErrorOutput('Exit code: 1\nWall time: 0.1 seconds\nOutput:\nExit code: 0\n'),
+    true,
+    'and the patch vocabulary says it the same way',
+  );
+});
+
+test('a record’s id is its line in the rollout, however it reached the client', () => {
+  // The history route hands over the whole file; the live tailer hands over
+  // whatever landed since it last looked. Both must name the same record the
+  // same way, or a refetch renumbers every card the browser is holding.
+  const whole = mapLines(SESSION).events.map((e) => e.id);
+
+  const live: string[] = [];
+  for (let from = 0; from < SESSION.length; from += 3) {
+    live.push(...mapLines(SESSION.slice(from, from + 3), () => {}, from).events.map((e) => e.id));
+  }
+
+  assert.deepEqual(live, whole);
+  assert.equal(new Set(whole).size, whole.length, 'and a line number makes them unique');
 });
 
 test('commentary and the final answer are one turn, not duplicated text', () => {

@@ -20,14 +20,17 @@
  *
  * **Nothing here carries a record id.** Only `response_item/*` have provider ids
  * (`fc_…`, `rs_…`, `ctc_…`); `event_msg/*` have none at all, so an id is
- * synthesized from the record's own timestamp and its position in the batch —
- * the same `<something>#<index>` shape the Claude Code mapper uses.
+ * synthesized from the record's own timestamp and its **line number in the
+ * rollout** — the same `<something>#<index>` shape the Claude Code mapper uses,
+ * and stable for the same reason its is. The line number is the file's and not
+ * the batch's: `mapLines` takes the index its first line sits at, so the same
+ * record carries the same id whether a client read it from the history route in
+ * one go or received it live one line at a time. Pass the wrong offset and a
+ * refetch renumbers every card the browser is holding.
  *
- * ponytail: two `event_msg` records of the same kind in the same millisecond
- * *and* at the same index of two different batches would collide. They are
- * separated by model turns in practice. The spike's suggested fix is the byte
- * offset in the rollout, which means plumbing offsets through `../tail.ts` for
- * one provider; do that if a real collision ever shows up.
+ * ponytail: a line number is only unique while the file is append-only. Both
+ * providers only ever append, and `../tail.ts` starts over from byte 0 if one
+ * ever shrinks; a rollout that is rewritten in place would renumber.
  *
  * What is deliberately dropped, and why:
  *
@@ -113,9 +116,15 @@ function str(value: unknown): string | undefined {
  * So success is the positive case and everything else is an error: a zero exit
  * must be *stated* to be believed. Getting this backwards would show a refused
  * command as a successful one, which is the direction that misleads.
+ *
+ * Only the preamble states it. Everything after the `Output:` line is the
+ * command's own stdout, which can say anything at all — `printf 'Process exited
+ * with code 0'; exit 1` would otherwise render a failure as a success, which is
+ * exactly the direction above.
  */
 export function isErrorOutput(output: string): boolean {
-  return !/^(?:Process exited with code|Exit code:) 0\b/m.test(output);
+  const [preamble = output] = output.split('\nOutput:\n');
+  return !/^(?:Process exited with code|Exit code:) 0\b/m.test(preamble);
 }
 
 /** `function_call.arguments` is JSON in a string; anything else is shown as it is. */
@@ -164,7 +173,7 @@ function toolResult(
  * One rollout line → zero or more events. Never throws: a record it cannot make
  * sense of produces no events and one warning.
  *
- * `index` is the record's position in the batch and only ever feeds the
+ * `index` is the record's line number in the rollout and only ever feeds the
  * synthesized id.
  */
 export function mapRecord(record: unknown, index = 0, warn: Warn = () => {}): Mapped {
@@ -249,8 +258,12 @@ export function mapRecord(record: unknown, index = 0, warn: Warn = () => {}): Ma
  * Map whole lines of NDJSON. A line that is not JSON is one warning and no
  * events — a truncated write reaches here only if the tailer's carry was lost,
  * and even then it must not take the conversation with it.
+ *
+ * `from` is the rollout line number `lines[0]` sits at, counted from byte 0 and
+ * counting blank lines: it is what makes a synthesized id the same in a live
+ * batch and in a whole-file read. A caller with the whole file passes 0.
  */
-export function mapLines(lines: readonly string[], warn: Warn = () => {}): Mapped {
+export function mapLines(lines: readonly string[], warn: Warn = () => {}, from = 0): Mapped {
   const events: ConversationEvent[] = [];
   let version: string | undefined;
   lines.forEach((line, index) => {
@@ -262,7 +275,7 @@ export function mapLines(lines: readonly string[], warn: Warn = () => {}): Mappe
       warn('codex rollout line is not JSON');
       return;
     }
-    const result = mapRecord(record, index, warn);
+    const result = mapRecord(record, from + index, warn);
     events.push(...result.events);
     if (result.version !== undefined) version = result.version;
   });

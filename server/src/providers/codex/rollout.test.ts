@@ -16,6 +16,17 @@ import { sessionsDir } from './spawn.ts';
 const A = '019fac90-fbcb-7121-a9dc-5b4e866eb680';
 const B = '019fac91-0000-4000-8000-000000000000';
 
+/**
+ * The `<Y>/<M>/<D>` Codex would file a rollout begun at `at` under. Derived
+ * rather than hard-coded, because discovery now bounds its walk by that date:
+ * a fixture in a fixed directory would only be looked at on one day of the year.
+ */
+function day(at: number): [string, string, string] {
+  const when = new Date(at);
+  const pad = (part: number): string => String(part).padStart(2, '0');
+  return [String(when.getFullYear()), pad(when.getMonth() + 1), pad(when.getDate())];
+}
+
 async function lab(t: TestContext) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'tether-rollout-')));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -23,7 +34,7 @@ async function lab(t: TestContext) {
   const stateDir = join(root, 'state');
   const cwd = join(root, 'work');
   await mkdir(cwd, { recursive: true });
-  await mkdir(join(sessionsDir(codexHome), '2026', '07', '29'), { recursive: true });
+  await mkdir(join(sessionsDir(codexHome), ...day(Date.now())), { recursive: true });
   await mkdir(hookLogDir(stateDir), { recursive: true });
   return { root, codexHome, stateDir, cwd };
 }
@@ -32,15 +43,11 @@ async function lab(t: TestContext) {
 async function rollout(
   codexHome: string,
   id: string,
-  opts: { cwd: string; began: number; local?: string },
+  opts: { cwd: string; began: number; local?: string; filedAt?: number },
 ): Promise<string> {
-  const path = join(
-    sessionsDir(codexHome),
-    '2026',
-    '07',
-    '29',
-    `rollout-${opts.local ?? '2026-07-29T12-00-10'}-${id}.jsonl`,
-  );
+  const dir = join(sessionsDir(codexHome), ...day(opts.filedAt ?? Date.now()));
+  await mkdir(dir, { recursive: true });
+  const path = join(dir, `rollout-${opts.local ?? '2026-07-29T12-00-10'}-${id}.jsonl`);
   await writeFile(
     path,
     `${JSON.stringify({
@@ -78,6 +85,31 @@ test('a known provider session id is one lookup, with nothing to infer', async (
     }),
     { path, providerSessionId: A },
     'the id decides it — cwd and time are not consulted at all',
+  );
+});
+
+test('a session revived long after it began still finds its rollout', async (t) => {
+  const lb = await lab(t);
+  // Filed under last year's day directory, which is where a session started then
+  // and revived now keeps its conversation. Discovery's walk is bounded by date;
+  // this lookup deliberately is not, because the id leaves nothing to infer.
+  const old = Date.now() - 400 * 24 * 60 * 60_000;
+  const path = await rollout(lb.codexHome, A, { cwd: lb.cwd, began: old, filedAt: old });
+
+  assert.deepEqual(
+    await findRollout({
+      cwd: lb.cwd,
+      createdAt: old,
+      providerSessionId: A,
+      codexHome: lb.codexHome,
+    }),
+    { path, providerSessionId: A },
+  );
+
+  assert.equal(
+    await findRollout({ cwd: lb.cwd, createdAt: Date.now(), codexHome: lb.codexHome }),
+    undefined,
+    'and a session starting now does not walk back to it, let alone adopt it',
   );
 });
 
