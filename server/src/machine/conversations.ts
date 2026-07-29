@@ -18,8 +18,13 @@ import { readFile } from 'node:fs/promises';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { mapLines } from '../providers/claude-code/events.ts';
-import { findTranscript, tailLines, type Tail } from '../providers/claude-code/transcript.ts';
-import { setProviderSessionId, type Session } from './registry.ts';
+import {
+  findTranscript,
+  tailLines,
+  type StartMemo,
+  type Tail,
+} from '../providers/claude-code/transcript.ts';
+import { claimedProviderSessionIds, setProviderSessionId, type Session } from './registry.ts';
 
 /**
  * How many events a reconnecting client can have missed and still be caught up
@@ -90,6 +95,8 @@ type Live = {
   subscribers: Set<Send>;
   /** Resolved once the transcript has been read to its end at least once. */
   ready: Promise<void>;
+  /** Discovery's memory, so its once-a-second retry is not a re-read. */
+  memo: StartMemo;
   tailer?: Tail | undefined;
   retry?: NodeJS.Timeout | undefined;
   stopped: boolean;
@@ -111,11 +118,15 @@ export class Conversations {
     this.#warnTo(message);
   }
 
-  async #find(session: Session) {
+  async #find(session: Session, memo?: StartMemo) {
     const found = await findTranscript({
       cwd: session.cwd,
       createdAt: session.createdAt,
       providerSessionId: session.providerSessionId,
+      // Which transcripts are spoken for is the registry's to know and this
+      // class's to pass on — `providers/` stays clear of the database.
+      claimed: claimedProviderSessionIds(this.#db, session.id),
+      ...(memo === undefined ? {} : { memo }),
       ...(this.#options.home === undefined ? {} : { home: this.#options.home }),
     });
     // Back-fill the provisional row: the transcript's own name is the provider's
@@ -207,6 +218,7 @@ export class Conversations {
       tail: [],
       subscribers: new Set(),
       ready: Promise.resolve(),
+      memo: new Map(),
       stopped: false,
     };
     this.#live.set(session.id, live);
@@ -222,7 +234,7 @@ export class Conversations {
    */
   async #start(session: Session, live: Live): Promise<void> {
     if (live.stopped) return;
-    const found = await this.#find(session).catch(() => undefined);
+    const found = await this.#find(session, live.memo).catch(() => undefined);
     if (live.stopped) return;
     if (found === undefined) {
       live.retry = setTimeout(() => {

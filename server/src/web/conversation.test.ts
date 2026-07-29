@@ -26,15 +26,18 @@ const ID = '99999999-8888-4777-8666-555555555555';
 const PROVIDER_SESSION = '11111111-2222-4333-8444-555555555555';
 
 /**
- * Stamped from the clock rather than a fixed instant: `findTranscript` identifies
- * a transcript by when its records begin, so a session's own must not begin
- * before the session did.
+ * Stamped from the clock rather than a fixed instant, because `findTranscript`
+ * identifies a transcript by when its records begin and a session's own must not
+ * begin before the session did — but from one instant the assertions can name,
+ * so what reaches the wire is still checked exactly.
  */
+const STAMPED_AT = Date.now();
+
 function userRecord(n: number): string {
   return `${JSON.stringify({
     type: 'user',
     uuid: `uuid-${n}`,
-    timestamp: new Date(Date.now() + n).toISOString(),
+    timestamp: new Date(STAMPED_AT + n).toISOString(),
     version: '2.1.220',
     message: { role: 'user', content: `message ${n}` },
   })}\n`;
@@ -161,7 +164,7 @@ test('the conv socket resumes from `since` and then streams', async (t) => {
     e: {
       kind: 'user',
       id: 'uuid-2',
-      at: Date.parse('2026-07-29T04:53:41.000Z'),
+      at: STAMPED_AT + 2,
       text: 'message 2',
     },
   });
