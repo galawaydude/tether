@@ -41,13 +41,16 @@ targets, session sharing, usage dashboards, a mobile app.
 
 Toolchain, CI, the tmux driver, authentication, the session registry, the HTTP
 session API, the terminal transport, the conversation data layer, and the browser
-app. Run `tether serve`, open the address it prints, and you can log in, see the
-sessions on this machine, start one in a directory you name, and drive it in a live
-terminal — with a bar for the keys a phone keyboard has not got (Esc, Tab, arrows,
-Ctrl-C). Conversation events are already served over `conv`, but nothing renders
-them yet: the conversation view and the composer are still to come, and so is the
-_working_/_idle_/_waiting_ state, so a session shows only **live** or **dead** for
-now. This milestone is being built one focused PR at a time.
+app, and the conversation view. Run `tether serve`, open the address it prints, and
+you can log in, see the sessions on this machine, start one in a directory you name,
+and follow it in two tabs: a **Conversation** — your prompts, the agent's replies,
+and a collapsed card per tool call that opens onto its input and result — and a
+live **Terminal**, with a bar for the keys a phone keyboard has not got (Esc, Tab,
+arrows, Ctrl-C). Answering a permission prompt still means the terminal tab: Claude
+Code does not write a pending tool call to its transcript until you have answered.
+The composer is still to come, and so is the _working_/_idle_/_waiting_ state, so a
+session shows only **live** or **dead** for now. This milestone is being built one
+focused PR at a time.
 
 ```
 GET    /api/machines/local/sessions            every session, live and dead
