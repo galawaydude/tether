@@ -137,11 +137,16 @@ test('a record’s id is its line in the rollout, however it reached the client'
   // The history route hands over the whole file; the live tailer hands over
   // whatever landed since it last looked. Both must name the same record the
   // same way, or a refetch renumbers every card the browser is holding.
-  const whole = mapLines(SESSION).events.map((e) => e.id);
+  // `status` is the one variant with no id — it never comes out of the rollout,
+  // so filtering it is what narrows the union rather than what weakens the test.
+  const ids = (events: ReturnType<typeof mapLines>['events']) =>
+    events.filter((e) => e.kind !== 'status').map((e) => e.id);
+
+  const whole = ids(mapLines(SESSION).events);
 
   const live: string[] = [];
   for (let from = 0; from < SESSION.length; from += 3) {
-    live.push(...mapLines(SESSION.slice(from, from + 3), () => {}, from).events.map((e) => e.id));
+    live.push(...ids(mapLines(SESSION.slice(from, from + 3), () => {}, from).events));
   }
 
   assert.deepEqual(live, whole);
