@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { randomUUID } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { basename } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { DatabaseSync } from 'node:sqlite';
@@ -365,8 +366,23 @@ export async function main(argv: readonly string[]): Promise<number> {
   }
 }
 
+/**
+ * npm's bin links — `npx tether`, `node_modules/.bin/tether`, a global install —
+ * run this file through a symlink. Node resolves `import.meta.url` through
+ * symlinks but leaves `process.argv[1]` as given, so the two only compare equal
+ * once argv[1] is resolved too. An argv[1] that no longer exists compares
+ * unresolved rather than crashing the CLI.
+ */
+function resolveEntry(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
 const entry = process.argv[1];
-if (entry !== undefined && import.meta.url === pathToFileURL(entry).href) {
+if (entry !== undefined && import.meta.url === pathToFileURL(resolveEntry(entry)).href) {
   process.exitCode = await main(process.argv.slice(2));
   // `serve` keeps the event loop alive on its own; every other path is done here.
 }

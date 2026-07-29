@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync, symlinkSync } from 'node:fs';
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -153,6 +153,18 @@ test('`tether serve --host 0.0.0.0` exits rather than exposing a passwordless sh
   assert.equal(result.code, 1);
   assert.match(result.stderr, /refusing to bind 0\.0\.0\.0/);
   assert.match(result.stderr, /tether set-password/);
+});
+
+test('run through a symlink, the way npm’s bin link is, the CLI still runs', async (t) => {
+  const stateDir = tempState(t);
+  const link = join(tempState(t), 'tether.ts');
+  symlinkSync(CLI, link);
+
+  const { stdout } = await run(process.execPath, [link, 'ls'], {
+    env: { ...process.env, TETHER_STATE_DIR: stateDir },
+  });
+  assert.match(stdout, /^ID\s+STATE\s+PROVIDER/, 'a symlinked entry point must not be a no-op');
+  assert.equal(statSync(join(stateDir, 'tether.sqlite')).mode & 0o777, 0o600, 'it did real work');
 });
 
 test('an unknown command fails and prints usage', async (t) => {
