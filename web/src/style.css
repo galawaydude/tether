@@ -43,14 +43,14 @@
   --line-lit: #3a3a44;
 
   --fg: #f3f3f5; /* 17:1 on --bg */
-  --muted: #a8a8b4; /* 8:1 on --bg, 6.2:1 on --raise */
+  --muted: #a8a8b4; /* 8.2:1 on --bg, 7:1 on --raise */
   /* The floor, used only for machine detail. Set against `--raise` rather than
      against `--bg`: it lands on all three surfaces, and a token chosen on the
      deepest one is below the floor everywhere it is actually read. */
   --dim: #9a9aa8; /* 6.9:1 on --bg, 6.4:1 on --panel, 6:1 on --raise */
 
   /* Amber is the human. See rule 1 above. */
-  --accent: #ffb454; /* 10.8:1 on --bg, 10.5:1 against --on-accent */
+  --accent: #ffb454; /* 10.9:1 on --bg, 10.6:1 against --on-accent */
   --on-accent: #1a1103;
 
   /* Cool: what the machine reports. */
@@ -448,11 +448,11 @@ label {
    colour rather than a fourth accent, so "selected" and "which agent" are the
    same fact told twice.
  *
- * The tint is a fourth surface, and the two numbers below are what keeps it
- * legible: 8% is as far as a provider colour can lift `--raise` before the
- * lightest usable `--dim` falls under the 5.6:1 floor, and on this row `--dim`
- * steps up to `--muted` — so the path, the note and the state word on the row
- * being read are the one place they are not at the floor. */
+ * The tint is a fourth surface, so it takes both numbers below to stay legible:
+ * a tint this strong puts `--dim` at 5:1, under the floor, so on this row `--dim`
+ * steps up to `--muted` — which 12% would leave at 5.4:1 and 8% leaves at 5.9:1.
+ * The path, the note and the state word on the row being read are the one place
+ * they are not at the floor. */
 .row-on,
 .row-on:hover {
   --dim: var(--muted); /* 5.9:1 on the codex tint, 6:1 on the claude one */
@@ -564,7 +564,8 @@ label {
 }
 
 /* One chip, one tone. Every state below sets `--tone` and inherits the rest, so
-   a new state is one line rather than a fourth near-copy of this block. */
+   a new state is one line rather than a fourth near-copy of this block. The two
+   states that also touch `background` say why where they set it. */
 .chip {
   flex: none;
   padding: 5px 9px;
@@ -601,8 +602,15 @@ label {
   --tone: var(--work);
 }
 
+/* The only chip with no fill, and the tint is exactly why: a coloured tone sits
+   well clear of the 12% wash it lays down, but a neutral one *is* that wash, so
+   text and background rise together and the ratio cannot be won by choosing a
+   lighter grey. Unfilled, "Idle" reads on the row's own surface, at the same
+   6.4:1 (panel) / 6:1 (raise) / 5.9:1 (a selected row) as every other machine
+   detail — and it stays the quietest state on the screen, which is what it is. */
 .chip-agent-idle {
   --tone: var(--dim);
+  background: transparent;
 }
 
 .chip-agent-waiting {
