@@ -1,11 +1,25 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { applyRegistrySchema } from '../machine/registry.ts';
+import { createTerminals } from '../machine/terminal.ts';
 import type { Terminals } from '../machine/terminal.ts';
-import { UnsafeArgumentError } from '../machine/tmux.ts';
+import {
+  UnsafeArgumentError,
+  captureViewport,
+  killServer,
+  newSession,
+  paneSize,
+  pasteText,
+  resizeWindow,
+  sendKeys,
+} from '../machine/tmux.ts';
 import { createAuthStore } from './auth.ts';
 import { defaultAllowedHosts } from './guards.ts';
 import { SESSION_COOKIE, buildServer } from './server.ts';
@@ -713,4 +727,129 @@ test('a socket that closes during the attach still detaches', async (t) => {
 
   for (let i = 0; i < 100 && calls.length === 0; i += 1) await delay(10);
   assert.deepEqual(calls, ['detach s1']);
+});
+
+// ── Two viewers of one session, over two real sockets ─────────────────────────
+/**
+ * The one test in this file that drives a real tmux, and it earns it: everything
+ * above stubs `Terminals` because the socket's guards and framing are what they
+ * are about, and `machine/terminal.test.ts` drives the real driver — but neither
+ * of them ever has *two sockets open on one session at once*, which is the whole
+ * product promise (pick a session up on another device) and was the shape a live
+ * bug was blamed on. What the second viewer needs and the first never exercises
+ * is here: the join branch of `Terminals.attach`, the repaint `attach-session`
+ * gives the first viewer for free, and an `ack` for input that arrives on a
+ * socket the join could have torn down.
+ *
+ * It is deliberately not the assertion that caught the reported failure — that
+ * one was in the browser and is `web/src/keys.test.ts`. This is the coverage
+ * whose absence let the server be suspected for it.
+ */
+const MARKER = 'TETHER-MARKER-9F3A';
+
+/** Never a hang: the bug this file guards against is a frame that never comes. */
+async function nextFrame(term: { next: () => Promise<Frame> }, what: string): Promise<Frame> {
+  const frame = await Promise.race([term.next(), delay(15_000, null, { ref: false })]);
+  if (frame === null) throw new Error(`timed out waiting for ${what}`);
+  return frame;
+}
+
+async function frameMatching(
+  term: { next: () => Promise<Frame> },
+  matches: (frame: Frame) => boolean,
+  what: string,
+): Promise<Frame> {
+  for (let i = 0; i < 60; i += 1) {
+    const frame = await nextFrame(term, what);
+    if (matches(frame)) return frame;
+  }
+  throw new Error(`no frame was ${what}`);
+}
+
+async function waitFor(predicate: () => Promise<boolean>, what: string): Promise<void> {
+  for (let i = 0; i < 200; i += 1) {
+    if (await predicate()) return;
+    await delay(50);
+  }
+  throw new Error(`timed out waiting for ${what}`);
+}
+
+test('a second viewer joins a live session and can drive it, first one still live', async (t) => {
+  const socket = `tether-two-${randomUUID().slice(0, 8)}`;
+  const cwd = await mkdtemp(join(tmpdir(), 'tether-two-'));
+  t.after(async () => {
+    await killServer(socket);
+    await rm(join(tmpdir(), `tmux-${process.getuid?.() ?? ''}`, socket), { force: true });
+    await rm(cwd, { recursive: true, force: true });
+  });
+
+  await newSession(socket, { name: 's1', cwd, command: ['/bin/sh'], roots: [cwd] });
+  // Before any output: resizing afterwards would reflow what is already there.
+  await resizeWindow(socket, 's1', 80, 24);
+  await pasteText(socket, 's1', `echo ${MARKER}`);
+  await sendKeys(socket, 's1', ['Enter']);
+  await waitFor(
+    async () => (await captureViewport(socket, 's1')).includes(MARKER),
+    'the marker to reach the pane',
+  );
+
+  const { app } = await harness({ terminals: createTerminals(socket), socket });
+  t.after(() => app.close());
+  await app.ready();
+  const cookie = { cookie: `${SESSION_COOKIE}=${await sessionToken(app)}` };
+
+  const first = openTerm(app, cookie, '/api/sessions/s1/term?client=laptop');
+  await first.socket;
+  await nextFrame(first, "the first viewer's replay");
+
+  // ── The join ───────────────────────────────────────────────────────────────
+  const second = openTerm(app, cookie, '/api/sessions/s1/term?client=phone');
+  // Sent the instant the socket is open and so, deterministically, while the
+  // server is still inside the attach — which is where a browser really sends
+  // it, because `onopen` fires on the handshake and the attach is several tmux
+  // spawns behind it. A frame dropped here is never ACKed and never re-sent
+  // until the socket is replaced: "Sending…" for the life of a live socket.
+  (await second.socket).send(
+    JSON.stringify({ c: 'input', seq: 1, text: `echo phone > ${join(cwd, 'phone.txt')}` }),
+  );
+
+  const replay = await nextFrame(second, "the second viewer's replay");
+  assert.equal(replay.binary, true, 'terminal bytes are binary frames, never text');
+  assert.match(replay.data.toString('latin1'), new RegExp(MARKER), 'the pane is replayed');
+
+  // The replay ends in blank rows that push the history into xterm's scrollback,
+  // so without the repaint `refreshClients` asks for, this viewer's viewport
+  // stays empty for good. `\x1b[H` is that absolutely-positioned redraw.
+  const repaint = await frameMatching(
+    second,
+    (f) => f.binary && f.data.toString('latin1').includes(`\x1b[H`),
+    'the repaint a joining viewer has to be sent',
+  );
+  assert.match(repaint.data.toString('latin1'), new RegExp(MARKER), 'the repaint carries the pane');
+
+  // ── The second viewer drives the pane ──────────────────────────────────────
+  const ack = await frameMatching(second, (f) => !f.binary, "the second viewer's ack");
+  assert.deepEqual(JSON.parse(ack.data.toString('utf8')), { c: 'ack', seq: 1 });
+  await waitFor(
+    async () => (await readFile(join(cwd, 'phone.txt'), 'utf8').catch(() => '')).includes('phone'),
+    "the second viewer's message to reach the pane",
+  );
+
+  (await second.socket).send(JSON.stringify({ c: 'resize', cols: 100, rows: 30 }));
+  await waitFor(async () => {
+    const size = await paneSize(socket, 's1');
+    return size.cols === 100 && size.rows === 30;
+  }, "the pane to take the second viewer's dimensions");
+
+  // ── And the first viewer never stopped being one ───────────────────────────
+  (await first.socket).send(
+    JSON.stringify({ c: 'input', seq: 1, text: `echo laptop > ${join(cwd, 'laptop.txt')}` }),
+  );
+  const firstAck = await frameMatching(first, (f) => !f.binary, "the first viewer's ack");
+  assert.deepEqual(JSON.parse(firstAck.data.toString('utf8')), { c: 'ack', seq: 1 });
+  await waitFor(
+    async () =>
+      (await readFile(join(cwd, 'laptop.txt'), 'utf8').catch(() => '')).includes('laptop'),
+    "the first viewer's message to reach the pane",
+  );
 });

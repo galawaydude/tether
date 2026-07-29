@@ -103,6 +103,32 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   one `text` frame — so the paste lands as a paste; splitting it submits a pasted
   prompt line by line. All of it is covered by `keys.test.ts`, `server.test.ts` and
   `terminal.test.ts` against real tmux.
+- **The browser app may not use a secure-context-only web API.** tether is
+  plain HTTP off loopback by design (Tailscale, `ssh -L`, a TLS proxy), so
+  every device that is not the one running it — the phone this product exists
+  for — loads an **insecure context**, where a browser withholds
+  `crypto.randomUUID`, `crypto.subtle` and the rest of the secure-context set.
+  `localhost` is the one secure origin, which is why the machine serving tether
+  works and why nothing catches this: `e2e/` drives the app over loopback, where
+  every such API is present. It cost a whole terminal pane once — `TerminalView`
+  called `randomUUID` while building its client id, the effect threw before
+  `connect()`, and a remote viewer got no socket at all: a chip stuck on
+  "Connecting…" and a composer stuck on "Sending…" (the sender it calls is filled
+  in by that same effect) while its conversation pane worked perfectly.
+  `keys.ts`'s `newClientId` — `getRandomValues`, which carries no gate — and its
+  test in `keys.test.ts` are the guard for that one; a new one needs its own.
+- **The `term` socket's handshake completes before its route handler runs.**
+  `@fastify/websocket` upgrades and _then_ calls the handler, so the browser's
+  `onopen` has already fired — and its first act is to send its size and re-send
+  every unACKed message — while `term-socket.ts` is still several tmux spawns
+  from having an attach. A `ws` message with no listener is discarded, so the
+  listener goes on **before** that `await` and queues into `handle`: a frame
+  dropped in that window is never ACKed, and the client only re-sends on its
+  _next_ reconnect, so one composed message sits on "Sending…" for the life of a
+  socket that is otherwise working. The window is widest for a second viewer,
+  whose attach is a `capture-pane` plus a `refresh-client` rather than a plain
+  `attach-session` — which is why `server.test.ts`'s two-viewer test is the one
+  test in that file that drives a real tmux.
 - **The browser app is served by two named routes, not a wildcard**
   (`server/src/web/static.ts`). `@fastify/static` is registered with
   `serve: false` purely for `reply.sendFile`; `/` and `/assets/:file` are the only

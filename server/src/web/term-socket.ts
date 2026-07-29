@@ -117,6 +117,38 @@ export function registerTermSocket(app: FastifyInstance, terminals: Terminals): 
       // flag has not fired yet.
       const alive = () => socket.readyState === socket.OPEN;
 
+      /**
+       * Frames that arrived before the attach finished, in the order they were
+       * sent.
+       *
+       * The listener has to go on *first*, because by the time this handler runs
+       * the client is already talking: `@fastify/websocket` completes the
+       * handshake and only then calls the route, so the browser's `onopen` has
+       * fired — and its first act on open is to send its size and re-send every
+       * message it has not seen an ACK for — while the attach here is still two
+       * tmux spawns and a PTY away. A frame arriving in that window used to
+       * reach no listener at all, and a `ws` message with no listener is
+       * discarded: no ACK, so the client keeps it, and it only re-sends on its
+       * *next* reconnect. That is one composed message stuck on "Sending…" for
+       * the life of a socket that is otherwise working perfectly, and a joining
+       * viewer's dimensions never reaching the pane. The window is widest for
+       * exactly the case that is hardest to notice — a second viewer, whose
+       * attach is a `capture-pane` and a `refresh-client` rather than a plain
+       * `attach-session`.
+       */
+      const queued: ClientFrame[] = [];
+      let handle = (frame: ClientFrame): void => void queued.push(frame);
+
+      socket.on('message', (data: Buffer, isBinary: boolean) => {
+        // Terminal input is a `key` or `input` frame by design, never raw bytes:
+        // sequencing is what makes it exactly-once. Decoding here is safe and
+        // decoding the *output* is not, because `ws` delivers whole messages —
+        // the chunk boundary that splits a glyph only exists on the PTY side.
+        if (isBinary) return;
+        const frame = parseClientFrame(data.toString());
+        if (frame !== null) handle(frame);
+      });
+
       const detach = await terminals
         .attach(
           session,
@@ -154,14 +186,7 @@ export function registerTermSocket(app: FastifyInstance, terminals: Terminals): 
         send({ c: 'ack', seq: frame.seq });
       }
 
-      socket.on('message', (data: Buffer, isBinary: boolean) => {
-        // Terminal input is a `key` or `input` frame by design, never raw bytes:
-        // sequencing is what makes it exactly-once. Decoding here is safe and
-        // decoding the *output* is not, because `ws` delivers whole messages —
-        // the chunk boundary that splits a glyph only exists on the PTY side.
-        if (isBinary) return;
-        const frame = parseClientFrame(data.toString());
-        if (frame === null) return;
+      handle = (frame) =>
         void apply(frame).catch((error: unknown) => {
           // Two different failures used to share one outcome. A value the tmux
           // driver's argv guard refuses is an undeliverable *frame* — the pane
@@ -176,7 +201,9 @@ export function registerTermSocket(app: FastifyInstance, terminals: Terminals): 
           app.log.warn({ err: error, session }, 'terminal frame failed');
           socket.close(CLOSE_ATTACH_FAILED, 'terminal command failed');
         });
-      });
+      // In order, and before anything that arrives from here on: `Terminals`
+      // applies sequences in the order it is called and drops the rest.
+      for (const frame of queued.splice(0)) handle(frame);
     },
   );
 }
