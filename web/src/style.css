@@ -1,0 +1,323 @@
+/*
+ * Mobile first, and one-handed: the acceptance bar is a phone held in one hand
+ * outdoors, so every control is at least 44px, the contrast is well past WCAG AA
+ * on the dark background, and the two things a thumb reaches for — the accessory
+ * bar and "New session" — sit at the bottom of the screen rather than the top.
+ */
+
+@import '@xterm/xterm/css/xterm.css';
+
+:root {
+  color-scheme: dark;
+  --bg: #0b0e13;
+  --panel: #161b23;
+  --line: #2b3440;
+  --fg: #f2f5f8; /* 17:1 on --bg */
+  --muted: #aab6c3; /* 9:1 on --bg */
+  --accent: #58a6ff;
+  --on-accent: #04101f;
+  --danger: #ff8080;
+  --ok: #56d364;
+  --tap: 44px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font:
+    16px/1.45 system-ui,
+    -apple-system,
+    sans-serif;
+  /* A terminal that rubber-bands under the thumb is unusable on a phone. */
+  overscroll-behavior: none;
+}
+
+/* dvh, not vh: the mobile URL bar changes the viewport and vh does not follow. */
+.screen {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+}
+
+.centre {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100dvh;
+  padding: 24px;
+}
+
+/* ── bars ───────────────────────────────────────────────────────────────── */
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  padding-top: max(8px, env(safe-area-inset-top));
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+.bar-title {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  font-size: 15px;
+  margin: 0;
+}
+
+.bar-title > * {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.foot {
+  padding: 10px;
+  padding-bottom: max(10px, env(safe-area-inset-bottom));
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+}
+
+.foot .primary {
+  width: 100%;
+}
+
+.scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px;
+}
+
+/* ── controls ───────────────────────────────────────────────────────────── */
+
+button {
+  min-height: var(--tap);
+  padding: 0 14px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+
+button:focus-visible,
+input:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+button:disabled {
+  opacity: 0.5;
+}
+
+.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+.ghost {
+  background: transparent;
+}
+
+.danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+input {
+  min-height: var(--tap);
+  width: 100%;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: #0f141b;
+  color: var(--fg);
+  /* Under 16px, iOS Safari zooms the page on focus and never zooms back. */
+  font-size: 16px;
+}
+
+label {
+  font-size: 14px;
+  color: var(--muted);
+}
+
+/* ── cards, rows, chips ─────────────────────────────────────────────────── */
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(420px, 100%);
+  padding: 20px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.card h1,
+.card h2 {
+  margin: 0 0 4px;
+  font-size: 20px;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.actions > * {
+  flex: 1;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  margin-bottom: 8px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+
+.row-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 8px;
+}
+
+.row-title {
+  font-weight: 600;
+}
+
+.row-cwd,
+.row-title {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.error {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--danger);
+  background: #2a1416;
+  color: var(--danger);
+  font-size: 15px;
+}
+
+.chip {
+  flex: none;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  font-size: 13px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.chip-live {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.chip-retrying,
+.chip-connecting {
+  color: #ffd479;
+  border-color: #ffd479;
+}
+
+.chip-ended {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+/* ── terminal ───────────────────────────────────────────────────────────── */
+
+.term {
+  flex: 1;
+  min-height: 0;
+  padding: 4px;
+  background: #000;
+}
+
+.term .xterm {
+  height: 100%;
+}
+
+/* The accessory bar: above the on-screen keyboard, thumb-sized, scrollable if
+   the screen is too narrow for all of it. */
+.keys {
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+  padding-bottom: max(8px, env(safe-area-inset-bottom));
+  overflow-x: auto;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+}
+
+.keys button {
+  flex: 1 0 auto;
+  min-width: 52px;
+  padding: 0 10px;
+  font-size: 17px;
+}
+
+.sheet {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 12px;
+  padding-bottom: max(12px, env(safe-area-inset-bottom));
+  background: rgb(0 0 0 / 60%);
+}
+
+@media (min-width: 600px) {
+  .sheet {
+    align-items: center;
+  }
+  /* Thumb-filling widths are a phone answer; on a desktop they are just large. */
+  .keys {
+    justify-content: center;
+  }
+  .keys button {
+    flex: 0 0 auto;
+    min-width: 64px;
+  }
+}

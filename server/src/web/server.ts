@@ -11,6 +11,7 @@ import type { AuthStore } from './auth.ts';
 import { registerConvSocket, registerConversationRoutes } from './conversation.ts';
 import { isHostAllowed, isOriginAllowed, isStateChanging } from './guards.ts';
 import { registerSessionRoutes } from './sessions.ts';
+import { registerStatic } from './static.ts';
 import { registerTermSocket } from './term-socket.ts';
 
 declare module 'fastify' {
@@ -36,6 +37,8 @@ export type ServerOptions = {
   socket?: string | undefined;
   /** Directories a session may be started in; defaults to `allowedRoots()`. */
   allowedRoots?: readonly string[] | undefined;
+  /** Where the built browser app lives; defaults to `WEB_DIST`. */
+  webRoot?: string | undefined;
   /**
    * IPs/CIDRs whose `X-Forwarded-Proto` and `X-Forwarded-For` are believed. Empty
    * means believe nobody, so a client header can never spoof the `Secure` flag.
@@ -215,6 +218,8 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   });
 
   app.get('/api/session', async (_request, reply) => reply.send({ authenticated: true }));
+
+  registerStatic(app, options.webRoot);
 
   // Behind the same default-deny hook as everything else — these routes opt out of
   // nothing, which is the whole point of the posture being deny-by-default.

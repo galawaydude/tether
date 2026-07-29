@@ -70,8 +70,9 @@ export function parseClientFrame(raw: string): ClientFrame | null {
 
   switch (frame['c']) {
     case 'input':
+    case 'text':
       return seqOk && typeof frame['text'] === 'string' && frame['text'].length <= MAX_TEXT
-        ? { c: 'input', seq: seq as number, text: frame['text'] }
+        ? { c: frame['c'], seq: seq as number, text: frame['text'] }
         : null;
     case 'key':
       return seqOk &&
@@ -143,6 +144,7 @@ export function registerTermSocket(app: FastifyInstance, terminals: Terminals): 
       async function apply(frame: ClientFrame): Promise<void> {
         if (frame.c === 'resize') return terminals.resize(session, frame.cols, frame.rows);
         if (frame.c === 'input') await terminals.input(session, clientId, frame.seq, frame.text);
+        else if (frame.c === 'text') await terminals.text(session, clientId, frame.seq, frame.text);
         else await terminals.key(session, clientId, frame.seq, frame.keys);
         // ACKed whether or not it was applied: a replay is already durable,
         // and the client must stop retrying it either way.

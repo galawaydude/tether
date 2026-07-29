@@ -39,6 +39,10 @@ function recordingTerminals() {
       calls.push(`input ${session} ${clientId} ${seq} ${JSON.stringify(text)}`);
       return true;
     },
+    async text(session, clientId, seq, text) {
+      calls.push(`text ${session} ${clientId} ${seq} ${JSON.stringify(text)}`);
+      return true;
+    },
     async key(session, clientId, seq, keys) {
       calls.push(`key ${session} ${clientId} ${seq} ${keys.join('+')}`);
       return true;
@@ -565,11 +569,20 @@ test('terminal output arrives as binary frames and input is ACKed', async (t) =>
     seq: 2,
   });
 
+  // Typed text is its own frame: it is delivered but never submitted, and it is
+  // how a `;` reaches the pane without ever being a tmux argv element.
+  socket.send(JSON.stringify({ c: 'text', seq: 3, text: ';' }));
+  assert.deepEqual(JSON.parse((await term.next()).data.toString('utf8')), {
+    c: 'ack',
+    seq: 3,
+  });
+
   assert.deepEqual(terminal.calls, [
     'attach s1',
     'input s1 phone 1 "first\\nsecond"',
     'resize s1 100x30',
     'key s1 phone 2 C-c',
+    'text s1 phone 3 ";"',
   ]);
 });
 
@@ -643,6 +656,9 @@ test('a socket that closes during the attach still detaches', async (t) => {
     },
     async resize() {},
     async input() {
+      return true;
+    },
+    async text() {
       return true;
     },
     async key() {

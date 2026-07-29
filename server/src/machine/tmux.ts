@@ -79,6 +79,16 @@ export class UnsafeArgumentError extends Error {
  */
 const SEPARATORS = new Set([';', '{', '}']);
 
+/**
+ * Whether `checkArgs` would refuse this exact string as an argument. Exported so a
+ * caller that has another way to deliver the value — the paste buffer, which
+ * reaches tmux on stdin and never becomes argv — can choose it *before* building a
+ * command, rather than by catching the guard or by weakening it.
+ */
+export function isSeparatorArgument(arg: string): boolean {
+  return SEPARATORS.has(arg);
+}
+
 function checkArgs(args: readonly string[]): void {
   for (const arg of args) if (SEPARATORS.has(arg)) throw new UnsafeArgumentError(arg);
 }

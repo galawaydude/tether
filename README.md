@@ -154,9 +154,17 @@ one). A toolchain, because `node-pty` ships no Linux prebuild and is compiled
 during install.
 
 ```sh
-npm ci        # installs all workspaces; builds shared/, server/ (the CLI) and node-pty
+npm ci        # installs all workspaces; builds shared/, server/ (the CLI), web/ and node-pty
 npm test      # node:test across every package
-npm run build # server (tsc) and web (vite) — rerun after editing server sources
+npm run build # server (tsc) and web (vite) — rerun after editing either
+```
+
+`tether serve` serves the built app out of `web/dist`, so after editing `web/`
+either rebuild it or run Vite's dev server alongside, which proxies `/api` and
+the terminal WebSocket to a `tether serve` on the default port:
+
+```sh
+npm run dev -w @tether/web   # http://localhost:5173, hot reload, real server behind it
 ```
 
 `node-pty`'s install script is approved in the root `package.json` under

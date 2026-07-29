@@ -18,11 +18,13 @@ import type { IPty } from 'node-pty';
 import { createEscapeFilter } from './escape.ts';
 import {
   captureScrollback,
+  isSeparatorArgument,
   paneSize,
   pasteText,
   refreshClients,
   resizeWindow,
   sendKeys,
+  sendText,
   tmuxArgv,
 } from './tmux.ts';
 
@@ -112,6 +114,8 @@ export interface Terminals {
   resize(session: string, cols: number, rows: number): Promise<void>;
   /** Message text: pasted (newline-safe), then submitted. Returns false if replayed. */
   input(session: string, clientId: string, seq: number, text: string): Promise<boolean>;
+  /** Literal typed text, delivered but never submitted. Returns false if replayed. */
+  text(session: string, clientId: string, seq: number, text: string): Promise<boolean>;
   /** Raw keystrokes, by tmux key name. Returns false if replayed. */
   key(session: string, clientId: string, seq: number, keys: readonly string[]): Promise<boolean>;
   /** Tear down every attach. For shutdown and for tests. */
@@ -254,6 +258,26 @@ export function createTerminals(socket: string, historyLines = DEFAULT_HISTORY_L
         await pasteText(socket, session, text);
         await new Promise((r) => setTimeout(r, SUBMIT_DELAY_MS));
         await sendKeys(socket, session, ['Enter']);
+        return true;
+      });
+    },
+
+    text(session, clientId, seq, text) {
+      return serialize(session, async () => {
+        if (!accept(applied, session, clientId, seq)) return false;
+        // `send-keys -l` is one spawn and covers everything a keyboard produces
+        // except two cases, both of which the paste buffer handles because it
+        // reaches tmux on stdin and so never becomes an argv element: a line break
+        // (`send-keys -l` silently drops it — report §3), and the three strings
+        // tmux's own lexer eats as command separators before send-keys ever sees
+        // them. `;` is a key a phone user really does press; `{` and `}` are keys a
+        // developer presses constantly. Neither the argv guard nor `sendText`'s own
+        // rule is relaxed here — the delivery mechanism is chosen to suit the text.
+        if (isSeparatorArgument(text) || /[\n\r]/.test(text)) {
+          await pasteText(socket, session, text);
+        } else {
+          await sendText(socket, session, text);
+        }
         return true;
       });
     },

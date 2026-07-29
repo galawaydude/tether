@@ -56,6 +56,32 @@ export type ConversationEvent =
 export type SessionState = 'busy' | 'idle' | 'waiting';
 
 /**
+ * A session as the registry holds it and as the HTTP API returns it. The row and
+ * the payload are the same shape on purpose — the routes send it out unchanged —
+ * so it lives here, where a change to it is a compile error on both sides.
+ *
+ * `deadAt` non-null means the tmux session is gone; the row stays, because a dead
+ * session is resumable rather than deleted.
+ */
+export interface Session {
+  id: string;
+  machineId: string;
+  provider: string;
+  /**
+   * The provider's own session id. Null until the provider has one: Codex creates
+   * no session identity until the first user message, so tether holds a
+   * provisional row from spawn and back-fills it later.
+   */
+  providerSessionId: string | null;
+  cwd: string;
+  title: string;
+  tmuxName: string;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+  deadAt: Timestamp | null;
+}
+
+/**
  * Server → client control frames: JSON, sent as WebSocket **text** frames. They
  * carry no in-process references, so an M3 remote agent can forward them
  * unchanged.
@@ -91,9 +117,16 @@ export type ClientFrame =
   /** Message text. Multi-line safe: delivered by tmux's paste buffer, then submitted. */
   | { c: 'input'; seq: number; text: string }
   /**
-   * Raw keystrokes, as tmux key names: `['Enter']`, `['C-c']`, `['Escape']`. A
-   * standalone `';'` is rejected — tmux reads it as a command separator, so the
-   * driver's argv guard refuses it; a UI needs another way to send that one key.
+   * Literal text typed into the terminal, delivered as-is and **not** submitted.
+   * This is what a terminal view sends for every printable keystroke, so that no
+   * character a user can type has to survive being a tmux argv element: a
+   * standalone `';'`, `'{'` or `'}'` is a command separator to tmux's own lexer
+   * and the driver's argv guard refuses it, so those go by paste buffer instead.
+   */
+  | { c: 'text'; seq: number; text: string }
+  /**
+   * Non-printing keystrokes, as tmux key names: `['Enter']`, `['C-c']`,
+   * `['Escape']`, `['Up']`. Printable characters belong in a `text` frame.
    */
   | { c: 'key'; seq: number; keys: string[] }
   /** Last viewer to send this wins; `window-size manual` keeps it off other sessions. */

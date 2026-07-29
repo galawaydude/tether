@@ -72,6 +72,27 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   in a temp directory set `TETHER_ALLOWED_ROOTS` rather than bypassing it.
   `machine/sessions.ts` holds the one create/delete sequence — tmux plus registry,
   rollback on a failed insert — that both the CLI and the HTTP routes call.
+- **Terminal input is `text` frames plus `key` frames, and the split is
+  load-bearing.** Every printable character a user types goes in a `text` frame
+  (`web/src/keys.ts` → `Terminals.text`), never as a tmux key name: tmux's lexer
+  eats a standalone `;`, `{` or `}` argument, so `machine/terminal.ts` routes
+  exactly those — and anything with a newline — through the paste buffer, which
+  reaches tmux on stdin and is never argv. The argv guard in `tmux.ts` is not
+  relaxed for this and must not be; `isSeparatorArgument` is how a caller asks it
+  what it would refuse. The other half is that `xterm.onData` is **not only the
+  keyboard** — it also carries xterm's replies to terminal queries (OSC colour
+  reports, DA, cursor position, focus in/out). `keys.ts` drops every escape
+  sequence it does not recognise as a keystroke, because typing one of those into
+  a pane puts `;rgb:0000/0000/0000` in the agent's prompt. Both are covered by
+  `keys.test.ts` and by `terminal.test.ts` against real tmux.
+- **The browser app is served by two named routes, not a wildcard**
+  (`server/src/web/static.ts`). `@fastify/static` is registered with
+  `serve: false` purely for `reply.sendFile`; `/` and `/assets/:file` are the only
+  routes marked `public` besides `/api/login`. A wildcard would answer every
+  unmatched path publicly and hand an unauthenticated caller a 404-vs-401 oracle
+  for which API routes exist. `web`'s `prepare` builds `web/dist` on `npm ci` for
+  the same reason `server`'s does — `tether serve` reads it at startup and only
+  warns if it is absent.
 - **All persistent state is one SQLite file outside the repo**, opened by
   `server/src/db.ts` — `~/.local/state/tether/tether.sqlite`, file `0600` in a `0700`
   directory (`$XDG_STATE_HOME`, or `$TETHER_STATE_DIR`, which tests and any manual run
