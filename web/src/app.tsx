@@ -46,6 +46,13 @@ export function App() {
   return <Sessions onOpen={setOpen} onSignedOut={signedOut} />;
 }
 
+const TABS = [
+  { id: 'conversation', label: 'Conversation' },
+  { id: 'terminal', label: 'Terminal' },
+] as const;
+
+type Tab = (typeof TABS)[number]['id'];
+
 /**
  * The session screen: one header, two tabs, two panes.
  *
@@ -61,13 +68,6 @@ export function App() {
  * process from two independent sources (report §3) — there is no cursor between
  * them to get out of sync, and nothing here tries to reconcile them.
  */
-const TABS = [
-  { id: 'conversation', label: 'Conversation' },
-  { id: 'terminal', label: 'Terminal' },
-] as const;
-
-type Tab = (typeof TABS)[number]['id'];
-
 function SessionScreen({
   session,
   onBack,

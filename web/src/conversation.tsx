@@ -205,9 +205,7 @@ function RowView({ row }: { row: Row }) {
         </p>
       );
     case 'compaction':
-      return (
-        <p class="divider">context compacted</p>
-      );
+      return <p class="divider">context compacted</p>;
     case 'note':
       return <p class="note">{row.text}</p>;
     case 'tool':

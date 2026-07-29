@@ -40,8 +40,8 @@ targets, session sharing, usage dashboards, a mobile app.
 ## Status
 
 Toolchain, CI, the tmux driver, authentication, the session registry, the HTTP
-session API, the terminal transport, the conversation data layer, and the browser
-app, and the conversation view. Run `tether serve`, open the address it prints, and
+session API, the terminal transport, the conversation data layer, the browser app,
+and the conversation view. Run `tether serve`, open the address it prints, and
 you can log in, see the sessions on this machine, start one in a directory you name,
 and follow it in two tabs: a **Conversation** — your prompts, the agent's replies,
 and a collapsed card per tool call that opens onto its input and result — and a
@@ -166,8 +166,9 @@ npm run build # server (tsc) and web (vite) — rerun after editing either
 ```
 
 `tether serve` serves the built app out of `web/dist`, so after editing `web/`
-either rebuild it or run Vite's dev server alongside, which proxies `/api` and
-the terminal WebSocket to a `tether serve` on the default port:
+either rebuild it or run Vite's dev server alongside, which proxies `/api` — the
+terminal and conversation WebSockets included — to a `tether serve` on the
+default port:
 
 ```sh
 npm run dev -w @tether/web   # http://localhost:5173, hot reload, real server behind it
