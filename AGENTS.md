@@ -208,11 +208,68 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   — a file in the **user's own repo** — per project at spawn, with no trust gate,
   and its shim POSTs to `/internal/hook`. Codex's is one global trust-gated
   entry whose shim appends to a log tether tails. Report §4 chose the seam;
-  do not abstract over two examples. The transport differs for a reason that
-  outlives this PR: a `PreToolUse` hook answers a permission prompt on **stdout**,
-  so PR #14 needs request/response, which a log file could never become. Until
-  then the shim writes no stdout at all and the route replies empty — writing
-  either would silently allow or deny the user's tool call.
+  do not abstract over two examples. The transport differs because a `PreToolUse`
+  hook answers a permission prompt on **stdout**, so answering needs
+  request/response, which a log file could never become.
+- **The `PreToolUse` shim's stdout is a security boundary, and the hold is what
+  makes it one.** `/internal/hook` keeps the request open while the user taps
+  Approve or Deny; `Conversations.hook` returns the decision and the shim writes
+  it. Four rules, each with a verified reason (Claude Code 2.1.220, spiked live):
+  **(1) not everything is held.** `PreToolUse` fires for _every_ call and nothing
+  in the payload — nor in `~/.claude/sessions/<pid>.json`, which reads `busy`
+  throughout — says whether Claude Code was going to prompt, so a blanket hold
+  costs the timeout on every auto-allowed call. `NEVER_HELD` in
+  `providers/claude-code/events.ts` skips the read-only burst tools and
+  `#holdFor` skips a session nobody is **watching** — which is not the same as
+  subscribed, because the session screen keeps both panes mounted, so the `conv`
+  socket is open the whole time a user works in the terminal. The client sends
+  `{c:'watch'}` (the channel's whole client vocabulary) when the tab changes, and
+  switching away mid-hold releases like the last viewer leaving does — a
+  `timeout`, never a deny. Do not "fix" this by
+  re-deriving Claude Code's permission rules; they are the user's own settings
+  and the provider's to apply. **(2) Three timeouts, nested:** server hold <
+  the shim's `AbortSignal` < the settings-file `timeout`, all derived from
+  `permissionTimeoutMs()`. A hook killed at its `timeout` falls through, so the
+  outer two are nets rather than mechanisms. The outermost lives on disk in a
+  file tether does not own, so it can drift from the hold this process holds:
+  `installHook` **reconciles its own settings entry's `timeout`** rather than
+  skipping a project that already has one, and `reconcileProviderHooks` runs it
+  `updateOnly` for every session with a running pane at `listen`, beside
+  `writeHookEndpoint` and for the same reason — panes outlive the server, so a
+  restart under a new `TETHER_PERMISSION_TIMEOUT` is the ordinary path. Those two
+  are the only places the two values can diverge; reconcile a third there rather
+  than patching where the symptom shows. Reconciled means that one field of
+  tether's own handler and nothing else; at an unchanged hold the file is not
+  written at all, and `updateOnly` additionally creates **nothing** — no
+  directory, no settings file, no entry added back — because reconciling exists
+  to stop an entry tether owns from drifting, never to reassert its presence in
+  a repository a user removed it from. Installing may create; reconciling may
+  only update.
+  **(3) The fallback is neither allow
+  nor deny** — saying nothing hands the question back to the provider's own
+  rules; a reachable-then-failed tether says so through `systemMessage`, a
+  refused connection stays silent because tether not running is ordinary.
+  **(4) One hold, one settle.** `Conversations.answer` is single-shot, so a
+  second tap, a second viewer, or a tap racing the timer is a 409. That is the
+  whole of the reconciliation with the terminal, and it needs no more: an `allow`
+  means Claude Code never shows a dialog, so a reflex keystroke afterwards is
+  ordinary typing. What authorises a decision is the **session cookie** on
+  `POST /api/sessions/:id/permission`, never the hook secret — an unauthenticated
+  approve is an unauthenticated tool execution.
+- **`{c:'pending'}`'s `deadline` is what puts buttons on a card, not `pending`.**
+  tether reports far more proposals than it holds, and `{c:'answer'}` is how
+  every viewer learns a hold is over — so neither frame carries a `seq`, for the
+  same reason `state` does not. Both are replayed on subscribe, and a
+  deadline-less `pending` is **authoritative**: it clears the buttons, and the
+  `answer` behind it says how the hold ended, so a phone that reconnects after
+  one is over does not come back tapping a dead card.
+  `web/src/conversation.ts` owns the wording
+  (`toolState`/`toolResult`), because what a card says about a permission it is
+  holding is the most consequential copy in the product and a decision made in
+  the `.tsx` leaves the test suite. An answerable card is the one card that opens
+  itself and wraps rather than scrolls sideways: `rm -rf ./build` and `rm -rf /`
+  differ at the right edge, and a clipped command is the "approving blind" the
+  surface exists to prevent.
 - **The hook secret is a `0600` file read at hook execution time, and the
   settings file gets only a path.** `settings.local.json` lives in the user's
   repository, so a token in it is one `git add` from being published (report
@@ -342,7 +399,13 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   each takes its own directory and reopens its session **by name**, never `.row-open`.
   The stub knows nothing about where tether's shim, secret or endpoint are — it runs
   whatever `.claude/settings.local.json` lists — so a broken installer fails the test
-  rather than quietly proving nothing. `retries: 0` is deliberate. `npm ci` does not
+  rather than quietly proving nothing. A typed ask only **arms** the stub and a
+  trigger file fires it, because the hold needs the conversation pane in front and
+  typing needs the other tab; the stub fires when both have landed, in either
+  order, so nothing depends on which round-trip won. For the same reason the
+  timeout case never taps Terminal — that would release the hold it is watching
+  expire — and reads `.xterm-rows` through the hidden pane instead.
+  `retries: 0` is deliberate. `npm ci` does not
   fetch the browser (npm 12 blocks playwright's postinstall);
   `npx playwright install chromium` does, and CI runs it.
 

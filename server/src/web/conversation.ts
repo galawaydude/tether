@@ -19,6 +19,7 @@
  * already built against.
  */
 
+import type { ConvClientFrame, PermissionDecision, ServerFrame } from '@tether/shared';
 import type { FastifyInstance } from 'fastify';
 import type { DatabaseSync } from 'node:sqlite';
 
@@ -53,8 +54,45 @@ const CONV_SCHEMA = {
   },
 } as const;
 
+/**
+ * The answer to a held permission prompt.
+ *
+ * `callId` is the provider's own `tool_use_id`, so it is not tether's to
+ * validate beyond "a printable identifier of a sane length" — the authorisation
+ * is that it names a call *this* session is currently holding, which only
+ * `Conversations` can say. `enum` on the decision rather than a boolean: a
+ * request that meant to deny and arrived malformed must be a 400, never the
+ * other answer.
+ */
+const ANSWER_SCHEMA = {
+  params: PARAMS,
+  body: {
+    type: 'object',
+    required: ['callId', 'decision'],
+    additionalProperties: false,
+    properties: {
+      callId: { type: 'string', minLength: 1, maxLength: 200 },
+      decision: { type: 'string', enum: ['allow', 'deny'] },
+    },
+  },
+} as const;
+
 /** Close codes above 4000 are application-defined; these match `term-socket.ts`. */
 export const CLOSE_NO_SESSION = 4404;
+
+/** The channel's whole client vocabulary, parsed the same way the terminal's is. */
+export function parseWatch(raw: string): ConvClientFrame | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof value !== 'object' || value === null) return null;
+  const frame = value as Record<string, unknown>;
+  if (frame['c'] !== 'watch' || typeof frame['watching'] !== 'boolean') return null;
+  return { c: 'watch', watching: frame['watching'] };
+}
 
 type Params = { id: string };
 
@@ -74,6 +112,34 @@ export function registerConversationRoutes(
       const history = await conversations.history(session).catch(() => undefined);
       if (history === undefined) return reply.code(500).send({ error: 'transcript_unreadable' });
       return reply.send(history);
+    },
+  );
+
+  /**
+   * Approve or deny a proposed tool call — the tap the captain's decision is
+   * about (`decision-permission-answer-surface.md`).
+   *
+   * Authenticated exactly like every other route, by saying nothing: the
+   * default-deny hook in `server.ts` covers it because it does not opt out. That
+   * is not a formality here. An unauthenticated approve is an unauthenticated
+   * tool execution on the user's machine, and it would be reachable by anyone
+   * who could reach the port — the guard is the same one that keeps the rest of
+   * the API from being a shell, and it is not relaxed to make this path simpler.
+   *
+   * `409` is a real answer and the client renders it as one: the hold has
+   * already been settled — by the timer, by another viewer, or by this user
+   * tapping twice — and the prompt has moved on. Answering twice is exactly what
+   * this route must not let happen, so it reports rather than retries.
+   */
+  app.post<{ Params: Params; Body: { callId: string; decision: PermissionDecision } }>(
+    '/api/sessions/:id/permission',
+    { schema: ANSWER_SCHEMA },
+    async (request, reply) => {
+      const session = getSession(db, request.params.id);
+      if (session === undefined) return reply.code(404).send({ error: 'no_such_session' });
+      const answered = conversations.answer(session.id, request.body.callId, request.body.decision);
+      if (!answered) return reply.code(409).send({ error: 'not_awaiting_answer' });
+      return reply.code(204).send();
     },
   );
 }
@@ -99,17 +165,40 @@ export function registerConvSocket(
       }
 
       const alive = () => socket.readyState === socket.OPEN;
+      const send = (frame: ServerFrame) => {
+        if (alive()) socket.send(JSON.stringify(frame));
+      };
+      // The only thing a client says on this channel: which pane is in front.
+      // Validated by hand rather than trusted after `JSON.parse`, as on the
+      // terminal socket — reaching this route is equivalent to a shell — and
+      // anything else is dropped in silence.
+      //
+      // Listening before subscribing, and remembering the answer: subscribing
+      // spans a file read, and a client that says "I am on the terminal" inside
+      // that window would otherwise be heard by nobody and have the agent held
+      // for it anyway.
+      let watching = true;
+      socket.on('message', (data: Buffer, isBinary: boolean) => {
+        if (isBinary) return;
+        const frame = parseWatch(data.toString());
+        if (frame === null) return;
+        watching = frame.watching;
+        conversations.watch(session.id, send, frame.watching);
+      });
+
       const unsubscribe = await conversations.subscribe(
         session,
         Number(request.query.since ?? '0'),
-        (frame) => {
-          if (alive()) socket.send(JSON.stringify(frame));
-        },
+        send,
       );
-      // Subscribing spans a file read, and a client that gave up inside that
-      // window would otherwise stay subscribed for the life of the process.
-      if (!alive()) unsubscribe();
-      else socket.on('close', unsubscribe);
+      // A client that gave up inside that same window would otherwise stay
+      // subscribed for the life of the process.
+      if (!alive()) {
+        unsubscribe();
+        return;
+      }
+      socket.on('close', unsubscribe);
+      if (!watching) conversations.watch(session.id, send, false);
     },
   );
 }

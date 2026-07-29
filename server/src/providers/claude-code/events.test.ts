@@ -13,7 +13,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { MAX_OUTPUT } from '../cap.ts';
-import { mapHook, mapLines, mapRecord } from './events.ts';
+import { mapHook, mapLines, mapRecord, NEVER_HELD } from './events.ts';
 import { CAPTURED_VERSION } from './transcript.ts';
 
 function fixture(name: string): string[] {
@@ -228,6 +228,9 @@ test('a real PreToolUse becomes the tool card the transcript has not written yet
   assert.deepEqual(warnings, []);
   assert.deepEqual(signal, {
     signal: 'pending',
+    // A `Write` is not on the skip list, so tether may block the agent on it
+    // while the user decides.
+    holdable: true,
     e: {
       kind: 'tool_call',
       // Not a transcript uuid, and it must not look like one: this event never
@@ -243,6 +246,37 @@ test('a real PreToolUse becomes the tool card the transcript has not written yet
       callId: 'toolu_01RMgXSU9fEUYVSU1gccJJKQ',
     },
   });
+});
+
+test('a read-only tool is proposed but not worth stopping the agent for', () => {
+  // The reason this list exists at all: `PreToolUse` fires for *every* call and
+  // nothing in the payload says whether Claude Code was going to prompt about it
+  // (verified on 2.1.220 — an auto-allowed Read produces the same hook as a Bash
+  // that opens a dialog). Holding a burst of reads is how a phone in hand would
+  // make the agent crawl.
+  const bash = mapHook({ ...(preToolUse('Bash') as object) });
+  assert.equal(bash?.signal === 'pending' && bash.holdable, true);
+
+  for (const tool of NEVER_HELD) {
+    const signal = mapHook({
+      hook_event_name: 'PreToolUse',
+      tool_name: tool,
+      tool_use_id: 'toolu_read',
+      tool_input: {},
+    });
+    assert.equal(signal?.signal === 'pending' && signal.holdable, false, tool);
+  }
+
+  // A tool this build has never heard of — an MCP server's, or next month's — is
+  // held. Those are the ones that prompt, and a missing button costs the whole
+  // feature where a needless hold costs one timeout.
+  const unknown = mapHook({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'mcp__acme__deploy',
+    tool_use_id: 'toolu_mcp',
+    tool_input: {},
+  });
+  assert.equal(unknown?.signal === 'pending' && unknown.holdable, true);
 });
 
 test('a real Notification is the waiting state, in Claude Code’s own words', () => {

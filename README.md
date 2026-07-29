@@ -53,10 +53,10 @@ arrows, Ctrl-C). A live session shows what its agent is doing — _Working_, _Id
 or _Waiting for you_ — in the session list and above both views, and just **live**
 where the provider is not saying rather than a badge that would be a guess. A
 Claude Code permission prompt puts the tool call it is asking about in the
-conversation before the transcript has it (see
-[the hook](#the-claude-code-hook-and-the-file-it-writes-in-your-project)).
-Answering it still means the terminal tab: tether shows you the question and adds
-no approve/deny of its own.
+conversation before the transcript has it — with **Approve** and **Deny** on the
+card, so a yes/no does not mean switching into a terminal on a phone (see
+[the hook](#the-claude-code-hook-and-the-file-it-writes-in-your-project)). The
+terminal is still an answering surface and still always correct.
 
 You reply in the conversation tab's **composer**: a real text box, so the message
 is composed on the phone and sent as one unit rather than a round trip per
@@ -77,6 +77,7 @@ GET    /api/machines/local/sessions/:id
 POST   /api/machines/local/sessions/:id/resume restarts a dead session's conversation
 DELETE /api/machines/local/sessions/:id        kills the tmux session and marks the row dead
 GET    /api/sessions/:id/conversation          the whole conversation, with sequence numbers
+POST   /api/sessions/:id/permission            {"callId": "…", "decision": "allow" | "deny"}
 WS     /api/sessions/:id/conv?since=<seq>      conversation events after `seq`, the last one you hold
 WS     /api/sessions/:name/term                terminal bytes, both ways
 ```
@@ -87,14 +88,19 @@ the terminal — `~/.claude/projects/<slug>/<uuid>.jsonl` for Claude Code,
 append-only NDJSON, which is why they share one tailer and differ only in a
 mapper. Neither file is a public API — see [Known risks](#known-risks).
 
-`conv` also carries two frames that are not records of anything and deliberately
-have no `seq` — a sequence number is a position in the transcript, and neither of
-these comes from it. `{"c":"state","state":"busy"|"idle"|"waiting"}` is the
-session's current state, from the agent's own status file and its hooks.
-`{"c":"pending","e":…}` is a tool call the agent has proposed but not yet written
-down — the one you are being asked to approve; the transcript's own record for
-the same call carries the same `callId` and replaces that card rather than adding
-a second one.
+`conv` also carries three frames that are not records of anything and
+deliberately have no `seq` — a sequence number is a position in the transcript,
+and none of these comes from it.
+`{"c":"state","state":"busy"|"idle"|"waiting"}` is the session's current state,
+from the agent's own status file and its hooks. `{"c":"pending","e":…}` is a tool
+call the agent has proposed but not yet written down; the transcript's own record
+for the same call carries the same `callId` and replaces that card rather than
+adding a second one. A `pending` with a `deadline` is one tether is holding the
+agent on until then, so that card is the one that gets Approve and Deny; without
+it tether is only reporting the proposal.
+`{"c":"answer","callId":…,"outcome":"allow"|"deny"|"timeout"}` says a hold is
+over — sent to every subscriber, so a second phone stops offering buttons on a
+question that has already been answered.
 
 `conv` answers a `since` it cannot replay from memory with `{"c":"refetch"}`,
 which means "fetch the history route again"; it never sends a partial history.
@@ -153,9 +159,42 @@ to post to are `0600` files beside that script, read when the hook runs. The
 endpoint only listens on loopback, only accepts that secret, and only accepts a
 payload naming a session tether is actually running.
 
-tether does not answer permission prompts, and the hook cannot: it never writes
-to standard output, which is the channel a hook would use to allow or deny a
-tool call. You answer in the terminal, which is one tap away.
+### Answering from the conversation view
+
+A hook allows or denies a tool call by what it writes on standard output, and
+tether uses that: when Claude Code proposes a call, the card gets **Approve** and
+**Deny**, and Claude Code waits on your tap. The card opens itself and shows the
+whole input — the command, the path, the diff — because a button that says
+"Approve?" over a clipped line is worse than no button.
+
+The three things worth knowing, because each of them is a moment where you need
+to know what tether will do:
+
+- **It only holds calls worth stopping for, and only while you are watching.**
+  Claude Code runs the hook for _every_ tool call and tells it nothing about
+  whether it was going to ask you, so tether skips the read-only ones (`Read`,
+  `Grep`, `Glob`, …) and holds nothing at all for a session no browser has open.
+  An agent reading twenty files does not slow down because your phone is unlocked.
+- **Nobody answering is not a denial.** After 20 seconds tether stops holding,
+  says so on the card, and Claude Code asks you in the terminal exactly as it
+  would have. `TETHER_PERMISSION_TIMEOUT` is that number in seconds; `0` turns
+  holding off entirely and leaves tether reporting prompts without answering
+  them, which is a supported way to run it.
+- **If tether cannot be reached, nothing is decided for you.** The hook says
+  nothing and Claude Code's own permission rules apply — never an automatic
+  _allow_, because a server that is down must not be able to approve anything,
+  and never an automatic _deny_, because a tether outage must not break every
+  session on the machine. If tether was reachable and then failed, it says so in
+  your session rather than falling back silently.
+
+Whichever surface answers first wins. Approving on your phone means Claude Code
+never shows the dialog, so a reflex keystroke in the terminal afterwards is
+ordinary typing and approves nothing; answering in the terminal after a hold has
+expired updates the card. There is no second answer either way.
+
+Answering is authenticated as the rest of the API is — an unauthenticated approve
+would be an unauthenticated command running on your machine — so it needs a
+logged-in session, and the hook's own secret buys no say in the decision.
 
 ## Codex, and its optional hook
 
@@ -381,17 +420,22 @@ here that are not unit tests. One logs in, starts a session, watches it, types a
 it, **reloads the page**, and asserts the conversation and the terminal come back
 intact and exactly once; it also opens the New session sheet at the shortest
 phone viewports and asserts the card and its **Agent** picker stay on screen,
-since the sheet is the one screen that grows with its copy. The second acts out a
-permission prompt and asserts the proposed tool call is on screen while the
-transcript still has nothing about it, and that the transcript's own record then
-replaces that card rather than adding a second one. The third composes a message
-and asserts it reaches the agent and appears exactly once, that Enter in the box
-is a line break rather than a send, and that the composer leaves Send on screen
-with the keyboard up. All three run against
-`e2e/stub-agent.ts` — a script that prints, echoes what you type at it, writes a
-Claude-Code-shaped transcript, publishes its own status file and fires whatever
-hook the project's settings register — put on `PATH` as `claude`, so the session
-is created through the real code path. **CI never runs a real agent**: that would
+since the sheet is the one screen that grows with its copy. The second acts out
+three permission prompts and answers them three ways: **Approve** on the card
+runs the command and the transcript's own record then replaces that card rather
+than adding a second one; **Deny** blocks it and the command never runs; and one
+that nobody answers is handed back to the agent's own prompt in the terminal,
+answered there, and still reconciles to one card. It also types the reflex `yes`
+at the pane after a tap has already approved something, and asserts that
+approves nothing. The third composes a message and asserts it reaches the agent
+and appears exactly once, that Enter in the box is a line break rather than a
+send, and that the composer leaves Send on screen with the keyboard up. All
+three run against `e2e/stub-agent.ts` — a script that prints, echoes what you
+type at it, writes a Claude-Code-shaped transcript, publishes its own status
+file, fires whatever hook the project's settings register **and honours the
+decision that hook writes back**, exactly as Claude Code does — put on `PATH` as
+`claude`, so the session is created through the real code path.
+**CI never runs a real agent**: that would
 need real credentials and would cost money per run. Everything they touch
 (`HOME`, the state file, the tmux socket, the session root) is redirected into a
 scratch directory by `playwright.config.ts`.

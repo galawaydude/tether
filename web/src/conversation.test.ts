@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  addAnswer,
   addEcho,
   addEvents,
   addPending,
@@ -11,6 +12,8 @@ import {
   rebuild,
   sendBlocked,
   summarise,
+  toolResult,
+  toolState,
   toRows,
   type Rows,
   type SeqEvent,
@@ -464,4 +467,96 @@ test('a refetch keeps an outstanding echo, and its record still retires it once'
   // A refetch with nothing outstanding is the plain full rebuild.
   assert.deepEqual(texts(rebuild(noRows(), history)), []);
   assert.equal(rebuild(noRows(), history).rows.length, 2);
+});
+
+/**
+ * Answering from the card.
+ *
+ * The rule that matters here is that the *deadline* decides whether a card has
+ * buttons, not `pending`. tether reports far more proposals than it holds — a
+ * read-only tool, a background session, a hold turned off — and a button on a
+ * card nobody is waiting on would send a tap into a prompt that has moved on.
+ */
+const DEADLINE = AT + 20_000;
+
+test('a proposal tether is holding gets buttons; one it is only reporting does not', () => {
+  assert.equal((addPending(noRows(), PROPOSED).rows[0] as ToolRow).answerable, null);
+
+  const held = addPending(noRows(), PROPOSED, DEADLINE);
+  assert.deepEqual((held.rows[0] as ToolRow).answerable, {
+    callId: 'toolu_1',
+    deadline: DEADLINE,
+  });
+});
+
+test('the record landing first does not cost the buttons: the agent is still blocked', () => {
+  // The measured ordering on 2.1.220 was hook-then-record, but the fixtures
+  // caught the other one. Either way the hook is what the agent is waiting on.
+  const fromTranscript = addEvents(noRows(), [{ seq: 1, e: { ...PROPOSED, id: 'uuid-7#0' } }]);
+  const after = addPending(fromTranscript, PROPOSED, DEADLINE);
+  assert.equal(after.rows.length, 1, 'still one card');
+  assert.deepEqual((after.rows[0] as ToolRow).answerable?.deadline, DEADLINE);
+});
+
+test('an answer takes the buttons away, whoever gave it', () => {
+  for (const outcome of ['allow', 'deny', 'timeout'] as const) {
+    const held = addPending(noRows(), PROPOSED, DEADLINE);
+    const after = addAnswer(held, 'toolu_1', outcome);
+    const row = after.rows[0] as ToolRow;
+    assert.equal(row.answerable, null, outcome);
+    assert.equal(row.outcome, outcome);
+    // A second frame for the same call changes nothing — the reconnect replay,
+    // or two viewers' sockets both reporting the one answer.
+    assert.equal(addAnswer(after, 'toolu_1', 'deny'), after, outcome);
+  }
+});
+
+test('a hold that ended while the socket was down comes back dead, not wearing buttons', () => {
+  // The screen lock: the only viewer went, which released the agent to its own
+  // prompt, and the phone came back to a replay. The server replays the proposal
+  // with no deadline — it is not holding this call any more — followed by the
+  // answer that ended it, and the card has to read as the over thing it is.
+  const held = addPending(noRows(), PROPOSED, DEADLINE);
+  const replayed = addPending(held, PROPOSED);
+  assert.equal((replayed.rows[0] as ToolRow).answerable, null, 'the buttons are gone');
+
+  const settled = addAnswer(replayed, 'toolu_1', 'timeout');
+  const row = settled.rows[0] as ToolRow;
+  assert.equal(row.outcome, 'timeout');
+  assert.equal(toolState(row), 'in terminal');
+  assert.match(toolResult(row), /asking in the terminal/);
+});
+
+test('an answer for a card this client never built is ignored, not a crash', () => {
+  const held = addPending(noRows(), PROPOSED, DEADLINE);
+  assert.equal(addAnswer(held, 'toolu_unknown', 'allow'), held);
+});
+
+test('what a card says about a permission it is holding, and about how it ended', () => {
+  const held = addPending(noRows(), PROPOSED, DEADLINE).rows[0] as ToolRow;
+  assert.equal(toolState(held), 'asking');
+  assert.match(toolResult(held), /waiting on your answer/);
+
+  const answered = (outcome: 'allow' | 'deny' | 'timeout') =>
+    addAnswer(addPending(noRows(), PROPOSED, DEADLINE), 'toolu_1', outcome).rows[0] as ToolRow;
+
+  assert.equal(toolState(answered('deny')), 'denied');
+  assert.match(toolResult(answered('deny')), /did not run it/);
+  // A timeout is not an error and must not read as one: the question went back
+  // to the agent's own prompt, which the terminal tab is showing.
+  assert.equal(toolState(answered('timeout')), 'in terminal');
+  assert.match(toolResult(answered('timeout')), /asking in the terminal/);
+  assert.equal(toolState(answered('allow')), '…', 'approved, and now simply running');
+
+  // And once the real result lands, the card is an ordinary finished one again.
+  const approved = addAnswer(addPending(noRows(), PROPOSED, DEADLINE), 'toolu_1', 'allow');
+  const done = addEvents(approved, [
+    { seq: 1, e: { ...PROPOSED, id: 'uuid-7#0' } },
+    {
+      seq: 2,
+      e: { kind: 'tool_result', id: 'r1', at: AT, callId: 'toolu_1', output: 'ok', isError: false },
+    },
+  ]);
+  assert.equal(toolState(done.rows[0] as ToolRow), '✓');
+  assert.equal(toolResult(done.rows[0] as ToolRow), 'ok');
 });

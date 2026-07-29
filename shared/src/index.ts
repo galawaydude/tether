@@ -62,6 +62,16 @@ export type ToolCallEvent = Extract<ConversationEvent, { kind: 'tool_call' }>;
 /** What the session is doing, derived from whatever the provider publishes. */
 export type SessionState = 'busy' | 'idle' | 'waiting';
 
+/** The two answers a user can give a proposed tool call. */
+export type PermissionDecision = 'allow' | 'deny';
+
+/**
+ * How a held proposal ended. `timeout` is not a failure: tether stops holding
+ * and the provider's own permission prompt takes the question, which is the
+ * surface that was always going to be correct.
+ */
+export type PermissionOutcome = PermissionDecision | 'timeout';
+
 /**
  * A session as the registry holds it and as the HTTP API returns it. The row and
  * the payload are the same shape on purpose — the routes send it out unchanged —
@@ -130,13 +140,44 @@ export type ServerFrame =
    * arrives later (or, on some builds, ~150ms earlier) with the same `callId`,
    * and the client keys on that to *replace* rather than append. Order between
    * the two is not guaranteed, so neither side may assume it.
+   *
+   * `deadline` present means tether is **holding the agent's own hook** on this
+   * call and will answer it until then: the card gets Approve and Deny, and a
+   * tap is what the agent is blocked on. Absent means tether is only reporting —
+   * the provider's own prompt owns the answer — and the card must offer no
+   * buttons, because a button that resolves nothing is worse than no button.
    */
-  | { c: 'pending'; e: ToolCallEvent }
+  | { c: 'pending'; e: ToolCallEvent; deadline?: Timestamp }
+  /**
+   * A held proposal is over. Outside the `seq` stream for the same reason
+   * `pending` is: it is the end of a claim, not a record — the transcript's own
+   * `tool_call` still arrives afterwards for an allowed call and supersedes the
+   * card by `callId`.
+   *
+   * Sent to *every* subscriber, which is what makes two phones, or a phone and a
+   * terminal, converge rather than race: whoever answered first is the answer,
+   * and the rest of them stop offering buttons.
+   */
+  | { c: 'answer'; callId: string; outcome: PermissionOutcome }
   /** Input `seq` will not be applied again. The client stops retrying it. */
   | { c: 'ack'; seq: number };
 
 /**
- * Client → server control frames, also JSON text frames.
+ * Client → server on the `conv` channel — a vocabulary of one, and separate from
+ * {@link ClientFrame} because the two sockets share none of it: there is no
+ * sequencing here and nothing to ack.
+ *
+ * `watching` is whether the conversation pane is the one in front — which is all
+ * the client claims here, and not whether the screen is on. The session screen
+ * keeps both panes mounted, so being subscribed says nothing about it, and the
+ * server holds a permission prompt only for a viewer whose front pane is the one
+ * that answers it. Absent, the server assumes `true`: that is the tab the app
+ * opens on.
+ */
+export type ConvClientFrame = { c: 'watch'; watching: boolean };
+
+/**
+ * Client → server control frames on the terminal channel, also JSON text frames.
  *
  * `seq` is per client and monotonic, and the client retries until the matching
  * `ack` arrives. Input is the one channel where at-least-once is not good

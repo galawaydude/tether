@@ -62,9 +62,12 @@ async function harness(t: { after: (fn: () => unknown) => void }) {
    * real lookup against real tmux.
    */
   const pane: { running?: string } = {};
+  /** What the user tapped, where a test is about the decision coming back. */
+  const answer: { decision?: 'allow' | 'deny' } = {};
   const conversations = {
-    hook(session: { id: string }, payload: unknown) {
+    async hook(session: { id: string }, payload: unknown) {
       seen.push({ sessionId: session.id, payload });
+      return answer.decision;
     },
     async ownsProviderSession(_session: { id: string }, providerSessionId: string) {
       return pane.running === providerSessionId;
@@ -84,7 +87,7 @@ async function harness(t: { after: (fn: () => unknown) => void }) {
   t.after(() => app.close());
 
   const secret = await ensureHookSecret(stateDir);
-  return { app, db, stateDir, secret, seen, pane };
+  return { app, db, stateDir, secret, seen, pane, answer };
 }
 
 function preToolUse(overrides: Record<string, unknown> = {}) {
@@ -144,7 +147,10 @@ test('a hook with the right secret from loopback reaches the conversation', asyn
 
   const res = await post(h);
   assert.equal(res.statusCode, 204);
-  assert.equal(res.body, '', 'the reply is empty: stdout is how a hook answers a prompt (PR #14)');
+  // Empty, because this stub `Conversations` decides nothing. An empty reply is
+  // not a neutral default — the shim turns it into a hook that says nothing,
+  // which is the deliberate "leave the provider's own rules in charge".
+  assert.equal(res.body, '');
   assert.equal(h.seen.length, 1);
   assert.equal(h.seen[0]?.sessionId, id);
   assert.deepEqual(h.seen[0]?.payload, preToolUse());
@@ -301,4 +307,19 @@ test('a state directory with no secret in it accepts nothing at all', async (t) 
     payload: preToolUse(),
   });
   assert.equal(empty.statusCode, 401);
+});
+
+test('a decision the user tapped is what the hook is answered with', async (t) => {
+  const h = await harness(t);
+  liveSession(h.db);
+
+  for (const decision of ['allow', 'deny'] as const) {
+    h.answer.decision = decision;
+    const res = await post(h);
+    // 200 with a body is the *only* way a decision leaves tether, and the shim
+    // rebuilds Claude Code's own shape from it rather than echoing it — so a
+    // reply this route should never send cannot reach the decision channel.
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(res.json(), { decision });
+  }
 });

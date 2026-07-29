@@ -569,6 +569,52 @@ label {
   color: var(--danger);
 }
 
+/* A card the agent is blocked on. It opens itself, so it is the one card that
+   can be tall — and the buttons live at its end, so the whole of it has to fit a
+   short phone with room to spare. The input body is capped harder than the 40vh
+   the other cards get for exactly that reason: at 360×640 the summary, a capped
+   input, the one-line result and the buttons come to well under one screen, and
+   the list's own stick-to-the-end scrolls the buttons into view regardless. */
+.tool-answerable {
+  border-color: var(--accent);
+}
+
+/* The one card that wraps instead of scrolling sideways. Everywhere else code
+   is left at the width its author chose (see `.tool-body`), but here the right
+   edge of the box is where `rm -rf ./build` and `rm -rf /` stop differing — a
+   command clipped at 360px is exactly the "approving blind" the whole surface
+   exists to prevent. */
+.tool-answerable .tool-body {
+  max-height: 26vh;
+  overflow-x: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.tool-answer {
+  margin: 0 12px 12px;
+}
+
+.tool-answer-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+/* Both full width and thumb-sized: this is the tap the product exists for, and
+   a 360px-wide phone has room for exactly two of them side by side. Deny sits
+   first in the DOM so the destructive answer is never the one under a thumb
+   reaching for the right-hand edge. */
+.tool-answer-buttons > button {
+  flex: 1;
+  min-height: var(--tap);
+}
+
+.tool-answer-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  text-align: center;
+}
+
 .tool-label {
   margin: 8px 12px 4px;
   font-size: 12px;

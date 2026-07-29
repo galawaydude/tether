@@ -20,10 +20,17 @@ import {
   type Session,
   createSession,
   getSession,
+  listSessions,
   markDead,
   revive,
 } from './registry.ts';
-import { isSessionGone, killSession, newSession, resolveCwd } from './tmux.ts';
+import {
+  isSessionGone,
+  killSession,
+  listSessions as listTmuxSessions,
+  newSession,
+  resolveCwd,
+} from './tmux.ts';
 
 /**
  * What a provider is started with when no explicit command is given. A `Map` rather
@@ -49,6 +56,10 @@ export const PROVIDER_RESUME = new Map<string, (providerSessionId: string) => re
 /**
  * Put tether's hook in the project before the agent reads its settings.
  *
+ * **The creating one**, and the only one: the user has just asked for a session
+ * in this directory, so an absent entry is one to add. `reconcileProviderHooks`
+ * below is the update-only counterpart and may not create anything.
+ *
  * Best-effort on purpose, and this is the whole of its error policy: the hook
  * only makes a pending tool card and a *waiting* badge appear sooner than the
  * transcript can (report §4). A project whose `settings.local.json` tether
@@ -60,6 +71,59 @@ async function installProviderHook(provider: string, cwd: string): Promise<void>
   await installHook({ cwd, stateDir: stateDir() }).catch((error: unknown) => {
     process.stderr.write(`tether: hook not installed — ${(error as Error).message}\n`);
   });
+}
+
+/**
+ * Bring every live session's project hook back into step with **this** server.
+ *
+ * ## The invariant, which is the reason this function exists
+ *
+ * The `timeout` in a project's `.claude/settings.local.json` must never disagree
+ * with the hold this process is configured with. It is the outermost of the
+ * three nested timeouts (`hookTimeoutSeconds`), so a stale one means Claude Code
+ * kills the hook while tether is still showing a live countdown and live
+ * buttons — and a tap then reports an approval the agent stopped waiting for,
+ * which is the one silent wrong answer this whole surface exists to prevent.
+ *
+ * The number therefore lives in two places that can drift: this process's memory
+ * and a file on disk. It is reconciled at *every* point where they can, which is
+ * exactly two: at spawn (`startSession`, `resumeSession`) and here, at `listen`.
+ * This one covers the panes that were already running when the server came back
+ * up under a different `TETHER_PERMISSION_TIMEOUT` — surviving a restart is the
+ * product's whole point, so that is the ordinary path and not an edge. If you
+ * find a third way the two can diverge, reconcile it here rather than adding a
+ * patch where the symptom showed up.
+ *
+ * ## What it may not do
+ *
+ * **Update only.** Reconciliation exists to stop an entry tether already owns
+ * from drifting out of step, never to reassert tether's presence: a project with
+ * no tether entry is left completely alone — no `.claude` directory, no settings
+ * file, no backup — because a user who deleted that entry from their own
+ * repository has given an answer, not left a fault to repair, and a project
+ * directory they have since removed is not tether's to recreate. That is the
+ * deliberate difference from `installProviderHook`, which may create because the
+ * user has just asked for a session there.
+ *
+ * And only the panes that are actually running: a registry row outlives a
+ * reboot, so `deadAt` alone would have this writing into every directory tether
+ * ever recorded. Best-effort by the same rule as `installProviderHook` — a
+ * project tether refuses to rewrite costs the accelerator, never a `listen`.
+ */
+export async function reconcileProviderHooks(db: DatabaseSync, socket: string): Promise<void> {
+  const running = new Set(await listTmuxSessions(socket).catch(() => []));
+  const done = new Set<string>();
+  for (const session of listSessions(db)) {
+    const key = `${session.provider}\0${session.cwd}`;
+    if (session.deadAt !== null || !running.has(session.tmuxName) || done.has(key)) continue;
+    done.add(key);
+    if (session.provider !== DEFAULT_PROVIDER) continue;
+    await installHook({ cwd: session.cwd, stateDir: stateDir(), updateOnly: true }).catch(
+      (error: unknown) => {
+        process.stderr.write(`tether: hook not reconciled — ${(error as Error).message}\n`);
+      },
+    );
+  }
 }
 
 /**

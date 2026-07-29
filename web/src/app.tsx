@@ -164,6 +164,10 @@ function SessionScreen({
               <ConversationView
                 sessionId={session.id}
                 provider={session.provider}
+                // Which tab is in front, not which pane is mounted: both are, so
+                // the server would otherwise hold the agent on a permission
+                // prompt while the user is answering it in the terminal.
+                watching={tab === 'conversation'}
                 onStatus={report('conversation')}
                 onState={(state, detail) =>
                   setAgent((current) =>

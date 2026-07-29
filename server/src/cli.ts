@@ -17,7 +17,12 @@ import {
   openRegistry,
   reconcileWithTmux,
 } from './machine/registry.ts';
-import { resumeSession, startSession, stopSession } from './machine/sessions.ts';
+import {
+  reconcileProviderHooks,
+  resumeSession,
+  startSession,
+  stopSession,
+} from './machine/sessions.ts';
 import { PtyUnavailableError, createTerminals, loadPty } from './machine/terminal.ts';
 import { HOOK_EVENTS, hookStatus, installHook, removeHook } from './providers/codex/hooks.ts';
 import { codexHome } from './providers/codex/spawn.ts';
@@ -324,6 +329,14 @@ async function serve(db: DatabaseSync, auth: AuthStore, args: ServeArgs): Promis
   // gets no hooks — the same as no server at all, which the shim already
   // survives silently.
   await writeHookEndpoint(stateDir(), `http://127.0.0.1:${config.port}/internal/hook`);
+
+  // Beside the endpoint, and for the same reason: the world changed under panes
+  // that are still running. That rewrites where the shim posts; this brings the
+  // settings-file `timeout` back into step with the hold this process was
+  // started with. It updates tether's own entry and never adds one — see
+  // `reconcileProviderHooks` for why the two must never disagree, and for why
+  // reconciling is not installing.
+  await reconcileProviderHooks(db, socket);
 
   process.stdout.write(`${formatBanner(config, hasPassword)}\n`);
   const warning = offLoopbackWarning(config);
