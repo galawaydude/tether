@@ -39,8 +39,8 @@ targets, session sharing, usage dashboards, a mobile app.
 
 ## Status
 
-Repository skeleton only. Nothing runs yet — this milestone is being built one
-focused PR at a time, starting from the toolchain and CI.
+Toolchain, CI and the tmux driver. Nothing runs end to end yet — this milestone
+is being built one focused PR at a time.
 
 ## Development
 
