@@ -395,6 +395,12 @@ export type InstallResult = {
 /**
  * Put tether's hook in a project, and make sure the shim and the secret exist.
  *
+ * **This is the creating entry point**, and it is the spawn-time one: the user
+ * has just asked for a session in this directory, so an absent entry is one to
+ * add. `updateOnly` is the other half — see the option — and a caller that only
+ * means to keep an existing entry in step must pass it rather than calling this
+ * bare.
+ *
  * Idempotent, and it has to be: `startSession` calls this on every spawn in the
  * directory, so a second call re-writes the shim (an upgrade updates it) and
  * never appends a second entry. Appended rather than inserted, and every other
@@ -420,6 +426,17 @@ export async function installHook(options: {
   now?: Date;
   /** Overrides `TETHER_PERMISSION_TIMEOUT`. Tests, and nothing else. */
   holdMs?: number;
+  /**
+   * Update tether's own entry if it is already there, and otherwise **do
+   * nothing at all** — no `.claude` directory, no settings file, no backup, and
+   * no entry added back.
+   *
+   * Reconciliation exists to stop an entry tether already owns from drifting out
+   * of step, never to reassert tether's presence. A user who deleted tether's
+   * hook from their own repository has given an answer, not left a fault to
+   * repair, and a directory they have since removed is not tether's to recreate.
+   */
+  updateOnly?: boolean;
 }): Promise<InstallResult> {
   const path = settingsPath(options.cwd);
   const shim = hookShimPath(options.stateDir);
@@ -451,6 +468,7 @@ export async function installHook(options: {
       updated.push(event);
       continue;
     }
+    if (options.updateOnly === true) continue;
     groups.push({
       // `matcher` selects tools, so it is meaningful for `PreToolUse` and not
       // for `Notification`, which has none.

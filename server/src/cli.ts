@@ -333,9 +333,10 @@ async function serve(db: DatabaseSync, auth: AuthStore, args: ServeArgs): Promis
   // Beside the endpoint, and for the same reason: the world changed under panes
   // that are still running. That rewrites where the shim posts; this brings the
   // settings-file `timeout` back into step with the hold this process was
-  // started with. See `reconcileProviderHooks` for why the two must never
-  // disagree.
-  await reconcileProviderHooks(db);
+  // started with. It updates tether's own entry and never adds one — see
+  // `reconcileProviderHooks` for why the two must never disagree, and for why
+  // reconciling is not installing.
+  await reconcileProviderHooks(db, socket);
 
   process.stdout.write(`${formatBanner(config, hasPassword)}\n`);
   const warning = offLoopbackWarning(config);

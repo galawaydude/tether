@@ -234,12 +234,17 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   file tether does not own, so it can drift from the hold this process holds:
   `installHook` **reconciles its own settings entry's `timeout`** rather than
   skipping a project that already has one, and `reconcileProviderHooks` runs it
-  for every live session at `listen`, beside `writeHookEndpoint` and for the same
-  reason — panes outlive the server, so a restart under a new
-  `TETHER_PERMISSION_TIMEOUT` is the ordinary path. Those two are the only places
-  the two values can diverge; reconcile a third there rather than patching where
-  the symptom shows. Reconciled means that one field of tether's own handler and
-  nothing else; at an unchanged hold the file is not written at all.
+  `updateOnly` for every session with a running pane at `listen`, beside
+  `writeHookEndpoint` and for the same reason — panes outlive the server, so a
+  restart under a new `TETHER_PERMISSION_TIMEOUT` is the ordinary path. Those two
+  are the only places the two values can diverge; reconcile a third there rather
+  than patching where the symptom shows. Reconciled means that one field of
+  tether's own handler and nothing else; at an unchanged hold the file is not
+  written at all, and `updateOnly` additionally creates **nothing** — no
+  directory, no settings file, no entry added back — because reconciling exists
+  to stop an entry tether owns from drifting, never to reassert its presence in
+  a repository a user removed it from. Installing may create; reconciling may
+  only update.
   **(3) The fallback is neither allow
   nor deny** — saying nothing hands the question back to the provider's own
   rules; a reachable-then-failed tether says so through `systemMessage`, a

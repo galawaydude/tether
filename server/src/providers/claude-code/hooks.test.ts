@@ -8,7 +8,7 @@
 
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -173,6 +173,55 @@ test('a reinstall at a new hold moves the timeout instead of leaving a stale one
   const third = await installHook({ cwd, stateDir, holdMs: 20_000 });
   assert.deepEqual([third.added, third.updated], [[], []]);
   assert.equal(await readFile(settingsPath(cwd), 'utf8'), before);
+});
+
+test('an update-only install reconciles its own entry and adds nothing anywhere', async () => {
+  const { cwd, stateDir } = await dirs();
+  await installHook({ cwd, stateDir, holdMs: 5000 });
+  const reconciled = await installHook({ cwd, stateDir, holdMs: 20_000, updateOnly: true });
+
+  assert.deepEqual(reconciled.added, []);
+  assert.deepEqual(reconciled.updated, [...HOOK_EVENTS], 'the entry it owns still follows the hold');
+  const hooks = (await settings(cwd))['hooks'] as Record<
+    string,
+    { hooks: Record<string, unknown>[] }[]
+  >;
+  assert.equal(hooks['PreToolUse']![0]!.hooks[0]!['timeout'], hookTimeoutSeconds(20_000));
+});
+
+test('an update-only install never reasserts tether’s presence', async () => {
+  // A user who deleted tether's entry from their own repository has given an
+  // answer. Same for a project directory they have since removed.
+  const theirs = { permissions: { allow: ['Bash(npm test)'] } };
+
+  for (const [what, prepare] of [
+    ['no settings file at all', async () => {}],
+    [
+      'a settings file with no tether entry',
+      async (cwd: string) => {
+        await mkdir(join(cwd, '.claude'), { recursive: true });
+        await writeFile(settingsPath(cwd), JSON.stringify(theirs, null, 2));
+      },
+    ],
+    ['a project directory that is gone', async (cwd: string) => rm(cwd, { recursive: true })],
+  ] as const) {
+    const { cwd, stateDir } = await dirs();
+    await prepare(cwd);
+    const before = await readFile(settingsPath(cwd), 'utf8').catch(() => undefined);
+
+    const result = await installHook({ cwd, stateDir, updateOnly: true });
+    assert.deepEqual([result.added, result.updated], [[], []], what);
+    assert.equal(result.backupPath, undefined, `${what}: nothing changed, so nothing to back up`);
+    assert.equal(
+      await readFile(settingsPath(cwd), 'utf8').catch(() => undefined),
+      before,
+      `${what}: not one byte`,
+    );
+    // Not even the directory: a project the user removed is not tether's to
+    // recreate, and a repository with no tether entry stays that way.
+    if (before === undefined) await assert.rejects(() => stat(join(cwd, '.claude')), what);
+    await assert.rejects(() => readdir(join(stateDir, 'claude-settings-backups')), what);
+  }
 });
 
 test('raising TETHER_PERMISSION_TIMEOUT reaches a project that was already installed', async (t) => {

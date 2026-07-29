@@ -13,7 +13,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -197,21 +197,44 @@ test('a restart under a different hold moves the settings timeout without a resp
 
   // The whole point: the pane is still running and nothing respawns it.
   process.env['TETHER_PERMISSION_TIMEOUT'] = '45';
-  await reconcileProviderHooks(db);
+  await reconcileProviderHooks(db, socket);
   assert.equal(await timeoutOnDisk(), hookTimeoutSeconds(45_000), 'the on-disk value followed');
   assert.deepEqual(await listTmuxSessions(socket), [started.tmuxName], 'and nothing respawned');
 
   // A second listen at the same hold writes nothing at all.
   const unchanged = await readFile(settings, 'utf8');
-  await reconcileProviderHooks(db);
+  await reconcileProviderHooks(db, socket);
   assert.equal(await readFile(settings, 'utf8'), unchanged);
 
-  // A dead row's project is not reconciled: there is no pane reading it.
+  // A row whose pane is gone is not reconciled — with or without the registry
+  // having caught up, since `serve` does not reconcile it before listening and a
+  // row outlives a reboot.
   await killServer(socket);
-  await reconcileWithTmux(db, socket);
   process.env['TETHER_PERMISSION_TIMEOUT'] = '9';
-  await reconcileProviderHooks(db);
+  await reconcileProviderHooks(db, socket);
+  assert.equal(await timeoutOnDisk(), hookTimeoutSeconds(45_000), 'a stale live row is skipped');
+  await reconcileWithTmux(db, socket);
+  await reconcileProviderHooks(db, socket);
   assert.equal(await timeoutOnDisk(), hookTimeoutSeconds(45_000));
+});
+
+test('reconciling a project tether has no entry in leaves it exactly as it was', async (t) => {
+  const { db, cwd, socket } = await harness(t);
+  const started = await startSession(db, socket, { cwd });
+  const settings = join(cwd, '.claude', 'settings.local.json');
+
+  // The user took tether's hook out of their own repository, which is an answer
+  // and not a fault: a `listen` must not put it back.
+  const theirs = `${JSON.stringify({ permissions: { allow: ['Bash(npm test)'] } }, null, 2)}\n`;
+  await writeFile(settings, theirs);
+  await reconcileProviderHooks(db, socket);
+  assert.equal(await readFile(settings, 'utf8'), theirs);
+
+  // And a directory they have since removed is not tether's to recreate.
+  await rm(cwd, { recursive: true, force: true });
+  await reconcileProviderHooks(db, socket);
+  await assert.rejects(() => readFile(settings, 'utf8'));
+  assert.deepEqual(await listTmuxSessions(socket), [started.tmuxName], 'nothing else moved either');
 });
 
 test('resume is idempotent — a second call does not start a second pane', async (t) => {
