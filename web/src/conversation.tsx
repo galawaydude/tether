@@ -22,6 +22,7 @@ import {
   addEcho,
   addEvents,
   addPending,
+  markUndelivered,
   noRows,
   rebuild,
   sendBlocked,
@@ -108,15 +109,11 @@ export function ConversationView({
         const history = await fetchConversation(sessionId);
         if (closed) return;
         setFailed(false);
-        // Built here rather than only in the updater because `connect` needs the
-        // `seq` now, and an updater runs at the next render. It is also the
-        // answer whenever nothing is outstanding, which is every refetch but the
-        // one that lands on a message sent seconds ago.
-        const fresh = rebuild(noRows(), history.events);
-        since = fresh.seq;
-        setState((current) =>
-          current.echoes.length === 0 ? fresh : rebuild(current, history.events),
-        );
+        // The route's own cursor rather than one re-derived from the rows: it is
+        // the documented handshake, and `connect` needs it now, whereas an
+        // updater does not run until the next render.
+        since = history.seq;
+        setState((current) => rebuild(current, history.events));
         connect();
       } catch {
         if (closed) return;
@@ -191,6 +188,13 @@ export function ConversationView({
     };
   }, [sessionId]);
 
+  // The socket a composed message leaves on has closed for good, so anything
+  // still outstanding is never arriving. `markUndelivered` returns the same
+  // object when there is nothing to mark, which is every other status.
+  useEffect(() => {
+    setState((current) => markUndelivered(current, terminal));
+  }, [terminal]);
+
   // Stick to the end only when already there: a user reading back through a long
   // session must not be yanked to the bottom every time the agent says something.
   const stuck = useRef(true);
@@ -225,13 +229,16 @@ export function ConversationView({
         {/* Keyed by position: an echo is retired from the front, so the key of
             everything behind it shifts by one and Preact re-renders text into
             cards that are already on screen rather than replacing them. */}
-        {state.echoes.map((text, at) => (
-          <article class="msg msg-user msg-sending" key={`echo:${at}`}>
+        {state.echoes.map((echo, at) => (
+          <article
+            class={`msg msg-user ${echo.undelivered === null ? 'msg-sending' : 'msg-undelivered'}`}
+            key={`echo:${at}`}
+          >
             {/* The same label the record that replaces it will carry, so the
                 swap changes the note and nothing else. */}
             <h3 class="msg-who">{whoLabel('user', provider)}</h3>
-            <p class="msg-text">{text}</p>
-            <p class="msg-note">Sending…</p>
+            <p class="msg-text">{echo.text}</p>
+            <p class="msg-note">{echo.undelivered ?? 'Sending…'}</p>
           </article>
         ))}
       </div>

@@ -600,6 +600,17 @@ label {
   opacity: 0.7;
 }
 
+/* Sent, and now known never to have left. Kept at full opacity and marked: the
+   text is the thing the user would otherwise lose, so it stays selectable and
+   copyable rather than being dimmed like something still in flight. */
+.msg-undelivered {
+  border-color: var(--danger);
+}
+
+.msg-undelivered .msg-note {
+  color: var(--danger);
+}
+
 .msg-note {
   margin: 4px 0 0;
   font-size: 13px;

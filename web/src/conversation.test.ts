@@ -6,11 +6,13 @@ import {
   addEcho,
   addEvents,
   addPending,
+  markUndelivered,
   noRows,
   rebuild,
   sendBlocked,
   summarise,
   toRows,
+  type Rows,
   type SeqEvent,
   type ToolRow,
 } from './conversation.ts';
@@ -22,6 +24,11 @@ function stream(...events: ConversationEvent[]): SeqEvent[] {
 }
 
 const AT = 1_700_000_000_000;
+
+/** What is still outstanding, which is what nearly every echo assertion is about. */
+function texts(state: Rows): string[] {
+  return state.echoes.map((echo) => echo.text);
+}
 
 test('the three things a conversation is made of become three kinds of row', () => {
   const rows = toRows(
@@ -280,12 +287,12 @@ test('a composed message shows at once and is replaced, not duplicated, by its r
   let state = addEcho(noRows(), sent);
   // Shown before any round trip: the whole point of composing locally is that
   // the textarea does not empty into silence while the agent thinks.
-  assert.deepEqual(state.echoes, [sent]);
+  assert.deepEqual(texts(state), [sent]);
   assert.equal(state.rows.length, 0);
 
   // The transcript catches up. One message, from the record — never two.
   state = addEvents(state, stream({ kind: 'user', id: 'u1', at: AT, text: sent }));
-  assert.deepEqual(state.echoes, []);
+  assert.deepEqual(texts(state), []);
   assert.deepEqual(state.rows, [{ key: '1', row: 'message', who: 'user', text: sent }]);
 });
 
@@ -294,19 +301,19 @@ test('the record retires an echo even when the provider recorded it differently'
   // the life of the session; matching on arrival order cannot.
   let state = addEcho(noRows(), 'ship it');
   state = addEvents(state, stream({ kind: 'user', id: 'u1', at: AT, text: 'ship it\n' }));
-  assert.deepEqual(state.echoes, []);
+  assert.deepEqual(texts(state), []);
   assert.equal(state.rows.length, 1);
 });
 
 test('two messages sent before either lands retire oldest-first and stay in order', () => {
   let state = addEcho(addEcho(noRows(), 'first'), 'second');
-  assert.deepEqual(state.echoes, ['first', 'second']);
+  assert.deepEqual(texts(state), ['first', 'second']);
 
   state = addEvents(state, stream({ kind: 'user', id: 'u1', at: AT, text: 'first' }));
-  assert.deepEqual(state.echoes, ['second']);
+  assert.deepEqual(texts(state), ['second']);
 
   state = addEvents(state, [{ seq: 2, e: { kind: 'user', id: 'u2', at: AT, text: 'second' } }]);
-  assert.deepEqual(state.echoes, []);
+  assert.deepEqual(texts(state), []);
   assert.deepEqual(
     state.rows.map((row) => (row as { text: string }).text),
     ['first', 'second'],
@@ -321,7 +328,7 @@ test('a replayed record cannot retire a second echo', () => {
   const first = stream({ kind: 'user', id: 'u1', at: AT, text: 'first' });
   state = addEvents(state, first);
   state = addEvents(state, first);
-  assert.deepEqual(state.echoes, ['second']);
+  assert.deepEqual(texts(state), ['second']);
   assert.equal(state.rows.length, 1);
 });
 
@@ -330,7 +337,7 @@ test('an assistant message does not retire an echo', () => {
   const state = addEvents(addEcho(noRows(), 'hello'), [
     { seq: 1, e: { kind: 'assistant', id: 'a1', at: AT, text: 'working on it' } },
   ]);
-  assert.deepEqual(state.echoes, ['hello']);
+  assert.deepEqual(texts(state), ['hello']);
 });
 
 test('the composer refuses to send into a permission prompt, and only that state', () => {
@@ -377,6 +384,54 @@ test('the composer refuses a session that has ended, and says which kind of gone
   );
 });
 
+test('an echo outstanding when the socket closes for good is marked, not left sending', () => {
+  // The composer refuses a *new* message after either close, but the card above
+  // that refusal was claiming a message was on its way with no socket left to
+  // carry it. Marked rather than dropped: the text is what the user would lose.
+  const sending = addEcho(noRows(), 'ship it');
+  assert.equal(sending.echoes[0]?.undelivered, null);
+
+  // Every other status leaves it alone, and says so by identity — a message on a
+  // reconnecting socket is still going out, which is what the unacked set is for.
+  for (const status of ['connecting', 'live', 'retrying', 'signedOut'] as const) {
+    assert.equal(markUndelivered(sending, status), sending);
+  }
+
+  // Two closes, two facts, in the same words the send refusal uses.
+  assert.equal(
+    markUndelivered(sending, 'ended').echoes[0]?.undelivered,
+    'Not delivered: this session ended.',
+  );
+  assert.equal(
+    markUndelivered(sending, 'gone').echoes[0]?.undelivered,
+    'Not delivered: the server no longer has this session.',
+  );
+
+  // Nothing outstanding, and a second pass over what is already marked, are both
+  // the same object: the effect that calls this runs on every status change.
+  const empty = noRows();
+  assert.equal(markUndelivered(empty, 'ended'), empty);
+  const marked = markUndelivered(sending, 'ended');
+  assert.equal(markUndelivered(marked, 'ended'), marked);
+});
+
+test('marking an echo undelivered is not retiring it: a late record still retires it once', () => {
+  // Marked is a state, not an exit. If the pane did take the message before it
+  // went and the record turns up, it retires the echo through the ordinary path
+  // — exactly once, and never beside a second copy of itself.
+  let state = markUndelivered(addEcho(addEcho(noRows(), 'first'), 'second'), 'ended');
+  assert.deepEqual(texts(state), ['first', 'second']);
+
+  const record = stream({ kind: 'user', id: 'u1', at: AT, text: 'first' });
+  state = addEvents(state, record);
+  assert.deepEqual(texts(state), ['second']);
+  // The replay of that same record cannot take the second one with it.
+  state = addEvents(state, record);
+  assert.deepEqual(texts(state), ['second']);
+  assert.equal(state.rows.length, 1);
+  assert.equal(state.echoes[0]?.undelivered, 'Not delivered: this session ended.');
+});
+
 test('a refetch keeps an outstanding echo, and its record still retires it once', () => {
   // The server answered `refetch`, so the whole history is replayed onto fresh
   // rows. The echo must survive that: the records already applied had their
@@ -392,16 +447,16 @@ test('a refetch keeps an outstanding echo, and its record still retires it once'
   // The replayed record for 'first' already had its chance at the echo and
   // retired nothing, so replaying it must not retire it now.
   let fresh = rebuild(live, history);
-  assert.deepEqual(fresh.echoes, ['second']);
+  assert.deepEqual(texts(fresh), ['second']);
   assert.equal(fresh.rows.length, 2);
   assert.equal(fresh.seq, 2);
 
   // And the record retires it exactly once when it finally lands.
   fresh = addEvents(fresh, [{ seq: 3, e: { kind: 'user', id: 'u2', at: AT, text: 'second' } }]);
-  assert.deepEqual(fresh.echoes, []);
+  assert.deepEqual(texts(fresh), []);
   assert.equal(fresh.rows.filter((row) => row.row === 'message' && row.who === 'user').length, 2);
 
   // A refetch with nothing outstanding is the plain full rebuild.
-  assert.deepEqual(rebuild(noRows(), history).echoes, []);
+  assert.deepEqual(texts(rebuild(noRows(), history)), []);
   assert.equal(rebuild(noRows(), history).rows.length, 2);
 });

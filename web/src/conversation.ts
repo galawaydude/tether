@@ -102,6 +102,16 @@ function oneLine(text: string): string {
 }
 
 /**
+ * A message sent from the composer, before the transcript has shown it back.
+ *
+ * `undelivered` is the sentence saying it never left, or `null` while it still
+ * can. It is a state the echo enters rather than an exit: the text is the thing
+ * the user would otherwise lose, so an undeliverable message stays on screen and
+ * is marked, never dropped and never silently retired.
+ */
+export type Echo = { text: string; undelivered: string | null };
+
+/**
  * The rows built so far, plus what {@link addEvents} needs to extend them:
  * `seq` is the highest applied, and `byCall` is where a `tool_result` finds the
  * card its `tool_call` already opened.
@@ -122,7 +132,7 @@ export type Rows = {
    * transcript gives it one, and inventing a position for it would make the
    * history route and a live tailer disagree about which event is number 12.
    */
-  echoes: readonly string[];
+  echoes: readonly Echo[];
 };
 
 export function noRows(): Rows {
@@ -135,7 +145,38 @@ export function noRows(): Rows {
  * agent takes to write its first record.
  */
 export function addEcho(state: Rows, text: string): Rows {
-  return { ...state, echoes: [...state.echoes, text] };
+  return { ...state, echoes: [...state.echoes, { text, undelivered: null }] };
+}
+
+/**
+ * The same two facts {@link sendBlocked} refuses a *new* message on, applied to
+ * the messages already outstanding when the terminal socket closed.
+ *
+ * A composed message leaves on that socket and there is no retry loop past
+ * either close, so an echo standing at "Sending…" after one of them is the same
+ * lie in slower motion: the frame is in the resend set, the session is not
+ * coming back, and the card claims it is still on its way. It is marked, and
+ * says which fact it is — a session that stopped is not a session the server
+ * cannot find.
+ *
+ * Marking is **not** retiring. The echo keeps its place in the queue, so if a
+ * record does turn up after all — a message the pane took before it went, whose
+ * transcript line the tailer had not reached — {@link addEvents} retires it
+ * exactly once through the ordinary path, and the never-duplicate rule is
+ * untouched.
+ */
+const UNDELIVERED: Partial<Record<Status, string>> = {
+  ended: 'Not delivered: this session ended.',
+  gone: 'Not delivered: the server no longer has this session.',
+};
+
+export function markUndelivered(state: Rows, terminal: Status): Rows {
+  const note = UNDELIVERED[terminal];
+  if (note === undefined || state.echoes.every((echo) => echo.undelivered !== null)) return state;
+  return {
+    ...state,
+    echoes: state.echoes.map((echo) => ({ ...echo, undelivered: echo.undelivered ?? note })),
+  };
 }
 
 /**

@@ -63,9 +63,11 @@ is composed on the phone and sent as one unit rather than a round trip per
 keystroke with autocorrect fighting a raw byte stream. **Enter inserts a line
 break** — the Send button is what sends — and a multi-line prompt arrives whole,
 line breaks and all. It shows the moment you send it and is replaced, not
-duplicated, by the transcript's own record a moment later. Send is refused only
-while the agent is waiting on a permission prompt, where a message would answer
-the dialog rather than the agent; mid-turn it is fine, and the agent queues it.
+duplicated, by the transcript's own record a moment later. Send is refused, with
+the reason, while the agent is waiting on a permission prompt, where a message
+would answer the dialog rather than the agent, when the message is too long for
+the wire to carry, and once the session has ended or the server no longer has it;
+mid-turn it is fine, and the agent queues it.
 This milestone is being built one focused PR at a time.
 
 ```

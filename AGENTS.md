@@ -292,7 +292,10 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   the dialog; a message over `MAX_TEXT`, which `parseClientFrame` drops and never
   ACKs, so it would be resent on every reconnect under a permanent "Sending…";
   and a terminal socket closed `ended` or `gone`, which is why those two closes
-  are separate `Status` values. `busy` and `retrying` are **not** refused: both
+  are separate `Status` values — and an echo already outstanding at either close
+  is **marked undeliverable, never dropped and never retired** (`markUndelivered`),
+  since the text is what the user would lose and a record that turns up anyway
+  must still retire it exactly once. `busy` and `retrying` are **not** refused: both
   providers queue a message mid-turn, the unacked set carries one across a
   reconnect, and that is the most valuable thing a phone can do.
 - **The session screen keeps both panes mounted and hides one with
