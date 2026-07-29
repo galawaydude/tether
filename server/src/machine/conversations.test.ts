@@ -261,3 +261,140 @@ test('the last viewer leaving stops the tailer', async (t) => {
   await new Promise((resolve) => setTimeout(resolve, POLL * 4));
   assert.deepEqual(seqs(client.frames), [1], 'nothing is sent to a socket that left');
 });
+
+// ── the other provider ───────────────────────────────────────────────────────
+//
+// Two directories and one switch (report §4): the cursor, the tail and the
+// fan-out above are the same code for both, and what changes is which mapper
+// reads which file. What is genuinely new for Codex is `state`, which is not
+// numbered — see the `ServerFrame` comment for why it cannot be.
+
+const CODEX_SESSION = '019fac90-fbcb-7121-a9dc-5b4e866eb680';
+
+function rolloutLine(payload: Record<string, unknown>, at = Date.now()): string {
+  return `${JSON.stringify({ timestamp: new Date(at).toISOString(), type: 'event_msg', payload })}\n`;
+}
+
+async function codexHarness(t: TestContext) {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'tether-conv-codex-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const codexHome = join(root, 'codex');
+  const stateDir = join(root, 'state');
+  const cwd = join(root, 'work');
+  await mkdir(cwd);
+  const day = join(codexHome, 'sessions', '2026', '07', '29');
+  await mkdir(day, { recursive: true });
+  await mkdir(join(stateDir, 'codex-hooks'), { recursive: true });
+  const rollout = join(day, `rollout-2026-07-29T12-00-10-${CODEX_SESSION}.jsonl`);
+  const hookLog = join(stateDir, 'codex-hooks', `${CODEX_SESSION}.ndjson`);
+
+  const db = new DatabaseSync(':memory:');
+  applyRegistrySchema(db);
+  const createdAt = Date.now() - 1000;
+  const session: Session = createSession(db, {
+    id: '77777777-8888-4777-8666-555555555555',
+    provider: 'codex',
+    cwd,
+    title: 'work',
+    tmuxName: 'tether-77777777',
+    now: createdAt,
+  });
+  // `session_meta` is what identifies a rollout when the hook was declined, and
+  // it has to be there before anything else in the file.
+  await writeFile(
+    rollout,
+    `${JSON.stringify({
+      timestamp: new Date(createdAt + 10).toISOString(),
+      type: 'session_meta',
+      payload: {
+        session_id: CODEX_SESSION,
+        cwd,
+        timestamp: new Date(createdAt + 10).toISOString(),
+        cli_version: '0.145.0',
+      },
+    })}\n`,
+  );
+
+  const conversations = new Conversations(db, { codexHome, stateDir, pollMs: POLL });
+  t.after(() => conversations.closeAll());
+  return { db, session, conversations, rollout, hookLog };
+}
+
+test('a codex session is read by the codex mapper and back-fills its own row', async (t) => {
+  const h = await codexHarness(t);
+  await appendFile(h.rollout, rolloutLine({ type: 'user_message', message: 'hello codex' }));
+
+  const history = await h.conversations.history(h.session);
+  assert.equal(history.version, '0.145.0', 'from `session_meta`, not from a Claude Code field');
+  assert.deepEqual(
+    history.events.map((e) => e.e.kind),
+    ['user'],
+  );
+  assert.equal(
+    getSession(h.db, h.session.id)?.providerSessionId,
+    CODEX_SESSION,
+    'the provisional row Codex left null is back-filled once the rollout exists',
+  );
+});
+
+test('a codex subscriber is told the state, and told again when it moves', async (t) => {
+  const h = await codexHarness(t);
+  const client = sink();
+  const leave = await h.conversations.subscribe(h.session, 0, client.send);
+  t.after(leave);
+
+  await client.waitFor(1);
+  assert.deepEqual(client.frames[0], { c: 'state', state: 'idle' }, 'on arrival, unnumbered');
+
+  // busy and idle come out of the rollout, which is there whether or not the
+  // user accepted the hook.
+  await appendFile(h.rollout, rolloutLine({ type: 'task_started', turn_id: 't1' }));
+  await client.waitFor(2);
+  assert.deepEqual(client.frames[1], { c: 'state', state: 'busy' });
+
+  // `waiting` is the one thing that needs the hook, and it arrives on the same
+  // channel without ever taking a `seq`.
+  await appendFile(
+    h.hookLog,
+    `${JSON.stringify({
+      session_id: CODEX_SESSION,
+      turn_id: 't1',
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command: 'rm -rf /' },
+      at: Date.now(),
+      ppid: 1,
+    })}\n`,
+  );
+  await client.waitFor(3);
+  assert.deepEqual(client.frames[2], { c: 'state', state: 'waiting', detail: 'Bash' });
+
+  await appendFile(h.rollout, rolloutLine({ type: 'user_message', message: 'go on' }));
+  await client.waitFor(4);
+  const conv = client.frames[3];
+  assert.ok(conv?.c === 'conv' && conv.e.kind === 'user');
+  assert.deepEqual(seqs(client.frames), [1], 'three state frames took no sequence numbers');
+});
+
+test('a codex session with no hook log at all still works, and says nothing about it', async (t) => {
+  const h = await codexHarness(t);
+  const warnings: string[] = [];
+  const conversations = new Conversations(h.db, {
+    codexHome: join(h.rollout, '..', '..', '..', '..', '..'),
+    stateDir: '/nonexistent/tether-state',
+    pollMs: POLL,
+    warn: (message) => warnings.push(message),
+  });
+  t.after(() => conversations.closeAll());
+
+  const client = sink();
+  const leave = await conversations.subscribe(h.session, 0, client.send);
+  t.after(leave);
+  await appendFile(h.rollout, rolloutLine({ type: 'task_started', turn_id: 't1' }));
+  await client.waitFor(2);
+
+  assert.deepEqual(client.frames[1], { c: 'state', state: 'busy' }, 'busy without any hook');
+  // Declining is a supported configuration, not an error state: nothing warns,
+  // nothing retries, and there is nothing for the user to be nagged about.
+  assert.deepEqual(warnings, []);
+});

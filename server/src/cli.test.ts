@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 import { listSessions, openRegistry, setProviderSessionId } from './machine/registry.ts';
+import { PROVIDER_COMMANDS, PROVIDER_RESUME } from './machine/sessions.ts';
 import { killServer, listSessions as listTmuxSessions } from './machine/tmux.ts';
 import { createAuthStore } from './web/auth.ts';
 import { formatBanner, offLoopbackWarning, resolveServeConfig } from './cli.ts';
@@ -324,4 +325,93 @@ test('resume brings a dead session back, and refuses when there is nothing to re
   assert.equal(listSessions(db).length, 1, 'the same row, not a second one');
   assert.equal(listSessions(db)[0]!.providerSessionId, providerSessionId);
   assert.deepEqual(await listTmuxSessions(tether.socket), [listSessions(db)[0]!.tmuxName]);
+});
+
+// ── `tether codex-hook`: the one command that writes to a file tether does not own ──
+
+test('codex-hook explains before it touches anything, and undoes cleanly', async (t) => {
+  const stateDir = tempState(t);
+  const codexHome = mkdtempSync(join(tmpdir(), 'tether-codex-'));
+  t.after(() => rmSync(codexHome, { recursive: true, force: true }));
+  const hooksJson = join(codexHome, 'hooks.json');
+  const existing = `${JSON.stringify(
+    { hooks: { SessionStart: [{ matcher: '', hooks: [{ type: 'command', command: 'gh-axi' }] }] } },
+    null,
+    2,
+  )}\n`;
+  writeFileSync(hooksJson, existing);
+  const env = { CODEX_HOME: codexHome };
+
+  const before = await cli(['codex-hook'], stateDir, '', env);
+  assert.equal(before.code, 0);
+  assert.match(before.stdout, /not installed/);
+  assert.equal(readFileSync(hooksJson, 'utf8'), existing, 'reporting changes nothing');
+
+  const install = await cli(['codex-hook', 'install'], stateDir, '', env);
+  assert.equal(install.code, 0);
+  // The user is told what is being added and what declining costs, before the
+  // prompt Codex will put in front of them — not after.
+  assert.match(install.stdout, /about to add one entry/);
+  assert.match(install.stdout, /Declining is a perfectly good answer/);
+  assert.match(install.stdout, /Backed up/);
+  assert.match(install.stdout, /hooks = true/, 'and told the one thing that is theirs to do');
+  assert.ok(
+    !/dangerously/i.test(install.stdout + install.stderr),
+    'the trust gate is never offered as something to bypass',
+  );
+
+  const file = JSON.parse(readFileSync(hooksJson, 'utf8')) as {
+    hooks: Record<string, { hooks: { command?: string }[] }[]>;
+  };
+  assert.equal(file.hooks['SessionStart']?.[0]?.hooks[0]?.command, 'gh-axi', 'still first');
+  assert.equal(file.hooks['SessionStart']?.length, 2);
+
+  const remove = await cli(['codex-hook', 'remove'], stateDir, '', env);
+  assert.equal(remove.code, 0);
+  assert.match(remove.stdout, /Removed tether’s hook/);
+  const after = JSON.parse(readFileSync(hooksJson, 'utf8')) as typeof file;
+  assert.deepEqual(after.hooks['SessionStart'], [
+    { matcher: '', hooks: [{ type: 'command', command: 'gh-axi' }] },
+  ]);
+});
+
+test('codex-hook refuses an action it does not have', async (t) => {
+  const stateDir = tempState(t);
+  const result = await cli(['codex-hook', 'bypass-trust'], stateDir);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /Usage:/);
+});
+
+test('a codex session starts codex, and resumes with codex resume', async (t) => {
+  const stateDir = tempState(t);
+  const dir = await mkdtemp(join(tmpdir(), 'tether-codex-session-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const socket = `tether-test-${randomUUID().slice(0, 8)}`;
+  t.after(() => killServer(socket));
+  const env = { TETHER_TMUX_SOCKET: socket };
+
+  // `sleep` stands in for the real CLI: what is under test is that tether knows
+  // how to spell Codex's own argv, not that Codex is installed on the runner.
+  const created = await cli(
+    ['new', dir, '--provider', 'codex', '--', 'sleep', '30'],
+    stateDir,
+    '',
+    env,
+  );
+  assert.equal(created.code, 0, created.stderr);
+  const [id] = created.stdout.trim().split('\t');
+
+  const listed = await cli(['ls'], stateDir, '', env);
+  assert.match(listed.stdout, /codex/, 'the row records which provider it is');
+
+  assert.deepEqual(PROVIDER_COMMANDS.get('codex'), ['codex']);
+  assert.deepEqual(PROVIDER_RESUME.get('codex')?.('abc-123'), ['codex', 'resume', 'abc-123']);
+
+  await cli(['kill', id!], stateDir, '', env);
+  // A Codex session that never got a first message has no conversation to
+  // restore, and resume says so rather than starting a fresh one that looks
+  // resumed — the row's `provider_session_id` is still null.
+  const resumed = await cli(['resume', id!], stateDir, '', env);
+  assert.equal(resumed.code, 1);
+  assert.match(resumed.stderr, /no provider session id to resume/);
 });

@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import { realpathSync } from 'node:fs';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { DatabaseSync } from 'node:sqlite';
 import { Writable } from 'node:stream';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 
-import { databasePath } from './db.ts';
+import { databasePath, stateDir } from './db.ts';
 import {
   DEFAULT_PROVIDER,
   type Session,
@@ -17,6 +18,8 @@ import {
 } from './machine/registry.ts';
 import { resumeSession, startSession, stopSession } from './machine/sessions.ts';
 import { PtyUnavailableError, createTerminals, loadPty } from './machine/terminal.ts';
+import { HOOK_EVENTS, hookStatus, installHook, removeHook } from './providers/codex/hooks.ts';
+import { codexHome } from './providers/codex/spawn.ts';
 import { DEFAULT_SOCKET, allowedRoots } from './machine/tmux.ts';
 import { MIN_PASSWORD_LENGTH, createAuthStore } from './web/auth.ts';
 import type { AuthStore } from './web/auth.ts';
@@ -37,6 +40,7 @@ Usage:
   tether new <dir> [options]       Start a session in <dir>
   tether kill <id>                 Kill a session; <id> is any unambiguous id prefix
   tether resume <id>               Resume a dead session, keeping its conversation
+  tether codex-hook <action>       Manage tether's Codex hook: status | install | remove
 
 Options for serve:
   --port <n>                       Port to listen on (default ${DEFAULT_PORT})
@@ -51,6 +55,113 @@ Options for new:
   --provider <name>                Provider to start (default ${DEFAULT_PROVIDER})
   -- <command> [args...]           Run this instead of the provider's own command
 `;
+
+/**
+ * What `tether codex-hook install` says *before* Codex's trust prompt appears.
+ *
+ * Explaining it beforehand is an obligation, not a courtesy: the prompt is a
+ * security control on the user's own machine, and a user who accepts it because
+ * a tool told them to has not made a decision. So this says exactly what is
+ * being added, what it does, what it costs to say no, and how to undo it —
+ * before anything is written.
+ */
+function codexHookExplanation(hooksPath: string, shimPath: string): string {
+  return [
+    'tether is about to add one entry to your Codex hooks file:',
+    '',
+    `  file:    ${hooksPath}`,
+    `  command: ${shimPath}`,
+    `  events:  ${HOOK_EVENTS.join(', ')}`,
+    '',
+    'That command is a script tether writes. On each of those events Codex runs it,',
+    'and it appends one JSON line to a log under tether’s own state directory. It',
+    'writes nothing else, reads nothing else, and talks to no network.',
+    '',
+    'tether needs it for exactly one thing: to know that a session is *waiting for',
+    'you* to answer a permission prompt. Everything else — the conversation, the',
+    'terminal, working and idle — is read from files Codex already writes.',
+    '',
+    'The next time you start Codex it will ask you to review and trust this hook.',
+    'Declining is a perfectly good answer: you lose the live “waiting” badge and',
+    'nothing else, and tether will not ask you again.',
+    '',
+    'Your existing hooks file is backed up first, and existing entries are kept.',
+    'Undo any time with `tether codex-hook remove`.',
+  ].join('\n');
+}
+
+/**
+ * `status` | `install` | `remove`. Read-only by default: `tether codex-hook`
+ * with no action reports and changes nothing, because a command that writes to
+ * a file tether does not own should have to be asked for by name.
+ */
+async function codexHookCommand(argv: readonly string[]): Promise<number> {
+  const action = argv[0] ?? 'status';
+  if (argv.length > 1 || !['status', 'install', 'remove'].includes(action)) {
+    process.stderr.write(USAGE);
+    return 1;
+  }
+  const where = { codexHome: codexHome(), stateDir: stateDir() };
+
+  if (action === 'remove') {
+    const { hooksPath, removed } = await removeHook(where);
+    process.stdout.write(
+      removed.length === 0
+        ? `tether’s hook was not in ${hooksPath}; nothing to remove.\n`
+        : `Removed tether’s hook from ${hooksPath} (${removed.join(', ')}).\n`,
+    );
+    return 0;
+  }
+
+  const before = await hookStatus(where);
+  if (action === 'status') {
+    process.stdout.write(
+      [
+        `hooks file:  ${before.hooksPath}`,
+        `hook script: ${before.shimPath}`,
+        `registered:  ${before.installed.length > 0 ? before.installed.join(', ') : 'not installed'}`,
+        // The refusal, said here rather than saved for the install that will
+        // hit it: `not installed` on its own would be the wrong explanation.
+        ...(before.unreadable === undefined ? [] : [`problem:     ${before.unreadable}`]),
+        `features.hooks: ${before.featureEnabled ? 'true' : 'false — Codex will not run any hook until this is set'}`,
+        '',
+        'Without the hook tether still shows the conversation, the terminal, and',
+        'whether a session is working or idle. The hook adds the live “waiting for',
+        'you” badge, and nothing else.',
+      ].join('\n') + '\n',
+    );
+    return 0;
+  }
+
+  process.stdout.write(`${codexHookExplanation(before.hooksPath, before.shimPath)}\n\n`);
+  const result = await installHook(where);
+  if (result.alreadyInstalled) {
+    process.stdout.write(`Already installed in ${result.hooksPath}; nothing changed.\n`);
+  } else {
+    if (result.backupPath !== undefined) {
+      process.stdout.write(`Backed up ${result.hooksPath} to ${result.backupPath}\n`);
+    }
+    process.stdout.write(
+      `Added tether’s hook to ${result.hooksPath} (${result.added.join(', ')}).\n`,
+    );
+  }
+  if (!before.featureEnabled) {
+    process.stdout.write(
+      [
+        '',
+        'One thing left, and it is yours to do: Codex runs no hooks at all unless',
+        `its config enables them. Add this to ${join(codexHome(), 'config.toml')}:`,
+        '',
+        '  [features]',
+        '  hooks = true',
+        '',
+        'tether does not edit that file — it is also where Codex records which',
+        'hooks you have trusted.',
+      ].join('\n') + '\n',
+    );
+  }
+  return 0;
+}
 
 export type ServeConfig = {
   host: string;
@@ -326,6 +437,17 @@ export async function main(argv: readonly string[]): Promise<number> {
   // needs a `--` terminator that `allowPositionals: false` would reject.
   if (command === 'ls' || command === 'new' || command === 'kill' || command === 'resume') {
     return registryCommand(command, rest);
+  }
+
+  // Touches no database and no tmux: it is one file in the user's Codex home
+  // and one script in tether's own state directory.
+  if (command === 'codex-hook') {
+    try {
+      return await codexHookCommand(rest);
+    } catch (error) {
+      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+      return 1;
+    }
   }
 
   let values;

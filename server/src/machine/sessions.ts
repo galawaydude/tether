@@ -12,6 +12,7 @@ import { randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 
+import { CODEX, CODEX_COMMAND, codexResume } from '../providers/codex/spawn.ts';
 import {
   DEFAULT_PROVIDER,
   type Session,
@@ -29,6 +30,7 @@ import { isSessionGone, killSession, newSession, resolveCwd } from './tmux.ts';
  */
 export const PROVIDER_COMMANDS = new Map<string, readonly string[]>([
   [DEFAULT_PROVIDER, ['claude']],
+  [CODEX, CODEX_COMMAND],
 ]);
 
 /**
@@ -39,6 +41,7 @@ export const PROVIDER_COMMANDS = new Map<string, readonly string[]>([
  */
 export const PROVIDER_RESUME = new Map<string, (providerSessionId: string) => readonly string[]>([
   [DEFAULT_PROVIDER, (id) => ['claude', '--resume', id]],
+  [CODEX, codexResume],
 ]);
 
 /**

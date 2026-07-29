@@ -1,0 +1,12 @@
+{"timestamp":"2026-07-29T06:30:31.281Z","type":"weather_forecast","payload":{"type":"sunny"}}
+{"timestamp":"2026-07-29T06:30:31.282Z","type":"event_msg","payload":{"type":"a_payload_from_the_future","message":"nothing here is renderable"}}
+{"timestamp":"2026-07-29T06:30:31.283Z","type":"response_item","payload":{"type":"quantum_tool_call","call_id":"call_future","name":"teleport"}}
+{"timestamp":"2026-07-29T06:30:31.284Z","type":"event_msg"}
+{"timestamp":"2026-07-29T06:30:31.285Z","type":"response_item","payload":{"call_id":"call_no_type"}}
+{"timestamp":"2026-07-29T06:30:31.286Z","type":"response_item","payload":"not an object"}
+{"timestamp":"2026-07-29T06:30:31.287Z","type":"response_item","payload":{"type":"function_call","id":"fc_orphan","arguments":"{}"}}
+{"timestamp":"2026-07-29T06:30:31.288Z","type":"response_item","payload":{"type":"function_call_output","output":"no call_id to join this to"}}
+{"timestamp":"not a date","type":"event_msg","payload":{"type":"user_message","message":"a timestamp nothing can parse"}}
+{"timestamp":"2026-07-29T06:30:31.290Z","type":"response_item","payload":{"type":"function_call","id":"fc_unparseable","call_id":"call_raw","name":"exec_command","arguments":"{not json at all"}}
+{"timestamp":"2026-07-29T06:30:31.291Z","type":"event_msg","payload":{"type":"agent_message","message":"a phase from the future","phase":"encore"}}
+[1,2,3]
