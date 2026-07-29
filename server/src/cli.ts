@@ -288,9 +288,8 @@ async function resumeCommand(db: DatabaseSync, argv: readonly string[]): Promise
 /**
  * `ls`, `kill` and `resume` reconcile against real tmux first, so none of them ever
  * reports a session that died while tether was not running — and it is what makes a
- * session
- * that died with the machine resumable rather than a row that merely looks live.
- * `new` has nothing to reconcile.
+ * session that died with the machine resumable rather than a row that merely looks
+ * live. `new` has nothing to reconcile.
  */
 async function registryCommand(command: string, argv: readonly string[]): Promise<number> {
   const db = openRegistry();

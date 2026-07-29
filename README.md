@@ -41,15 +41,16 @@ targets, session sharing, usage dashboards, a mobile app.
 
 Toolchain, CI, the tmux driver, authentication, the session registry, the HTTP
 session API and the terminal transport. There is no web UI yet — but every session
-the CLI can start, list and kill can now be driven over HTTP by an authenticated
-client, and attached over the `term` WebSocket channel. This milestone is being
-built one focused PR at a time.
+the CLI can start, list, kill and resume can now be driven over HTTP by an
+authenticated client, and attached over the `term` WebSocket channel. This
+milestone is being built one focused PR at a time.
 
 ```
-GET    /api/machines/local/sessions        every session, live and dead
-POST   /api/machines/local/sessions        {"cwd": "…", "title"?: "…", "provider"?: "…"}
+GET    /api/machines/local/sessions            every session, live and dead
+POST   /api/machines/local/sessions            {"cwd": "…", "title"?: "…", "provider"?: "…"}
 GET    /api/machines/local/sessions/:id
-DELETE /api/machines/local/sessions/:id    kills the tmux session and marks the row dead
+POST   /api/machines/local/sessions/:id/resume restarts a dead session's conversation
+DELETE /api/machines/local/sessions/:id        kills the tmux session and marks the row dead
 ```
 
 Sessions are addressed as `(machineId, sessionId)` from day one, and `machineId` is
