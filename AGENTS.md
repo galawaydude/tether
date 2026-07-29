@@ -28,9 +28,12 @@ CI runs exactly those (`.github/workflows/ci.yml`).
 - **TypeScript is pinned to 5.x.** TypeScript 7 is released but `typescript-eslint` still
   peers on `<6.1.0`; upgrading TS ahead of that breaks `npm install`.
 - **npm 12 blocks dependency install scripts by default.** A dependency that silently fails
-  to build is usually this; approve it with `npm install-scripts approve <pkg>`. Nothing in
-  the current tree needs it. `node-pty` (PR #6) will — it ships no Linux prebuild, so it
-  needs both an install-script approval and a native toolchain.
+  to build is usually this; approve it with `npm install-scripts approve <pkg>`, which writes
+  a version-pinned entry into the root `package.json`'s `allowScripts` — so bumping such a
+  dependency needs a fresh approval. `node-pty` is approved there and ships no Linux prebuild,
+  so `npm ci` compiles it and a machine with no C++ toolchain gets no PTY at all.
+  `machine/terminal.ts` imports it lazily and `tether serve` then refuses to start with an
+  instruction instead of an import crash; CI proves it built before running anything else.
 - **`npx tether` only works because `server`'s `prepare` builds during `npm ci`.** npm links
   workspace bins before install finishes and skips a bin whose target is missing, so
   `dist/cli.js` has to exist by then — and it has to carry the exec bit itself, which is why
@@ -39,10 +42,22 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   the declarations.
 - **Every tmux command goes through `server/src/machine/tmux.ts`.** It carries
   `-L <socket> -f tether.conf` on _every_ invocation, so whichever command starts the
-  server starts it with tether's config. `tether.conf` is a non-TS asset, so `tsc` does
-  not copy it — `server`'s `build` script does, and anything that moves the file must
-  move that `cp` too. The reason for each rule is in the module's own comments; the
-  traps they defend against are in report §2/§3/§7.
+  server starts it with tether's config. The attach in `terminal.ts` needs a PTY rather
+  than a pipe, so it takes its argv from that module's `tmuxArgv` — build a tmux argv
+  anywhere else and `-f tether.conf` goes missing. `tether.conf` is a non-TS asset, so
+  `tsc` does not copy it — `server`'s `build` script does, and anything that moves the
+  file must move that `cp` too. The reason for each rule is in the module's own comments;
+  the traps they defend against are in report §2/§3/§7.
+- **The terminal is re-derived, never remembered.** `machine/terminal.ts` holds no byte
+  log, no ring buffer, no sequence numbers and no resume cursor: every attach replays
+  `capture-pane` and lets tmux's own attach repaint resync the viewport, which is
+  idempotent by construction (report §3). If a change here starts needing a cursor, the
+  change is wrong. Two things it does need and that are easy to remove by accident: the
+  path is **binary from PTY to `term.write(Uint8Array)`** — any decode splits a UTF-8
+  glyph on a chunk boundary — and `machine/escape.ts` strips alt-screen and mouse-tracking
+  sequences while deliberately leaving `ESC[2J`/`ESC[J` alone, because the repaint is built
+  on them. `terminal.test.ts` is the guard: real tmux, non-ASCII glyphs at full pane width,
+  byte-exact against `capture-pane` ground truth. A mostly-ASCII pane passes on a broken build.
 - **tmux 3.7 is a hard floor.** `tether.conf` sets `window-size manual`, and tmux
   before 3.7 sizes a not-yet-created window through a NULL pointer, so every detached
   `new-session` dies with `server exited unexpectedly`. Ubuntu 24.04 ships 3.4, hence
@@ -76,8 +91,11 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   nor a 404 that would tell it which paths exist.
   Adding a route therefore protects it automatically — and marking one public is a security
   decision, not a convenience. Reaching any route is equivalent to a shell on the machine.
-  This covers HTTP only: the WebSocket upgrade in PR #6 must repeat the cookie, `Host` and
-  `Origin` checks itself, because an upgrade carries cookies but is not covered by CORS.
+  The `term` WebSocket is covered too — `@fastify/websocket` dispatches the upgrade through
+  the normal router — but only because its route is registered inside `app.after()`, after
+  that plugin's `onRoute` hook exists; register it earlier and it silently stays a plain
+  HTTP route. The Origin guard needed extending by hand, since an upgrade is a `GET` and so
+  is not state-changing, and a cross-origin page's upgrade carries the victim's cookie.
 - **Fastify's schema defaults silently repair a bad body** (`removeAdditional` and
   `coerceTypes` are on): `additionalProperties: false` strips instead of rejecting, and
   `{"password": 123}` arrives as `"123"`. `buildServer` turns both off. Do not remove that

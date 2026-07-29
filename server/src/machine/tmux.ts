@@ -90,15 +90,25 @@ function checkSessionName(name: string): void {
   }
 }
 
+/**
+ * The full argv for a tmux invocation, checked. Exported because the attach in
+ * `terminal.ts` needs a PTY rather than a pipe and so cannot go through `run` —
+ * it still must not be allowed to build its own argv and lose `-f tether.conf`.
+ *
+ * `-u` because tether's pipeline is UTF-8 end to end but tmux decides that per
+ * client from LC_ALL/LC_CTYPE/LANG: under a C locale it sanitizes non-printable
+ * bytes to `_`, which turns `listPanes`' \x1f separator into an unparseable row.
+ */
+export function tmuxArgv(socket: string, args: readonly string[]): string[] {
+  checkArgs(args);
+  return ['-u', '-L', socket, '-f', TMUX_CONF, ...args];
+}
+
 function run(socket: string, args: readonly string[], input?: string): Promise<string> {
-  // `-u` because tether's pipeline is UTF-8 end to end but tmux decides that per
-  // client from LC_ALL/LC_CTYPE/LANG: under a C locale it sanitizes non-printable
-  // bytes to `_`, which turns `listPanes`' \x1f separator into an unparseable row.
-  const argv = ['-u', '-L', socket, '-f', TMUX_CONF, ...args];
   return new Promise((fulfil, reject) => {
     // Inside the executor, so a bad argument rejects rather than throwing synchronously
     // out of the wrappers that are not `async`.
-    checkArgs(args);
+    const argv = tmuxArgv(socket, args);
     const child = spawn('tmux', argv, { stdio: ['pipe', 'pipe', 'pipe'] });
     const out: Buffer[] = [];
     const err: Buffer[] = [];
@@ -305,6 +315,68 @@ export function captureScrollback(socket: string, target: string, lines: number)
 /** The visible screen. Picks up exactly where `captureScrollback` stopped. */
 export function captureViewport(socket: string, target: string): Promise<string> {
   return run(socket, ['capture-pane', '-p', '-e', '-J', '-t', target]);
+}
+
+/** Columns and rows of a pane's grid. */
+export interface PaneSize {
+  cols: number;
+  rows: number;
+}
+
+/**
+ * The pane's exact grid. The attach PTY is sized to this and nothing else: a
+ * client one row short makes tmux reflow the window and a line falls off the top
+ * of the scrollback, silently (report section 3).
+ */
+export async function paneSize(socket: string, target: string): Promise<PaneSize> {
+  const out = await run(socket, [
+    'display-message',
+    '-p',
+    '-t',
+    target,
+    '#{pane_width}\x1f#{pane_height}',
+  ]);
+  const [cols, rows] = out.trim().split('\x1f').map(Number);
+  if (!Number.isInteger(cols) || !Number.isInteger(rows) || !cols || !rows) {
+    throw new Error(`unparseable pane size for ${target}: ${JSON.stringify(out)}`);
+  }
+  return { cols, rows };
+}
+
+/** Sizes tether accepts from a browser. Outside this tmux errors or misbehaves. */
+const MIN_DIMENSION = 1;
+const MAX_DIMENSION = 1000;
+
+/**
+ * `window-size manual` (tether.conf) means an attaching client never changes the
+ * window, which is what stops a phone resizing everybody else's pane. The flip
+ * side is that a deliberate resize has to say so, and this is how.
+ */
+export async function resizeWindow(
+  socket: string,
+  target: string,
+  cols: number,
+  rows: number,
+): Promise<void> {
+  for (const n of [cols, rows]) {
+    if (!Number.isInteger(n) || n < MIN_DIMENSION || n > MAX_DIMENSION) {
+      throw new Error(`refusing to resize to ${cols}x${rows}: out of range`);
+    }
+  }
+  await run(socket, ['resize-window', '-t', target, '-x', String(cols), '-y', String(rows)]);
+}
+
+/**
+ * Force tmux to repaint every client attached to `session`. A repaint is the
+ * absolutely-positioned resync a joining viewer needs; the first viewer gets one
+ * for free from `attach-session`, later ones have to ask (report section 3).
+ */
+export async function refreshClients(socket: string, session: string): Promise<void> {
+  checkSessionName(session);
+  const out = await run(socket, ['list-clients', '-t', session, '-F', '#{client_tty}']);
+  for (const tty of out.split('\n').filter((line) => line !== '')) {
+    await run(socket, ['refresh-client', '-t', tty]);
+  }
 }
 
 /** A single global server option's value. The proof that `tether.conf` was read. */

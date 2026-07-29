@@ -39,10 +39,11 @@ targets, session sharing, usage dashboards, a mobile app.
 
 ## Status
 
-Toolchain, CI, the tmux driver, authentication, the session registry and the HTTP
-session API. There is no web UI yet, and no terminal transport — but every session
+Toolchain, CI, the tmux driver, authentication, the session registry, the HTTP
+session API and the terminal transport. There is no web UI yet — but every session
 the CLI can start, list and kill can now be driven over HTTP by an authenticated
-client. This milestone is being built one focused PR at a time.
+client, and attached over the `term` WebSocket channel. This milestone is being
+built one focused PR at a time.
 
 ```
 GET    /api/machines/local/sessions        every session, live and dead
@@ -122,16 +123,24 @@ state, is ever written inside the repository.
 
 ## Development
 
-Requires the Node version in [`.nvmrc`](.nvmrc) (`nvm use`) and **tmux 3.7 or
-newer** — the tmux driver's tests drive a real server on a private socket, not a
-mock, and older tmux crashes on the `window-size manual` that `tether.conf` sets
-(so does tether itself; 3.7 is a hard floor, not just a test one).
+Requires the Node version in [`.nvmrc`](.nvmrc) (`nvm use`), **tmux 3.7 or
+newer**, and a **C++ toolchain** (`build-essential` and `python3` on Debian or
+Ubuntu). tmux, because the driver's tests drive a real server on a private
+socket, not a mock, and older tmux crashes on the `window-size manual` that
+`tether.conf` sets (so does tether itself; 3.7 is a hard floor, not just a test
+one). A toolchain, because `node-pty` ships no Linux prebuild and is compiled
+during install.
 
 ```sh
-npm ci        # installs all workspaces; builds shared/ declarations and server/ (the CLI)
+npm ci        # installs all workspaces; builds shared/, server/ (the CLI) and node-pty
 npm test      # node:test across every package
 npm run build # server (tsc) and web (vite) — rerun after editing server sources
 ```
+
+`node-pty`'s install script is approved in the root `package.json` under
+`allowScripts`, because npm 12 blocks dependency install scripts by default. If
+`tether serve` reports that the native module is missing, install the toolchain
+and re-run `npm ci`; the message says so too.
 
 Other checks, all of which CI runs on every pull request:
 

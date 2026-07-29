@@ -18,6 +18,7 @@ import { DatabaseSync } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 
 import { applyRegistrySchema, listSessions } from '../machine/registry.ts';
+import { createTerminals } from '../machine/terminal.ts';
 import { killServer, listSessions as listTmuxSessions } from '../machine/tmux.ts';
 import { createAuthStore } from './auth.ts';
 import { defaultAllowedHosts } from './guards.ts';
@@ -64,6 +65,9 @@ async function harness(t: TestContext) {
   const app = buildServer({
     auth,
     db,
+    // The real thing on this test's own socket: no test here attaches, so no PTY
+    // is ever spawned, and `app.close()` takes it down either way.
+    terminals: createTerminals(socket),
     allowedHosts: defaultAllowedHosts('127.0.0.1'),
     loginDelayMs: 0,
     socket,
