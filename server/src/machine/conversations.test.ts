@@ -13,9 +13,11 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 
+import { mapLines as mapClaudeLines } from '../providers/claude-code/events.ts';
 import { sessionStatusPath } from '../providers/claude-code/status.ts';
 import { projectDir } from '../providers/claude-code/transcript.ts';
-import { Conversations, stderrWarn, TAIL_EVENTS } from './conversations.ts';
+import { mapLines as mapCodexLines } from '../providers/codex/events.ts';
+import { Conversations, mapperFor, stderrWarn, TAIL_EVENTS } from './conversations.ts';
 import { applyRegistrySchema, createSession, getSession, type Session } from './registry.ts';
 import { killServer, listPanes, newSession } from './tmux.ts';
 
@@ -560,6 +562,44 @@ test('Notification flips the session to waiting, and says what for', async (t) =
   });
   await new Promise((resolve) => setTimeout(resolve, POLL * 2));
   assert.equal(client.states.length, 2);
+});
+
+// ── the switch itself ────────────────────────────────────────────────────────
+//
+// Two arms and a default, asserted by identity rather than by behaviour: which
+// mapper runs is the whole of the routing decision, and a test that only checked
+// the events would pass on a build that routed by luck.
+
+test('the mapper switch has two arms, and an unknown provider takes the default', () => {
+  assert.equal(mapperFor('codex'), mapCodexLines);
+  assert.equal(mapperFor('claude-code'), mapClaudeLines);
+  // Reachable two ways, so this arm is not theoretical: `startSession` skips the
+  // `PROVIDER_COMMANDS` lookup when it is given an explicit command, so
+  // `tether new <dir> --provider anything -- somecmd` writes that string; and so
+  // does a row written by a newer tether and read by an older one. The answer
+  // must be a conversation this build can read rather than a crash.
+  assert.equal(mapperFor('nonesuch'), mapClaudeLines);
+  assert.equal(mapperFor(''), mapClaudeLines);
+  assert.equal(mapperFor('constructor'), mapClaudeLines, 'not a prototype member');
+});
+
+test('a session whose provider this build does not know is read, not dropped', async (t) => {
+  const h = await harness(t);
+  const session = createSession(h.db, {
+    id: '66666666-8888-4777-8666-555555555555',
+    provider: 'some-future-agent',
+    cwd: h.session.cwd,
+    title: 'work',
+    tmuxName: 'tether-66666666',
+  });
+  await writeFile(h.transcript, userRecord(1));
+
+  const history = await h.conversations.history(session);
+  assert.equal(history.events.length, 1, 'read through the default arm');
+  const client = sink();
+  const leave = await h.conversations.subscribe(session, 0, client.send);
+  t.after(leave);
+  await client.waitFor(1);
 });
 
 test('a hook payload the mapper cannot use changes nothing and does not throw', async (t) => {

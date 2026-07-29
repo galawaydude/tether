@@ -101,10 +101,12 @@ type MapLines = (
 /**
  * Which mapper reads this session's file. Two providers, one switch — no
  * registry, no interface, no factory (report §4). A provider tether does not
- * know is read as Claude Code, which is the only thing it can be: the column is
- * written by `startSession`, which refuses an unknown provider outright.
+ * know is read as Claude Code, which is the only thing it can be. The column is
+ * not an enum: `startSession` only looks a provider up in `PROVIDER_COMMANDS`
+ * when it has no explicit command, so `tether new <dir> --provider anything --
+ * somecmd` stores that string, and so does a row written by a newer tether.
  */
-function mapperFor(provider: string): MapLines {
+export function mapperFor(provider: string): MapLines {
   return provider === CODEX ? mapCodexLines : mapClaudeLines;
 }
 

@@ -142,7 +142,8 @@ button:disabled {
   border-color: var(--danger);
 }
 
-input {
+input,
+select {
   min-height: var(--tap);
   width: 100%;
   padding: 0 12px;
@@ -212,8 +213,49 @@ label {
   padding: 8px;
 }
 
+/* A sentence, not a path: it wraps rather than clipping, because the news is at
+   the end of it. */
+.row-note {
+  max-width: 100%;
+  white-space: normal;
+}
+
+.row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  min-width: 0;
+}
+
 .row-title {
   font-weight: 600;
+  /* A flex item does not shrink below its content without this, and the
+     ellipsis below never fires. */
+  min-width: 0;
+}
+
+/* Which agent this is, told by colour as well as by word: on a phone the list
+   is scanned, not read, and two sessions of different providers in one project
+   share a title and a directory. */
+.tag {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid currentcolor;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.tag-claude-code {
+  color: #c69cff;
+}
+
+.tag-codex {
+  color: #6fd7c1;
 }
 
 .row-cwd,
@@ -578,6 +620,17 @@ label {
   padding: 12px;
   padding-bottom: max(12px, env(safe-area-inset-bottom));
   background: rgb(0 0 0 / 60%);
+  overflow-y: auto;
+}
+
+/* A card taller than the screen has to scroll inside the sheet. `flex-end`
+   alone pushes the overflow off the *top* of a fixed, unscrollable overlay,
+   where the page cannot scroll to it and the controls above the fold are
+   simply unreachable. `100%` is the sheet's content box, so the padding
+   above and the safe area below are already out of it. */
+.sheet .card {
+  max-height: 100%;
+  overflow-y: auto;
 }
 
 @media (min-width: 600px) {

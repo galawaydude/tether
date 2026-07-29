@@ -97,3 +97,51 @@ test('a reload loses nothing: scrollback and conversation come back intact and o
   // line, or leaked an escape sequence all show up here and only here.
   expect(await screen(rows)).toBe(before);
 });
+
+/**
+ * The New session sheet is the one screen that grows with its copy — the Codex
+ * hook note is an informed-consent obligation and is deliberately long — while
+ * sitting in a `position: fixed` overlay that the page cannot scroll. Overflow
+ * there goes off the *top*, taking the Agent picker with it, and it only shows
+ * on a viewport shorter than the one it was last looked at on.
+ *
+ * So this asserts geometry rather than presence: the card's top edge against the
+ * viewport, at the shortest phones and at a phone with the keyboard up. No
+ * session is started, so it needs no agent — the sheet is asserted on before it
+ * is submitted.
+ */
+for (const [width, height] of [
+  [360, 640],
+  [375, 667],
+  [390, 500],
+] as const) {
+  test(`the New session sheet stays reachable at ${width}x${height}`, async ({ page }) => {
+    await page.setViewportSize({ width, height });
+    await page.goto('/');
+    await page.getByLabel('Password').fill(process.env['TETHER_E2E_PASSWORD'] as string);
+    await page.getByRole('button', { name: 'Sign in' }).click();
+
+    await page.getByRole('button', { name: 'New session' }).click();
+    const agent = page.getByLabel('Agent');
+    await agent.selectOption('codex');
+    // The note is what makes the sheet overflow; without it on screen this test
+    // would pass on the layout it exists to catch.
+    await expect(page.locator('.sheet .note')).toHaveCount(1);
+
+    const card = page.locator('.sheet .card');
+    const top = async (locator: Locator): Promise<number> => {
+      const box = await locator.boundingBox();
+      expect(box).not.toBeNull();
+      return (box as { y: number }).y;
+    };
+    expect(await top(card)).toBeGreaterThanOrEqual(0);
+
+    // And the picker itself is not merely on screen but usable: scrolled to,
+    // focused and changed back, which a control clipped out of the overlay
+    // cannot be.
+    await agent.scrollIntoViewIfNeeded();
+    expect(await top(agent)).toBeGreaterThanOrEqual(0);
+    await agent.selectOption('claude-code');
+    await expect(agent).toHaveValue('claude-code');
+  });
+}

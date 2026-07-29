@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState } from 'preact/hooks';
 import * as api from './api.ts';
 import { ApiError } from './api.ts';
 import { ConversationView } from './conversation.tsx';
+import { CODEX, DEFAULT_PROVIDER, PROVIDERS, providerLabel, unresumableNote } from './providers.ts';
 import { STATUS_TEXT, TerminalView, type Status } from './terminal.tsx';
 
 /** How often the list refreshes. tmux reconciliation happens server-side per read. */
@@ -156,6 +157,7 @@ function SessionScreen({
             {id === 'conversation' ? (
               <ConversationView
                 sessionId={session.id}
+                provider={session.provider}
                 onStatus={report('conversation')}
                 onState={(state, detail) =>
                   setAgent((current) =>
@@ -298,31 +300,48 @@ function Sessions({
         {sessions?.length === 0 && (
           <p class="muted">No sessions yet. Start one below and it keeps running here.</p>
         )}
-        {sessions?.map((session) => (
-          <div class="row" key={session.id}>
-            <button class="row-open" onClick={() => onOpen(session)}>
-              <span class="row-title">{session.title}</span>
-              <span class="muted row-cwd">{session.cwd}</span>
-            </button>
-            {/* The agent's own state where there is one, and only the
-                live/dead fact where there is not: a session whose provider is
-                not reporting must not be badged "idle", which is a claim. */}
-            {session.deadAt !== null ? (
-              <span class="chip chip-ended">dead</span>
-            ) : states[session.id] === undefined ? (
-              <span class="chip chip-live">live</span>
-            ) : (
-              <span class={`chip chip-agent-${states[session.id]!.state}`}>
-                {STATE_TEXT[states[session.id]!.state]}
-              </span>
-            )}
-            {session.deadAt === null && (
-              <button class="ghost danger" onClick={() => kill(session)} aria-label="Kill session">
-                Kill
+        {sessions?.map((session) => {
+          const note = unresumableNote(session);
+          return (
+            <div class="row" key={session.id}>
+              <button class="row-open" onClick={() => onOpen(session)}>
+                {/* The provider first and colour-coded, because the question a
+                    mixed list has to answer at a glance on a phone is which agent
+                    this is — the title and the directory are often the same for
+                    two sessions of different providers in the same project. */}
+                <span class="row-head">
+                  <span class={`tag tag-${session.provider}`}>
+                    {providerLabel(session.provider)}
+                  </span>
+                  <span class="row-title">{session.title}</span>
+                </span>
+                <span class="muted row-cwd">{session.cwd}</span>
+                {note !== null && <span class="muted row-note">{note}</span>}
               </button>
-            )}
-          </div>
-        ))}
+              {/* The agent's own state where there is one, and only the
+                  live/dead fact where there is not: a session whose provider is
+                  not reporting must not be badged "idle", which is a claim. */}
+              {session.deadAt !== null ? (
+                <span class="chip chip-ended">dead</span>
+              ) : states[session.id] === undefined ? (
+                <span class="chip chip-live">live</span>
+              ) : (
+                <span class={`chip chip-agent-${states[session.id]!.state}`}>
+                  {STATE_TEXT[states[session.id]!.state]}
+                </span>
+              )}
+              {session.deadAt === null && (
+                <button
+                  class="ghost danger"
+                  onClick={() => kill(session)}
+                  aria-label="Kill session"
+                >
+                  Kill
+                </button>
+              )}
+            </div>
+          );
+        })}
       </div>
 
       <div class="foot">
@@ -345,6 +364,36 @@ function Sessions({
   );
 }
 
+/**
+ * What Codex's live “waiting for you” badge costs, said before it is bought.
+ *
+ * Codex trust-gates each entry in its own hooks file, so tether's hook means a
+ * security prompt on the user's own machine. The captain's decision is to ask
+ * once and explain first (`decision-codex-hook-trust-install.md`), which is a UI
+ * obligation as much as a CLI one: a user who accepts because a tool told them
+ * to has not made a decision.
+ *
+ * It appears here, next to the choice it is about, and nowhere else — no banner
+ * on the list, no warning beside a Codex session that is running without it.
+ * Declining is a supported configuration and everything but that one badge keeps
+ * working, so a UI that kept mentioning it would be nagging about a working
+ * setup. The install itself stays a CLI command on purpose: it writes to a file
+ * tether does not own, and that should have to be asked for by name.
+ */
+function CodexHookNote() {
+  return (
+    <p class="note">
+      Codex works here with no setup: the conversation, the terminal, and whether it is working or
+      idle all come from files Codex already writes. Only the live “waiting for you” badge needs
+      more — a small script tether adds to your Codex hooks file, which Codex then asks you to trust
+      once. It appends one line to a log under tether’s own state directory and does nothing else.
+      Run <code>tether codex-hook install</code> on the machine to add it (it explains everything
+      first and backs the file up), or <code>tether codex-hook remove</code> to take it back out.
+      Skip it and you lose that badge and nothing else.
+    </p>
+  );
+}
+
 function NewSession({
   suggestions,
   onClose,
@@ -356,6 +405,7 @@ function NewSession({
 }) {
   const [cwd, setCwd] = useState('');
   const [title, setTitle] = useState('');
+  const [provider, setProvider] = useState<string>(DEFAULT_PROVIDER);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -364,7 +414,7 @@ function NewSession({
     setBusy(true);
     setError(null);
     try {
-      onCreated(await api.createSession(cwd.trim(), title.trim()));
+      onCreated(await api.createSession(cwd.trim(), title.trim(), provider));
     } catch (failure) {
       // `invalid_cwd` arrives with the server's own sentence, which names the
       // allowed roots. Showing it verbatim is the point: the server enforces the
@@ -379,6 +429,22 @@ function NewSession({
     <div class="sheet" role="dialog" aria-modal="true" aria-label="New session">
       <form class="card" onSubmit={submit}>
         <h2>New session</h2>
+
+        {/* A native `<select>`: two options, correct keyboard and screen-reader
+            behaviour for free, and on a phone the platform's own picker. */}
+        <label for="provider">Agent</label>
+        <select
+          id="provider"
+          value={provider}
+          onChange={(event) => setProvider((event.target as HTMLSelectElement).value)}
+        >
+          {PROVIDERS.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.label}
+            </option>
+          ))}
+        </select>
+        {provider === CODEX && <CodexHookNote />}
 
         <label for="cwd">Working directory</label>
         <input

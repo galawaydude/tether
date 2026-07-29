@@ -35,12 +35,14 @@ const BASE = '/api/machines/local/sessions';
 
 /**
  * The API starts the provider's own command and offers no way to override it, so
- * these tests put a stub `claude` on PATH that simply idles. Nothing here tests
+ * these tests put a stub for each provider on PATH that simply idles. Nothing here tests
  * Claude Code — only that a real pane is started, listed and killed. tmux inherits
  * this process's environment, so the stub is what its panes find.
  */
 const STUB_BIN = mkdtempSync(join(tmpdir(), 'tether-bin-'));
-writeFileSync(join(STUB_BIN, 'claude'), '#!/bin/sh\nexec /bin/sh\n', { mode: 0o755 });
+for (const agent of ['claude', 'codex']) {
+  writeFileSync(join(STUB_BIN, agent), '#!/bin/sh\nexec /bin/sh\n', { mode: 0o755 });
+}
 process.env['PATH'] = `${STUB_BIN}${delimiter}${process.env['PATH'] ?? ''}`;
 process.on('exit', () => rmSync(STUB_BIN, { recursive: true, force: true }));
 
@@ -394,4 +396,38 @@ test('resuming a session with no provider session id is refused, not quietly sta
   // Nothing was started, and the row still reads dead rather than resumed.
   assert.deepEqual(await listTmuxSessions(h.socket), []);
   assert.ok(getSession(h.db, session.id)!.deadAt !== null);
+});
+
+// ── Which provider a session is ──
+
+test('the provider is the caller\u2019s to choose, and claude-code when it is not', async (t) => {
+  const h = await harness(t);
+
+  // Every provider the CLI can start, over HTTP, recorded on the row the list
+  // returns — which is what the browser tags each session with.
+  for (const provider of ['claude-code', 'codex']) {
+    const res = await create(h, h.root, { provider });
+    assert.equal(res.statusCode, 201, provider);
+    assert.equal(res.json().session.provider, provider);
+  }
+
+  const omitted = await create(h, h.root);
+  assert.equal(omitted.statusCode, 201);
+  assert.equal(
+    omitted.json().session.provider,
+    'claude-code',
+    'unspecified means Claude Code, so nothing existing changes behaviour',
+  );
+
+  assert.deepEqual(
+    listSessions(h.db)
+      .map((session) => session.provider)
+      .sort(),
+    ['claude-code', 'claude-code', 'codex'],
+  );
+
+  // The enum is the same set the CLI starts from: an unknown provider is a 400
+  // from the schema, before a handler or a pane exists.
+  const unknown = await create(h, h.root, { provider: 'some-future-agent' });
+  assert.equal(unknown.statusCode, 400);
 });

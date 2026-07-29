@@ -44,8 +44,9 @@ Docker or SSH session targets, session sharing, usage dashboards, a mobile app.
 Toolchain, CI, the tmux driver, authentication, the session registry, the HTTP
 session API, the terminal transport, the conversation data layer, the browser app,
 and the conversation view. Run `tether serve`, open the address it prints, and
-you can log in, see the sessions on this machine, start one in a directory you name,
-and follow it in two tabs: a **Conversation** — your prompts, the agent's replies,
+you can log in, see the sessions on this machine — each tagged with the agent it is
+running — start one in a directory you name under either agent, and follow it in two
+tabs: a **Conversation** — your prompts, the agent's replies,
 and a collapsed card per tool call that opens onto its input and result — and a
 live **Terminal**, with a bar for the keys a phone keyboard has not got (Esc, Tab,
 arrows, Ctrl-C). A live session shows what its agent is doing — _Working_, _Idle_
@@ -147,7 +148,8 @@ tool call. You answer in the terminal, which is one tap away.
 
 ## Codex, and its optional hook
 
-`npx tether new ~/src/project --provider codex` starts Codex instead. Everything
+`npx tether new ~/src/project --provider codex` starts Codex instead, and so does
+picking **Codex** in the browser's New session sheet. Everything
 works: the conversation view, the terminal, session state while it is working and
 when it is done, and resume after a reboot.
 
@@ -167,6 +169,11 @@ question you already understand. It adds one entry, appended after your existing
 ones, backs up your `hooks.json` first, and never changes anything else in it.
 The hook it registers is a script under `~/.local/state/tether/`; it appends one
 JSON line per event to a log under that same directory and does nothing else.
+
+The New session sheet says the same thing, next to the moment you pick Codex, so
+the browser is not the one place you would meet the trust prompt unprepared. It
+says it there and nowhere else: no banner on the session list, and no warning
+beside a Codex session running happily without the hook.
 
 **Declining is a supported answer, not a broken setup.** You lose the live
 _waiting for you_ badge for Codex sessions and nothing else, and tether will
@@ -361,16 +368,19 @@ npm run test:e2e                  # the end-to-end specs
 `e2e/` is two Playwright specs on a phone viewport, and they are the only tests
 here that are not unit tests. One logs in, starts a session, watches it, types at
 it, **reloads the page**, and asserts the conversation and the terminal come back
-intact and exactly once. The other acts out a permission prompt and asserts the
-proposed tool call is on screen while the transcript still has nothing about it,
-and that the transcript's own record then replaces that card rather than adding a
-second one. Both run against `e2e/stub-agent.ts` — a script that prints, echoes
-what you type at it, writes a Claude-Code-shaped transcript, publishes its own
-status file and fires whatever hook the project's settings register — put on
-`PATH` as `claude`, so the session is created through the real code path. **CI
-never runs a real agent**: that would need real credentials and would cost money
-per run. Everything they touch (`HOME`, the state file, the tmux socket, the
-session root) is redirected into a scratch directory by `playwright.config.ts`.
+intact and exactly once; it also opens the New session sheet at the shortest
+phone viewports and asserts the card and its **Agent** picker stay on screen,
+since the sheet is the one screen that grows with its copy. The other acts out a
+permission prompt and asserts the proposed tool call is on screen while the
+transcript still has nothing about it, and that the transcript's own record then
+replaces that card rather than adding a second one. Both run against
+`e2e/stub-agent.ts` — a script that prints, echoes what you type at it, writes a
+Claude-Code-shaped transcript, publishes its own status file and fires whatever
+hook the project's settings register — put on `PATH` as `claude`, so the session
+is created through the real code path. **CI never runs a real agent**: that would
+need real credentials and would cost money per run. Everything they touch
+(`HOME`, the state file, the tmux socket, the session root) is redirected into a
+scratch directory by `playwright.config.ts`.
 
 They have no retries, deliberately. These tests cover the product's core claims,
 and a flake retried into passing is worse than no test.
