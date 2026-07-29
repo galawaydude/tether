@@ -198,17 +198,24 @@ export class Conversations {
   }
 
   /**
-   * The tmux pane's pid, which is the provider process's own.
+   * The tmux pane's pid, which is the provider process's own. It is the join for
+   * both providers: a Codex `SessionStart` to the row that spawned it, and a
+   * Claude Code session to its own registry file, which is named by that pid.
    *
-   * Only asked for while a Codex session has no `provider_session_id`: it is the
-   * join between a `SessionStart` hook and the row that spawned it, and once the
-   * row is back-filled nothing needs it again. A tmux that cannot be reached is
-   * not an error here — discovery falls through to identifying the rollout by
-   * its own `session_meta`, which is also the path a declined hook takes.
+   * A tmux that cannot be reached is not an error here — Codex discovery falls
+   * through to identifying the rollout by its own `session_meta`, which is also
+   * the path a declined hook takes, and the status poller simply has nothing to
+   * read this tick.
+   *
+   * A **dead** pane is skipped rather than reported. `remain-on-exit` keeps such
+   * a pane listed with the pid of a process that has already exited, and that
+   * pid is exactly what the operating system is free to hand to something else.
+   * `readSessionStatus` will not trust it either — see the `procStart` check
+   * there — but the cheapest place to not ask is here.
    */
   async #panePid(session: Session): Promise<number | undefined> {
     const panes = await listPanes(this.#options.socket ?? DEFAULT_SOCKET).catch(() => []);
-    return panes.find((pane) => pane.session === session.tmuxName)?.pid;
+    return panes.find((pane) => pane.session === session.tmuxName && !pane.dead)?.pid;
   }
 
   async #find(session: Session, memo?: StartMemo) {
