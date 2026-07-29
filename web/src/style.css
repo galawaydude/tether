@@ -620,6 +620,17 @@ label {
   padding: 12px;
   padding-bottom: max(12px, env(safe-area-inset-bottom));
   background: rgb(0 0 0 / 60%);
+  overflow-y: auto;
+}
+
+/* A card taller than the screen has to scroll inside the sheet. `flex-end`
+   alone pushes the overflow off the *top* of a fixed, unscrollable overlay,
+   where the page cannot scroll to it and the controls above the fold are
+   simply unreachable. `100%` is the sheet's content box, so the padding
+   above and the safe area below are already out of it. */
+.sheet .card {
+  max-height: 100%;
+  overflow-y: auto;
 }
 
 @media (min-width: 600px) {

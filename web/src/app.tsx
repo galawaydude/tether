@@ -300,41 +300,48 @@ function Sessions({
         {sessions?.length === 0 && (
           <p class="muted">No sessions yet. Start one below and it keeps running here.</p>
         )}
-        {sessions?.map((session) => (
-          <div class="row" key={session.id}>
-            <button class="row-open" onClick={() => onOpen(session)}>
-              {/* The provider first and colour-coded, because the question a
-                  mixed list has to answer at a glance on a phone is which agent
-                  this is — the title and the directory are often the same for
-                  two sessions of different providers in the same project. */}
-              <span class="row-head">
-                <span class={`tag tag-${session.provider}`}>{providerLabel(session.provider)}</span>
-                <span class="row-title">{session.title}</span>
-              </span>
-              <span class="muted row-cwd">{session.cwd}</span>
-              {unresumableNote(session) !== null && (
-                <span class="muted row-note">{unresumableNote(session)}</span>
-              )}
-            </button>
-            {/* The agent's own state where there is one, and only the
-                live/dead fact where there is not: a session whose provider is
-                not reporting must not be badged "idle", which is a claim. */}
-            {session.deadAt !== null ? (
-              <span class="chip chip-ended">dead</span>
-            ) : states[session.id] === undefined ? (
-              <span class="chip chip-live">live</span>
-            ) : (
-              <span class={`chip chip-agent-${states[session.id]!.state}`}>
-                {STATE_TEXT[states[session.id]!.state]}
-              </span>
-            )}
-            {session.deadAt === null && (
-              <button class="ghost danger" onClick={() => kill(session)} aria-label="Kill session">
-                Kill
+        {sessions?.map((session) => {
+          const note = unresumableNote(session);
+          return (
+            <div class="row" key={session.id}>
+              <button class="row-open" onClick={() => onOpen(session)}>
+                {/* The provider first and colour-coded, because the question a
+                    mixed list has to answer at a glance on a phone is which agent
+                    this is — the title and the directory are often the same for
+                    two sessions of different providers in the same project. */}
+                <span class="row-head">
+                  <span class={`tag tag-${session.provider}`}>
+                    {providerLabel(session.provider)}
+                  </span>
+                  <span class="row-title">{session.title}</span>
+                </span>
+                <span class="muted row-cwd">{session.cwd}</span>
+                {note !== null && <span class="muted row-note">{note}</span>}
               </button>
-            )}
-          </div>
-        ))}
+              {/* The agent's own state where there is one, and only the
+                  live/dead fact where there is not: a session whose provider is
+                  not reporting must not be badged "idle", which is a claim. */}
+              {session.deadAt !== null ? (
+                <span class="chip chip-ended">dead</span>
+              ) : states[session.id] === undefined ? (
+                <span class="chip chip-live">live</span>
+              ) : (
+                <span class={`chip chip-agent-${states[session.id]!.state}`}>
+                  {STATE_TEXT[states[session.id]!.state]}
+                </span>
+              )}
+              {session.deadAt === null && (
+                <button
+                  class="ghost danger"
+                  onClick={() => kill(session)}
+                  aria-label="Kill session"
+                >
+                  Kill
+                </button>
+              )}
+            </div>
+          );
+        })}
       </div>
 
       <div class="foot">

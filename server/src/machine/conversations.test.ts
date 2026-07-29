@@ -573,9 +573,11 @@ test('Notification flips the session to waiting, and says what for', async (t) =
 test('the mapper switch has two arms, and an unknown provider takes the default', () => {
   assert.equal(mapperFor('codex'), mapCodexLines);
   assert.equal(mapperFor('claude-code'), mapClaudeLines);
-  // Not reachable through `startSession`, which refuses an unknown provider —
-  // but a row written by a newer tether and read by an older one is, and the
-  // answer must be a conversation this build can read rather than a crash.
+  // Reachable two ways, so this arm is not theoretical: `startSession` skips the
+  // `PROVIDER_COMMANDS` lookup when it is given an explicit command, so
+  // `tether new <dir> --provider anything -- somecmd` writes that string; and so
+  // does a row written by a newer tether and read by an older one. The answer
+  // must be a conversation this build can read rather than a crash.
   assert.equal(mapperFor('nonesuch'), mapClaudeLines);
   assert.equal(mapperFor(''), mapClaudeLines);
   assert.equal(mapperFor('constructor'), mapClaudeLines, 'not a prototype member');

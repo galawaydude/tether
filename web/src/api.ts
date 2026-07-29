@@ -108,8 +108,12 @@ export async function createSession(
   const body = {
     cwd,
     ...(title === undefined || title === '' ? {} : { title }),
-    // Omitted rather than sent as the default: the server's own default is the
-    // one that decides, and two copies of it would drift.
+    // The picker always has a provider selected, so in practice this always
+    // sends one — the web's own id, not the server's default. That is the
+    // design: the create route's `enum` is the enforcement, so an id that has
+    // drifted from the server's is a 400 rather than a session quietly running
+    // the wrong agent under the right name. Omitting it is left possible for a
+    // caller that has no opinion, which then gets the server's default.
     ...(provider === undefined ? {} : { provider }),
   };
   const { session } = await request<{ session: Session }>(
