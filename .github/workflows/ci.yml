@@ -77,6 +77,18 @@ jobs:
       - name: Build
         run: npm run build
 
+      # npm 12 blocks the `playwright` package's own postinstall, so the browser
+      # is fetched explicitly — which is what a developer runs too, and is why a
+      # plain `npm ci` does not pay for a 100MB download it may never use.
+      - name: Install Playwright's browser
+        run: npx playwright install --with-deps chromium
+
+      # The one thing no unit test can say: log in, start a session against the
+      # stub agent, type at it, reload, and get everything back exactly once.
+      # Needs `web/dist` and a working `node-pty`, both proven by the steps above.
+      - name: End-to-end
+        run: npm run test:e2e
+
       - name: Scan for secrets
         run: |
           base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"

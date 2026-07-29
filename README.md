@@ -69,10 +69,7 @@ The conversation is read from the provider's own transcript file rather than fro
 the terminal — `~/.claude/projects/<slug>/<uuid>.jsonl` for Claude Code,
 `~/.codex/sessions/<Y>/<M>/<D>/rollout-<ts>-<uuid>.jsonl` for Codex. Both are
 append-only NDJSON, which is why they share one tailer and differ only in a
-mapper. Those files are **internal to tools that ship frequently, not public
-APIs**: a release can change one, and when it does the conversation view loses
-detail — never the session, and never the terminal, which depends on none of it
-and is always correct.
+mapper. Neither file is a public API — see [Known risks](#known-risks).
 
 `conv` also carries `{"c":"state","state":"busy"|"idle"|"waiting"}`, which is the
 session's current state rather than a record of anything — Codex sessions today,
@@ -161,11 +158,10 @@ npm run tether -- serve          # binds 127.0.0.1:8787
 
 - **Loopback by default.** `--host` is the explicit opt-out, and it refuses to
   start unless a password is set.
-- **No TLS inside tether**, by design. For remote access use Tailscale, an SSH
-  tunnel (`ssh -L 8787:localhost:8787 you@box`), or a reverse proxy that already
-  terminates TLS for you. Each of those also gives a second factor stronger than
-  the password. An off-loopback bind warns about this at startup and keeps
-  warning.
+- **No TLS inside tether**, by design — the platform solves it better, so
+  [Reaching it from your phone](#reaching-it-from-your-phone) delegates it to
+  Tailscale, an SSH tunnel or a reverse proxy. An off-loopback bind warns that it
+  is serving plain HTTP at startup, and keeps warning every ten minutes.
 - **`--allowed-host <name>`** adds a hostname to the `Host` allowlist, which is
   what stops a malicious page from reaching the server by resolving its own
   hostname to `127.0.0.1`. A Tailscale name or a reverse-proxy name needs to be
@@ -191,6 +187,101 @@ State — the one SQLite file, holding the password hash and the session registr
 lives in `~/.local/state/tether/tether.sqlite` (`$XDG_STATE_HOME`, or
 `$TETHER_STATE_DIR` to override), at mode `0600`. Nothing secret, and no runtime
 state, is ever written inside the repository.
+
+## Reaching it from your phone
+
+tether binds `127.0.0.1:8787` and terminates no TLS. That is the whole of its
+transport story, so getting to it from somewhere else is a decision you make
+once, here. Read the paragraph above again first: **whatever you put in front of
+tether is what stands between the network and a shell on this machine.** Pick
+accordingly — the three options below are in the order you should want them.
+
+### Tailscale — recommended
+
+A WireGuard network between your own devices. Free for personal use, no port is
+opened on your router, and reaching tether then requires a device that is already
+enrolled in your tailnet — a second factor considerably stronger than the
+password. Install it on the machine and on the phone, then:
+
+```sh
+tailscale ip -4                                  # 100.101.102.103
+tailscale status --json | grep '"DNSName"'       # my-box.tailnet-1234.ts.net.
+
+npm run tether -- set-password
+npm run tether -- serve \
+  --host 100.101.102.103 \
+  --allowed-host my-box.tailnet-1234.ts.net
+```
+
+Both flags are needed and neither is optional:
+
+- `--host <tailscale ip>` binds to the tailnet interface **only**. `0.0.0.0`
+  would work too and would also publish tether to every café Wi-Fi the laptop
+  joins.
+- `--allowed-host <tailscale name>` puts that name in the `Host` allowlist.
+  Without it every request from `http://my-box.tailnet-1234.ts.net:8787` is
+  refused, because the allowlist is what stops a hostile web page from resolving
+  its own hostname to your machine and driving tether through your browser.
+  Use the name without the trailing dot that `tailscale status` prints.
+
+Then open `http://my-box.tailnet-1234.ts.net:8787` on the phone. Tailscale
+carries the encryption, so plain HTTP over it is not plaintext on any wire —
+tether still warns, because it cannot see what is in front of it.
+
+### An SSH tunnel — nothing to install on the server
+
+If you already have SSH to the machine, you need no tether configuration at all:
+tether stays on loopback and the tunnel is the transport.
+
+```sh
+ssh -N -L 8787:127.0.0.1:8787 you@box
+```
+
+Then open `http://localhost:8787`. Phone SSH clients (Termius, Blink, JuiceSSH)
+all do local port forwarding. It is the least convenient option to keep alive on
+a phone that sleeps, and the easiest one to set up correctly.
+
+### A reverse proxy — deliberate exposure
+
+**This is the option that puts a shell on the internet.** One password is the
+only thing in the way, and an auth bypass in tether would be an unauthenticated
+remote code execution on this machine. Do not choose it because it is convenient;
+choose it because you have decided to, and put your own authentication in front
+of tether as well if you can.
+
+Caddy gets a certificate on its own:
+
+```
+tether.example.com {
+    reverse_proxy 127.0.0.1:8787
+}
+```
+
+```sh
+npm run tether -- serve \
+  --allowed-host tether.example.com \
+  --trusted-proxy 127.0.0.1
+```
+
+tether keeps binding loopback — the proxy is on the same machine and reaches it
+there. `--trusted-proxy` is what makes `X-Forwarded-Proto` and `X-Forwarded-For`
+believed, and it is why the session cookie gets its `Secure` flag: without it a
+client could set that header itself, so tether ignores it.
+
+## Known risks
+
+**The conversation view is built on file formats that are not public APIs.**
+Claude Code writes its transcript to `~/.claude/projects/` and Codex writes its
+rollout to `~/.codex/sessions/`. Both ship frequently and owe tether nothing. A
+release can change the record shapes, and when it does the conversation view
+loses detail — a tool card, a message, at worst the whole view. tether parses
+them tolerantly for that reason: an unrecognised record is logged to stderr and
+ignored, never thrown.
+
+**The terminal view depends on none of it.** It is the real TUI over tmux, it is
+always correct, and it is a complete fallback. If the conversation ever looks
+wrong or empty after a provider upgrade, that is the failure to expect, the
+terminal tab is the answer, and the session itself was never at risk.
 
 ## Development
 
@@ -228,7 +319,23 @@ Other checks, all of which CI runs on every pull request:
 npm run typecheck    # tsc --noEmit, per package
 npm run lint         # eslint
 npm run format:check # prettier --check   (npm run format to fix)
+
+npx playwright install chromium   # once; npm 12 blocks playwright's own postinstall
+npm run test:e2e                  # the one end-to-end spec
 ```
+
+`e2e/` is a single Playwright spec on a phone viewport, and it is the only test
+here that is not a unit test: log in, start a session, watch it, type at it,
+**reload the page**, and assert the conversation and the terminal come back
+intact and exactly once. It runs against `e2e/stub-agent.ts` — a script that
+prints, echoes what you type at it, and writes a Claude-Code-shaped transcript —
+put on `PATH` as `claude`, so the session is created through the real code path. **CI never runs a
+real agent**: that would need real credentials and would cost money per run.
+Everything it touches (`HOME`, the state file, the tmux socket, the session root)
+is redirected into a scratch directory by `playwright.config.ts`.
+
+It has no retries, deliberately. This test covers the product's core claim, and a
+flake retried into passing is worse than no test.
 
 ### Layout
 
