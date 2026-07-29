@@ -32,6 +32,16 @@ export const CAPTURED_VERSION = '2.1.220';
 export const DEFAULT_POLL_MS = 1000;
 
 /**
+ * How much older than the session a transcript's mtime may look and still be it.
+ * A filesystem's timestamp granularity is not the clock's — ext3, HFS+ and FAT
+ * all round an mtime down, by up to a second or two — so a transcript written
+ * moments *after* `Date.now()` can carry a stamp moments before it. Without this
+ * the file is invisible and the conversation view stays empty for the life of
+ * the session, on nothing but which filesystem the user happens to be on.
+ */
+const MTIME_GRANULARITY_MS = 2000;
+
+/**
  * Claude Code's own `sanitizePath` (`utils/sessionStoragePortable.ts`): every
  * non-alphanumeric byte becomes a hyphen.
  *
@@ -93,7 +103,7 @@ export async function findTranscript(session: {
     if (!name.endsWith('.jsonl')) continue;
     const path = join(dir, name);
     const info = await stat(path).catch(() => undefined);
-    if (info === undefined || info.mtimeMs < session.createdAt) continue;
+    if (info === undefined || info.mtimeMs < session.createdAt - MTIME_GRANULARITY_MS) continue;
     if (best !== undefined && info.mtimeMs <= best.mtimeMs) continue;
     best = { path, providerSessionId: name.slice(0, -'.jsonl'.length), mtimeMs: info.mtimeMs };
   }

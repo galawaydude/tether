@@ -223,6 +223,22 @@ test('a warning with nowhere else to go reaches the operator, once per complaint
   assert.match(written[0] ?? '', /weather-forecast/);
 });
 
+test('a sink that has gone quiet says so, once, rather than just stopping', (t) => {
+  const written: string[] = [];
+  t.mock.method(process.stderr, 'write', (chunk: unknown) => {
+    written.push(String(chunk));
+    return true;
+  });
+
+  const warn = stderrWarn();
+  for (let n = 0; n < 500; n += 1) warn(`unknown transcript record type type-${n}`);
+
+  const suppressed = written.filter((line) => line.includes('suppressed'));
+  assert.equal(suppressed.length, 1, 'said once, not once per dropped warning');
+  assert.equal(written.at(-1), suppressed[0], 'and it is the last thing the sink says');
+  assert.ok(written.length < 500, `bounded: ${written.length}`);
+});
+
 test('the last viewer leaving stops the tailer', async (t) => {
   const h = await harness(t);
   await writeFile(h.transcript, userRecord(1));

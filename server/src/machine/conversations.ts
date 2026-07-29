@@ -61,12 +61,23 @@ const MAX_WARNINGS = 100;
  * finds out that Claude Code's on-disk format moved, and the server runs Fastify
  * with `logger: false`, so stderr is the only place left. Each distinct message
  * is written once: one unknown record type must not become one line per record.
+ *
+ * Going quiet at the cap is said out loud, once. A long-lived `tether serve`
+ * with nothing to report and one that has stopped reporting must not look the
+ * same to whoever is reading the log.
  */
 export function stderrWarn(): (message: string) => void {
   const seen = new Set<string>();
+  let announcedSilence = false;
   return (message) => {
     const key = message.replace(ID_IN_MESSAGE, '<id>');
-    if (seen.has(key) || seen.size >= MAX_WARNINGS) return;
+    if (seen.has(key)) return;
+    if (seen.size >= MAX_WARNINGS) {
+      if (announcedSilence) return;
+      announcedSilence = true;
+      process.stderr.write('tether: further transcript warnings suppressed\n');
+      return;
+    }
     seen.add(key);
     process.stderr.write(`tether: ${message}\n`);
   };

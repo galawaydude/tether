@@ -150,6 +150,43 @@ test('a huge tool call input is capped the same way, with its shape kept', () =>
   assert.match(input['content'] ?? '', /truncated by tether]$/);
 });
 
+test('two long fields of one input are each capped, not the second one starved', () => {
+  const { events } = mapLines([
+    JSON.stringify({
+      type: 'assistant',
+      uuid: 'u1',
+      timestamp: '2026-07-29T04:53:44.000Z',
+      message: {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 't1',
+            name: 'Edit',
+            input: {
+              file_path: '/tmp/big.txt',
+              old_string: 'o'.repeat(MAX_OUTPUT * 2),
+              new_string: 'n'.repeat(MAX_OUTPUT * 2),
+            },
+          },
+        ],
+      },
+    }),
+  ]);
+  const input = events[0]?.kind === 'tool_call' ? (events[0].input as Record<string, string>) : {};
+
+  assert.equal(input['file_path'], '/tmp/big.txt', 'a short field is never spent on a long one');
+  for (const key of ['old_string', 'new_string']) {
+    const text = input[key] ?? '';
+    assert.ok(text.length > 1000, `${key} kept real content, not just a marker: ${text.length}`);
+    assert.match(text, /truncated by tether]$/, `${key} says that it was cut`);
+  }
+  assert.ok(
+    JSON.stringify(input).length < MAX_OUTPUT * 1.1,
+    'and the whole input is still bounded by the one cap',
+  );
+});
+
 test('a subagent’s own thread stays out of the main conversation', () => {
   const { events } = mapLines([
     JSON.stringify({
