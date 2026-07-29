@@ -5,8 +5,10 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { DatabaseSync } from 'node:sqlite';
 import { setTimeout as delay } from 'node:timers/promises';
 
+import { Conversations } from '../machine/conversations.ts';
 import type { Terminals } from '../machine/terminal.ts';
 import type { AuthStore } from './auth.ts';
+import { registerConvSocket, registerConversationRoutes } from './conversation.ts';
 import { isHostAllowed, isOriginAllowed, isStateChanging } from './guards.ts';
 import { registerSessionRoutes } from './sessions.ts';
 import { registerTermSocket } from './term-socket.ts';
@@ -26,6 +28,8 @@ export type ServerOptions = {
   db: DatabaseSync;
   /** Backs the `term` WebSocket channel. */
   terminals: Terminals;
+  /** Backs the conversation routes. Tests point it at a transcript of their own. */
+  conversations?: Conversations;
   /** Accepted `Host` header hostnames — see `defaultAllowedHosts`. */
   allowedHosts: Iterable<string>;
   /** tmux socket the session routes drive. Tests point this at their own. */
@@ -220,13 +224,22 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     allowedRoots: options.allowedRoots,
   });
 
+  const conversations = options.conversations ?? new Conversations(options.db);
+  registerConversationRoutes(app, options.db, conversations);
+
   // In `after`, not inline: `@fastify/websocket` upgrades a route through an
   // `onRoute` hook it only installs once its own registration has run, and a
   // route added before that silently stays a plain HTTP route.
-  app.after(() => registerTermSocket(app, options.terminals));
-  // Closing the server must take the attach PTYs with it, or `npm test` leaves
-  // tmux clients behind and the process never exits.
-  app.addHook('onClose', async () => options.terminals.closeAll());
+  app.after(() => {
+    registerTermSocket(app, options.terminals);
+    registerConvSocket(app, options.db, conversations);
+  });
+  // Closing the server must take the attach PTYs and the transcript tailers with
+  // it, or `npm test` leaves tmux clients behind and the process never exits.
+  app.addHook('onClose', async () => {
+    await conversations.closeAll();
+    await options.terminals.closeAll();
+  });
 
   return app;
 }

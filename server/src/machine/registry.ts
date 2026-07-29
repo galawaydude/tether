@@ -144,6 +144,20 @@ export function setProviderSessionId(
   );
 }
 
+/**
+ * Every provider session id already bound to a row other than `exceptId`. What
+ * transcript discovery needs and cannot work out from timestamps: a transcript
+ * this registry has already given to one session is not available to another.
+ */
+export function claimedProviderSessionIds(db: DatabaseSync, exceptId: string): Set<string> {
+  const claimed = db
+    .prepare(
+      'SELECT provider_session_id FROM sessions WHERE provider_session_id IS NOT NULL AND id != ?',
+    )
+    .all(exceptId) as unknown as { provider_session_id: string }[];
+  return new Set(claimed.map((row) => row.provider_session_id));
+}
+
 /** Idempotent — the first death is the one that is recorded. */
 export function markDead(db: DatabaseSync, id: string): void {
   const now = Date.now();
