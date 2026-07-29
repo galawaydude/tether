@@ -41,6 +41,11 @@ export default defineConfig({
     // Never adopt a server someone left running: it would have the real home
     // directory and the real state file.
     reuseExistingServer: false,
+    // Playwright SIGKILLs the web server by default, which would leave the
+    // sandbox's tmux server and the stub agent in it running. `e2e/serve.ts`
+    // cleans up on SIGTERM — and cleans up again at startup, because a kill -9
+    // from anywhere else must not make the next run's counts wrong.
+    gracefulShutdown: { signal: 'SIGTERM', timeout: 5000 },
     stdout: 'pipe',
     stderr: 'pipe',
     env: {

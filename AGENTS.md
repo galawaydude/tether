@@ -225,6 +225,18 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `coerceTypes` are on): `additionalProperties: false` strips instead of rejecting, and
   `{"password": 123}` arrives as `"123"`. `buildServer` turns both off. Do not remove that
   `ajv.customOptions` block, and do not assume stock Fastify behaviour when reading the tests.
+- **`e2e/` is one Playwright spec and it asserts counts, not presence.** It drives the
+  real `tether serve` (`e2e/serve.ts` calls the CLI's own `main`) inside a scratch
+  `HOME`/state dir/tmux socket, with `e2e/stub-agent.ts` on `PATH` as `claude` — so the
+  session is created through the production path and **CI still never runs a live
+  agent**. What it checks that nothing else can is the reload: `toContainText` passes
+  just as happily on a view that replayed itself twice. Two things not to
+  "strengthen" by accident: the locators are scoped to `.conv` and `.xterm-rows`
+  because both panes stay mounted, and the terminal comparison is of the **rendered
+  screen** before versus after — the buffer above it legitimately holds the capture
+  _under_ tmux's repaint, and byte-exactness of the recipe is `terminal.test.ts`'s job.
+  `retries: 0` is deliberate. `npm ci` does not fetch the browser (npm 12 blocks
+  playwright's postinstall); `npx playwright install chromium` does, and CI runs it.
 
 ## Maintaining this file
 
