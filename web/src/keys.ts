@@ -252,3 +252,26 @@ export function encodeInput(data: string): InputFrame[] {
 export function withSeq(frame: InputFrame, seq: number): ClientFrame {
   return frame.c === 'key' ? { c: 'key', seq, keys: frame.keys } : { ...frame, seq };
 }
+
+/**
+ * The other half of exactly-once: who the sequence belongs to. One per terminal
+ * view, kept across its reconnects, so a frame resent on a new socket is
+ * recognised as the same client's and dropped rather than applied twice.
+ *
+ * **Not `crypto.randomUUID()`.** That one is secure-context only, and tether's
+ * whole promise is a phone reaching `http://<host>:8787` on the LAN — every
+ * origin that is not `localhost` or `127.0.0.0/8` is an insecure context, so
+ * `randomUUID` is `undefined` on exactly the devices this product exists for and
+ * calling it throws before the socket is ever opened. `getRandomValues` carries
+ * no such gate. Nothing else in the browser app may reach for a secure-context
+ * API either; `keys.test.ts` holds the line for this one.
+ *
+ * It is not a credential — the session cookie is what authenticates, and this has
+ * already been checked by the time the id is read — only an id no other viewer
+ * will pick. Hex, so it satisfies the route's `^[A-Za-z0-9_-]{1,64}$`.
+ */
+export function newClientId(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) =>
+    b.toString(16).padStart(2, '0'),
+  ).join('');
+}

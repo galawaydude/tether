@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { controlKey, encodeInput, withSeq } from './keys.ts';
+import { controlKey, encodeInput, newClientId, withSeq } from './keys.ts';
 
 test('printable text becomes one text frame, whatever the characters are', () => {
   assert.deepEqual(encodeInput('hello'), [{ c: 'text', text: 'hello' }]);
@@ -133,4 +133,51 @@ test('withSeq produces the wire frames the server parses', () => {
     seq: 9,
     text: 'one\ntwo',
   });
+});
+
+/**
+ * The bug this guards, found by using the product: every device that is not the
+ * one running tether reaches it over plain HTTP at a non-loopback host, which is
+ * an **insecure context**, and a browser withholds `crypto.randomUUID` there.
+ * `TerminalView` called it while setting up its socket, so on a phone or a second
+ * laptop the effect threw before `connect()` — no terminal socket at all, a chip
+ * stuck on "Connecting…", and a composed message stuck on "Sending…" because the
+ * sender the composer calls is filled in by that same effect. The machine serving
+ * tether was unaffected, because `localhost` is a secure context, which is also
+ * why `e2e/` never saw it: Playwright drives the app over loopback.
+ *
+ * So the crypto here is stubbed down to what an insecure context really offers.
+ * `getRandomValues` is the whole of it — that is the browser this has to work in.
+ */
+test('the client id is generated with what an insecure context actually has', () => {
+  const real = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+  Object.defineProperty(globalThis, 'crypto', {
+    configurable: true,
+    value: {
+      getRandomValues: <T extends ArrayBufferView>(array: T): T => {
+        const bytes = new Uint8Array(array.buffer, array.byteOffset, array.byteLength);
+        for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 37 + 11) % 256;
+        return array;
+      },
+    },
+  });
+  try {
+    assert.equal(
+      typeof (globalThis.crypto as Crypto).randomUUID,
+      'undefined',
+      'the stub is honest',
+    );
+    const id = newClientId();
+    // The route's own `client` pattern: an id it refuses is a 400 on the upgrade,
+    // which is the same dead terminal by another route.
+    assert.match(id, /^[A-Za-z0-9_-]{1,64}$/);
+    assert.ok(id.length >= 16, `too little entropy to keep two viewers apart: ${id}`);
+  } finally {
+    Object.defineProperty(globalThis, 'crypto', real as PropertyDescriptor);
+  }
+});
+
+test('two client ids are different, so two viewers never share a sequence space', () => {
+  const ids = new Set(Array.from({ length: 100 }, () => newClientId()));
+  assert.equal(ids.size, 100, 'a repeated id makes one viewer drop the other as a replay');
 });

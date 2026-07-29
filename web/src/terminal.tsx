@@ -22,7 +22,7 @@ import type { ClientFrame, Session } from '@tether/shared';
 import { useEffect, useRef } from 'preact/hooks';
 
 import { ApiError, checkSession, termSocketUrl } from './api.ts';
-import { encodeInput, withSeq } from './keys.ts';
+import { encodeInput, newClientId, withSeq } from './keys.ts';
 import type { InputFrame } from './keys.ts';
 
 /** From `server/src/web/term-socket.ts`; the wire contract, not a guess. */
@@ -126,8 +126,9 @@ export function TerminalView({
 
     // One identity for the whole view, kept across reconnects: the server drops a
     // sequence it has already applied, so a frame resent on a new socket is
-    // de-duplicated only while the client id stays the same.
-    const clientId = crypto.randomUUID();
+    // de-duplicated only while the client id stays the same. It comes from
+    // `keys.ts` because how it is generated is load-bearing — see `newClientId`.
+    const clientId = newClientId();
     let seq = 0;
     let socket: WebSocket | null = null;
     let reconnect: ReturnType<typeof setTimeout> | undefined;
