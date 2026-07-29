@@ -67,7 +67,11 @@ export type ServerFrame =
 export type ClientFrame =
   /** Message text. Multi-line safe: delivered by tmux's paste buffer, then submitted. */
   | { c: 'input'; seq: number; text: string }
-  /** Raw keystrokes, as tmux key names: `['Enter']`, `['C-c']`, `['Escape']`. */
+  /**
+   * Raw keystrokes, as tmux key names: `['Enter']`, `['C-c']`, `['Escape']`. A
+   * standalone `';'` is rejected — tmux reads it as a command separator, so the
+   * driver's argv guard refuses it; a UI needs another way to send that one key.
+   */
   | { c: 'key'; seq: number; keys: string[] }
   /** Last viewer to send this wins; `window-size manual` keeps it off other sessions. */
   | { c: 'resize'; cols: number; rows: number };
