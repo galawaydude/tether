@@ -186,6 +186,39 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   key, and the fixtures contain the case that proves it (two attempts, identical
   `tool_input`, different ids).
 
+- **The two providers' hooks share a purpose and no code, deliberately.**
+  `providers/claude-code/hooks.ts` installs into `<cwd>/.claude/settings.local.json`
+  — a file in the **user's own repo** — per project at spawn, with no trust gate,
+  and its shim POSTs to `/internal/hook`. Codex's is one global trust-gated
+  entry whose shim appends to a log tether tails. Report §4 chose the seam;
+  do not abstract over two examples. The transport differs for a reason that
+  outlives this PR: a `PreToolUse` hook answers a permission prompt on **stdout**,
+  so PR #14 needs request/response, which a log file could never become. Until
+  then the shim writes no stdout at all and the route replies empty — writing
+  either would silently allow or deny the user's tool call.
+- **The hook secret is a `0600` file read at hook execution time, and the
+  settings file gets only a path.** `settings.local.json` lives in the user's
+  repository, so a token in it is one `git add` from being published (report
+  §7); the same goes for the endpoint URL, which is rewritten after every
+  `listen` so a session spawned under one `tether serve` reaches the next one
+  on a new port. The secret is per installation — Claude Code names its own
+  session and tether cannot know it at install time — and **per-session
+  authorisation lives at the endpoint instead**: loopback checked against the
+  real peer address (never `request.ip`, which `trustProxy` lets a header
+  forge), constant-time secret compare, then a payload accepted only for a live
+  registry row. A hook whose `session_id` is unknown adopts the one unclaimed
+  row in its `cwd`, which is how the _first_ tool call of a session is not lost.
+- **`~/.claude/sessions/<pid>.json` outlives its process, so both guards in
+  `providers/claude-code/status.ts` are mandatory.** It is deleted on a graceful
+  exit and left behind by a `SIGKILL` or a reboot, and pids are reused — so
+  `kill(pid, 0)` is not enough on its own. `procStart` is the identity check,
+  and it is verified to be `/proc/<pid>/stat` **field 22** (`starttime`), found
+  from the **last** `") "` because field 2 is a comm that can contain spaces and
+  `)`. Anything unreadable or unverifiable is `undefined` — "tether cannot say"
+  — never a guess: a session wrongly reported `waiting` is a phone notification
+  that should not have fired. The file also carries `waitingFor`, which nothing
+  reads yet.
+
 - **`{c:'state'}` is not a `conv` frame, and must not become one.** `seq` is a
   position in the mapped transcript; the evidence for `waiting` arrives by hook,
   outside it. Giving state a `seq` makes the history route and a live tailer

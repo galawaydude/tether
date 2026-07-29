@@ -111,6 +111,31 @@ the terminal scrollback is genuinely gone, the conversation is not. A session th
 died before its first message has no conversation to restore; `resume` says so and
 refuses rather than handing back a fresh session dressed up as the old one.
 
+## The Claude Code hook, and the file it writes in your project
+
+Claude Code does not write a tool call to its transcript until the turn is
+finished. Without help, the conversation view would go blank for exactly as long
+as a permission prompt is on screen — the one moment you are most likely to be
+looking at your phone. So when tether starts a Claude Code session it registers
+a hook, and the view shows the tool call it is asking about while it is asking.
+
+It writes one thing into your project: two entries in
+`.claude/settings.local.json`, appended after anything already there, with your
+file backed up first. If that file is not a shape tether recognises, it changes
+nothing at all and says so — you get the session without the accelerator.
+`.claude/settings.local.json` is git-ignored by convention, and tether keeps it
+worth ignoring:
+
+**No secret is ever written into your repository.** The entries contain only a
+path to a script under `~/.local/state/tether/`. The shared secret and the URL
+to post to are `0600` files beside that script, read when the hook runs. The
+endpoint only listens on loopback, only accepts that secret, and only accepts a
+payload naming a session tether is actually running.
+
+tether does not answer permission prompts, and the hook cannot: it never writes
+to standard output, which is the channel a hook would use to allow or deny a
+tool call. You answer in the terminal, which is one tap away.
+
 ## Codex, and its optional hook
 
 `npx tether new ~/src/project --provider codex` starts Codex instead. Everything
