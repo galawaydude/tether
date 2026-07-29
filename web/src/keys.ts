@@ -17,11 +17,23 @@
 
 import type { ClientFrame } from '@tether/shared';
 
-/** Frames without their sequence number; the socket assigns those. */
-export type InputFrame = { c: 'text'; text: string } | { c: 'key'; keys: string[] };
+/**
+ * Frames without their sequence number; the socket assigns those.
+ *
+ * `input` is the composer's frame and is not produced by anything in this
+ * module: it is a whole composed message, submitted, where `text` is literal
+ * keystrokes that are not. It shares the socket's sequence counter because
+ * exactly-once is a property of the *client*, not of one kind of frame.
+ */
+export type InputFrame =
+  { c: 'text'; text: string } | { c: 'key'; keys: string[] } | { c: 'input'; text: string };
 
-/** `term-socket.ts` drops a frame that exceeds either of these. */
-const MAX_TEXT = 64 * 1024;
+/**
+ * `term-socket.ts` drops a frame that exceeds either of these. `MAX_TEXT` is
+ * exported because the composer has to refuse what the server would drop, and a
+ * third copy of the number would be one that drifts.
+ */
+export const MAX_TEXT = 64 * 1024;
 const MAX_KEYS = 64;
 
 /** The final byte of a cursor/navigation CSI, and the tmux key name it means. */
@@ -238,7 +250,5 @@ export function encodeInput(data: string): InputFrame[] {
 
 /** Attach the per-client sequence number a frame needs to be exactly-once. */
 export function withSeq(frame: InputFrame, seq: number): ClientFrame {
-  return frame.c === 'text'
-    ? { c: 'text', seq, text: frame.text }
-    : { c: 'key', seq, keys: frame.keys };
+  return frame.c === 'key' ? { c: 'key', seq, keys: frame.keys } : { ...frame, seq };
 }

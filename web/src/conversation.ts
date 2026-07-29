@@ -18,7 +18,10 @@
  * degrade to one grey line and keep rendering the rest.
  */
 
-import type { ConversationEvent, ToolCallEvent } from '@tether/shared';
+import type { ConversationEvent, SessionState, ToolCallEvent } from '@tether/shared';
+
+import { MAX_TEXT } from './keys.ts';
+import type { Status } from './terminal.tsx';
 
 /** An event with its position in the session's stream, as the server sends it. */
 export type SeqEvent = { seq: number; e: ConversationEvent };
@@ -99,6 +102,17 @@ function oneLine(text: string): string {
 }
 
 /**
+ * A message sent from the composer, before the transcript has shown it back.
+ *
+ * `undelivered` is the sentence saying the socket it was sent on has closed for
+ * good, or `null` while the transcript can still show it back. It is a state the
+ * echo enters rather than an exit: the text is the thing the user would
+ * otherwise lose, so the message stays on screen and is marked, never dropped
+ * and never silently retired.
+ */
+export type Echo = { text: string; undelivered: string | null };
+
+/**
  * The rows built so far, plus what {@link addEvents} needs to extend them:
  * `seq` is the highest applied, and `byCall` is where a `tool_result` finds the
  * card its `tool_call` already opened.
@@ -107,10 +121,116 @@ export type Rows = {
   rows: readonly Row[];
   seq: number;
   byCall: Map<string, ToolRow>;
+  /**
+   * Messages sent from the composer that the transcript has not shown back yet,
+   * oldest first — the optimistic echo. Rendered after {@link Rows.rows}, which
+   * is where they belong: both providers record the user's message when the turn
+   * starts, well before any reply, so an echo is only ever the newest thing in
+   * the conversation and is gone by the time anything could follow it.
+   *
+   * Held apart from `rows` rather than mixed in, for the same reason `pending`
+   * and `state` are not `conv` frames: a sent message has no `seq` until the
+   * transcript gives it one, and inventing a position for it would make the
+   * history route and a live tailer disagree about which event is number 12.
+   */
+  echoes: readonly Echo[];
 };
 
 export function noRows(): Rows {
-  return { rows: [], seq: 0, byCall: new Map() };
+  return { rows: [], seq: 0, byCall: new Map(), echoes: [] };
+}
+
+/**
+ * The composer sent a message. Shown at once, before any round trip: on a phone
+ * the alternative is a textarea that empties into silence for as long as the
+ * agent takes to write its first record.
+ */
+export function addEcho(state: Rows, text: string): Rows {
+  return { ...state, echoes: [...state.echoes, { text, undelivered: null }] };
+}
+
+/**
+ * The same two facts {@link sendBlocked} refuses a *new* message on, applied to
+ * the messages already outstanding when the terminal socket closed.
+ *
+ * A composed message leaves on that socket and there is no retry loop past
+ * either close, so an echo standing at "Sending…" after one of them is the same
+ * lie in slower motion: the frame is in the resend set, the session is not
+ * coming back, and the card claims it is still on its way. It is marked, and
+ * says which fact it is — a session that stopped is not a session the server
+ * cannot find.
+ *
+ * What the note may say is bounded by what this side knows, which is **less than
+ * whether the message arrived**. An echo is outstanding until the *transcript*
+ * records it, and the ACK is a different, earlier milestone that lives in the
+ * terminal view's unacked set: a message sent mid-turn can be applied, ACKed and
+ * queued by the agent, and the session then end before its record is written. So
+ * each sentence states the close and stops there. Saying "not delivered" would
+ * be the same over-claim as "Sending…", pointing the other way.
+ *
+ * Marking is **not** retiring. The echo keeps its place in the queue, so if a
+ * record does turn up after all — a message the pane took before it went, whose
+ * transcript line the tailer had not reached — {@link addEvents} retires it
+ * exactly once through the ordinary path, and the never-duplicate rule is
+ * untouched.
+ */
+const UNDELIVERED: Partial<Record<Status, string>> = {
+  ended: 'This session ended before the agent recorded this message.',
+  gone: 'The server no longer has this session, and the agent had not recorded this message.',
+};
+
+export function markUndelivered(state: Rows, terminal: Status): Rows {
+  const note = UNDELIVERED[terminal];
+  if (note === undefined || state.echoes.every((echo) => echo.undelivered !== null)) return state;
+  return {
+    ...state,
+    echoes: state.echoes.map((echo) => ({ ...echo, undelivered: echo.undelivered ?? note })),
+  };
+}
+
+/**
+ * Why the composer will not send right now, or `null`. A sentence rather than a
+ * boolean: a Send button that is grey for no stated reason is a bug report.
+ *
+ * Every refusal here is a message that could not arrive. The alternative is not
+ * a stricter composer, it is a "Sending…" that never resolves — an interface
+ * quietly telling the user something untrue about their own message, which in a
+ * tool for supervising work you cannot see is the worst failure available.
+ *
+ * The three facts it knows, in the order it applies them:
+ *
+ *  - **The terminal channel is finished.** A composed message is an `input`
+ *    frame on that socket, so a session that has ended — or one the server no
+ *    longer has — has nowhere for it to go, and the two are said apart because
+ *    the user can act on the difference.
+ *  - **`waiting`** means the pane is holding on a permission prompt. A message
+ *    pasted into that is not a message — it answers the dialog with whatever
+ *    option is selected, which can be *yes* to a command the user never read.
+ *    The banner above both panes already says where to answer.
+ *  - **Longer than the wire allows.** `parseClientFrame` drops an `input` frame
+ *    over {@link MAX_TEXT} and never ACKs it, so it would be resent on every
+ *    reconnect for the life of the mount. Measured the same way the server
+ *    measures it — `String.length` on the text that is actually sent — and
+ *    refused rather than split, since a splitting scheme invents an
+ *    interleaving no test covers.
+ *
+ * `busy` is deliberately **not** refused. Both providers accept a message that
+ * arrives mid-turn and show it queued in their own pane, and redirecting an
+ * agent that is off down the wrong path is the single most valuable thing a
+ * phone can do — a composer that locks for the length of a turn is a composer
+ * that is unavailable exactly when it is wanted. Nor is `retrying`: the frame
+ * waits in the terminal view's unacked set and goes out on the next connect,
+ * which is the whole point of that set.
+ */
+export function sendBlocked(agent: SessionState, message: string, terminal: Status): string | null {
+  if (terminal === 'ended') return 'This session has ended. Nothing can reach it now.';
+  if (terminal === 'gone')
+    return 'The server no longer has this session. Nothing can reach it now.';
+  if (agent === 'waiting') return 'Answer the prompt in the terminal first.';
+  if (message.length > MAX_TEXT) {
+    return `Too long to send: ${message.length} characters, and the limit is ${MAX_TEXT}.`;
+  }
+  return null;
 }
 
 /**
@@ -156,21 +276,60 @@ export function addPending(state: Rows, e: ToolCallEvent): Rows {
 export function addEvents(state: Rows, incoming: readonly SeqEvent[]): Rows {
   let rows: Row[] | undefined;
   let seq = state.seq;
+  let echoes = state.echoes;
   for (const { seq: at, e } of incoming) {
     if (at <= seq) continue;
     seq = at;
+    // **Replaced, never duplicated.** A `user` event is the transcript catching
+    // up with something the user sent, so the oldest outstanding echo is retired
+    // against it and the real record takes its place — same position in the
+    // list, no second copy.
+    //
+    // Retired by arrival order rather than by matching the text: a provider is
+    // free to record what it received rather than what was typed (trailing
+    // whitespace, a trailing newline), and a match that fails leaves the echo
+    // standing next to its own record forever. The cost of the looser rule is a
+    // message typed straight into the terminal while a composed one is in flight
+    // retiring the wrong echo — one message shown with the other's text for the
+    // moment before its own record lands, and still never two.
+    if (e.kind === 'user' && echoes.length > 0) echoes = echoes.slice(1);
     const row = toRow(String(at), e, state.byCall);
     if (row === undefined) continue;
     rows ??= [...state.rows];
     rows.push(row);
   }
   if (seq === state.seq) return state;
-  return { rows: rows ?? state.rows, seq, byCall: state.byCall };
+  return { rows: rows ?? state.rows, seq, byCall: state.byCall, echoes };
 }
 
 /** Convenience for the tests and for a fresh history: rows from nothing. */
 export function toRows(events: readonly SeqEvent[]): readonly Row[] {
   return addEvents(noRows(), events).rows;
+}
+
+/**
+ * The whole conversation again, replacing the rows built so far — the answer to
+ * `refetch`, where the gap is wider than the server's tail.
+ *
+ * Rows are replaced rather than merged: this is the entire transcript, and
+ * merging it into rows built from a stream that has since been declared unusable
+ * is how a hole gets papered over instead of fixed.
+ *
+ * Echoes are **carried across**, because a message sent a moment ago cannot have
+ * been superseded by a transcript the server built before it arrived, and
+ * dropping it blanks a just-sent message from the view for as long as the turn
+ * it landed in. It cannot duplicate, because it is the same {@link addEvents}
+ * retirement either way — applied only past the `seq` this client had already
+ * seen, which is the whole of the two passes: those records already had their
+ * chance at the echo and retired nothing, so replaying them must not retire it
+ * now.
+ */
+export function rebuild(state: Rows, events: readonly SeqEvent[]): Rows {
+  const seen = addEvents(
+    noRows(),
+    events.filter(({ seq }) => seq <= state.seq),
+  );
+  return addEvents({ ...seen, echoes: state.echoes }, events);
 }
 
 /**

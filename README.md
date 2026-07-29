@@ -43,10 +43,10 @@ Docker or SSH session targets, session sharing, usage dashboards, a mobile app.
 
 Toolchain, CI, the tmux driver, authentication, the session registry, the HTTP
 session API, the terminal transport, the conversation data layer, the browser app,
-and the conversation view. Run `tether serve`, open the address it prints, and
-you can log in, see the sessions on this machine — each tagged with the agent it is
-running — start one in a directory you name under either agent, and follow it in two
-tabs: a **Conversation** — your prompts, the agent's replies,
+the conversation view, and the composer. Run `tether serve`, open the address it
+prints, and you can log in, see the sessions on this machine — each tagged with the
+agent it is running — start one in a directory you name under either agent, and
+follow it in two tabs: a **Conversation** — your prompts, the agent's replies,
 and a collapsed card per tool call that opens onto its input and result — and a
 live **Terminal**, with a bar for the keys a phone keyboard has not got (Esc, Tab,
 arrows, Ctrl-C). A live session shows what its agent is doing — _Working_, _Idle_
@@ -56,8 +56,19 @@ Claude Code permission prompt puts the tool call it is asking about in the
 conversation before the transcript has it (see
 [the hook](#the-claude-code-hook-and-the-file-it-writes-in-your-project)).
 Answering it still means the terminal tab: tether shows you the question and adds
-no approve/deny of its own. The composer is still to come. This milestone is being
-built one focused PR at a time.
+no approve/deny of its own.
+
+You reply in the conversation tab's **composer**: a real text box, so the message
+is composed on the phone and sent as one unit rather than a round trip per
+keystroke with autocorrect fighting a raw byte stream. **Enter inserts a line
+break** — the Send button is what sends — and a multi-line prompt arrives whole,
+line breaks and all. It shows the moment you send it and is replaced, not
+duplicated, by the transcript's own record a moment later. Send is refused, with
+the reason, while the agent is waiting on a permission prompt, where a message
+would answer the dialog rather than the agent, when the message is too long for
+the wire to carry, and once the session has ended or the server no longer has it;
+mid-turn it is fine, and the agent queues it.
+This milestone is being built one focused PR at a time.
 
 ```
 GET    /api/machines/local/sessions            every session, live and dead, with each live one's state
@@ -365,15 +376,18 @@ npx playwright install chromium   # once; npm 12 blocks playwright's own postins
 npm run test:e2e                  # the end-to-end specs
 ```
 
-`e2e/` is two Playwright specs on a phone viewport, and they are the only tests
+`e2e/` is three Playwright specs on a phone viewport, and they are the only tests
 here that are not unit tests. One logs in, starts a session, watches it, types at
 it, **reloads the page**, and asserts the conversation and the terminal come back
 intact and exactly once; it also opens the New session sheet at the shortest
 phone viewports and asserts the card and its **Agent** picker stay on screen,
-since the sheet is the one screen that grows with its copy. The other acts out a
+since the sheet is the one screen that grows with its copy. The second acts out a
 permission prompt and asserts the proposed tool call is on screen while the
 transcript still has nothing about it, and that the transcript's own record then
-replaces that card rather than adding a second one. Both run against
+replaces that card rather than adding a second one. The third composes a message
+and asserts it reaches the agent and appears exactly once, that Enter in the box
+is a line break rather than a send, and that the composer leaves Send on screen
+with the keyboard up. All three run against
 `e2e/stub-agent.ts` — a script that prints, echoes what you type at it, writes a
 Claude-Code-shaped transcript, publishes its own status file and fires whatever
 hook the project's settings register — put on `PATH` as `claude`, so the session

@@ -19,15 +19,19 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 
 import { convSocketUrl, fetchConversation } from './api.ts';
 import {
+  addEcho,
   addEvents,
   addPending,
+  markUndelivered,
   noRows,
+  rebuild,
+  sendBlocked,
   type Row,
   type Rows,
   type ToolRow,
 } from './conversation.ts';
 import { whoLabel } from './providers.ts';
-import type { Status } from './terminal.tsx';
+import type { Send, Status } from './terminal.tsx';
 
 /** Same shape of backoff as the terminal channel, and for the same phone. */
 const RECONNECT_MIN_MS = 1000;
@@ -41,6 +45,8 @@ export function ConversationView({
   provider,
   onStatus,
   onState,
+  sender,
+  terminal,
 }: {
   sessionId: string;
   /** Whose name goes over an assistant message. Nothing else here reads it. */
@@ -52,9 +58,20 @@ export function ConversationView({
    * since a user staring at the terminal tab needs it just as much.
    */
   onState: (state: SessionState, detail?: string) => void;
+  /** Where a composed message goes: the terminal pane's socket. */
+  sender: Send;
+  /**
+   * That socket's own status. The composer needs it: a session that has ended
+   * or one the server no longer has can still be typed into, and the message
+   * would sit under "Sending…" forever with nothing to say why.
+   */
+  terminal: Status;
 }) {
   const [state, setState] = useState<Rows>(noRows);
   const [failed, setFailed] = useState(false);
+  // Also reported up, but the composer needs it here: a message pasted at a
+  // permission prompt answers the prompt.
+  const [agent, setAgent] = useState<SessionState>('idle');
   const list = useRef<HTMLDivElement>(null);
 
   // Through a ref: the effect below owns the socket for the life of the session
@@ -92,12 +109,11 @@ export function ConversationView({
         const history = await fetchConversation(sessionId);
         if (closed) return;
         setFailed(false);
-        // Replace rather than merge: this is the whole conversation, and merging
-        // it into rows built from a stream that has since been declared unusable
-        // is how a hole gets papered over instead of fixed.
-        const fresh = addEvents(noRows(), history.events);
-        setState(fresh);
-        since = fresh.seq;
+        // The route's own cursor rather than one re-derived from the rows: it is
+        // the documented handshake, and `connect` needs it now, whereas an
+        // updater does not run until the next render.
+        since = history.seq;
+        setState((current) => rebuild(current, history.events));
         connect();
       } catch {
         if (closed) return;
@@ -126,6 +142,7 @@ export function ConversationView({
           return;
         }
         if (frame.c === 'state') {
+          setAgent(frame.state);
           reportState.current(frame.state, frame.detail);
           return;
         }
@@ -171,6 +188,13 @@ export function ConversationView({
     };
   }, [sessionId]);
 
+  // The socket a composed message leaves on has closed for good, so anything
+  // still outstanding is never arriving. `markUndelivered` returns the same
+  // object when there is nothing to mark, which is every other status.
+  useEffect(() => {
+    setState((current) => markUndelivered(current, terminal));
+  }, [terminal]);
+
   // Stick to the end only when already there: a user reading back through a long
   // session must not be yanked to the bottom every time the agent says something.
   const stuck = useRef(true);
@@ -181,26 +205,127 @@ export function ConversationView({
   }, [state]);
 
   return (
-    <div
-      class="scroll conv"
-      ref={list}
-      onScroll={(event) => {
-        const element = event.currentTarget;
-        stuck.current = element.scrollHeight - element.scrollTop - element.clientHeight < STICK_PX;
-      }}
-    >
-      {failed && (
-        <p class="error" role="alert">
-          Cannot read this conversation. The terminal tab still shows everything.
+    <>
+      <div
+        class="scroll conv"
+        ref={list}
+        onScroll={(event) => {
+          const element = event.currentTarget;
+          stuck.current =
+            element.scrollHeight - element.scrollTop - element.clientHeight < STICK_PX;
+        }}
+      >
+        {failed && (
+          <p class="error" role="alert">
+            Cannot read this conversation. The terminal tab still shows everything.
+          </p>
+        )}
+        {state.rows.length === 0 && state.echoes.length === 0 && !failed && (
+          <p class="muted">Nothing yet. The terminal tab shows the session as it starts.</p>
+        )}
+        {state.rows.map((row) => (
+          <RowView key={row.key} row={row} provider={provider} />
+        ))}
+        {/* Keyed by position: an echo is retired from the front, so the key of
+            everything behind it shifts by one and Preact re-renders text into
+            cards that are already on screen rather than replacing them. */}
+        {state.echoes.map((echo, at) => (
+          <article
+            class={`msg msg-user ${echo.undelivered === null ? 'msg-sending' : 'msg-undelivered'}`}
+            key={`echo:${at}`}
+          >
+            {/* The same label the record that replaces it will carry, so the
+                swap changes the note and nothing else. */}
+            <h3 class="msg-who">{whoLabel('user', provider)}</h3>
+            <p class="msg-text">{echo.text}</p>
+            <p class="msg-note">{echo.undelivered ?? 'Sending…'}</p>
+          </article>
+        ))}
+      </div>
+      <Composer
+        agent={agent}
+        terminal={terminal}
+        onSend={(text) => {
+          sender.current?.(text);
+          setState((current) => addEcho(current, text));
+        }}
+      />
+    </>
+  );
+}
+
+/**
+ * The composer: a real textarea and a real button, and **no submit on Enter**.
+ *
+ * That is the whole point of it. Typing a TUI's prompt character by character
+ * from a phone means a round trip per keystroke and a running fight with
+ * autocorrect (report §3, risk 5); composing the message locally and sending it
+ * as one unit makes both stop mattering. Enter therefore has to be a line break
+ * — a textarea's own default, which is why nothing here handles a key at all —
+ * because submitting a half-written multi-line prompt because someone reached
+ * for a line break is a small disaster on a phone, and the phone keyboard's
+ * return key is *right there*.
+ *
+ * A `<form>` around a textarea is safe for exactly the same reason: Enter only
+ * submits a form implicitly from a single-line control.
+ */
+function Composer({
+  agent,
+  terminal,
+  onSend,
+}: {
+  agent: SessionState;
+  terminal: Status;
+  onSend: (text: string) => void;
+}) {
+  const [text, setText] = useState('');
+  const box = useRef<HTMLTextAreaElement>(null);
+
+  // The message as it would be sent, so the refusal measures what the server
+  // will measure rather than what is on screen.
+  const message = text.trim();
+  const blocked = sendBlocked(agent, message, terminal);
+
+  const submit = (event: Event) => {
+    event.preventDefault();
+    if (message === '' || blocked !== null) return;
+    onSend(message);
+    setText('');
+    if (box.current !== null) box.current.style.height = '';
+  };
+
+  return (
+    <form class="composer" onSubmit={submit}>
+      <label class="sr-only" for="composer-text">
+        Message
+      </label>
+      <textarea
+        id="composer-text"
+        ref={box}
+        class="composer-text"
+        rows={1}
+        placeholder="Message the agent…"
+        aria-describedby={blocked === null ? undefined : 'composer-blocked'}
+        value={text}
+        onInput={(event) => {
+          const element = event.currentTarget;
+          setText(element.value);
+          // Grow to fit, capped by CSS `max-height`. Reset first: without it the
+          // box only ever gets taller, since `scrollHeight` of an already-tall
+          // element is its own height.
+          element.style.height = '';
+          element.style.height = `${element.scrollHeight}px`;
+        }}
+      />
+      <button type="submit" class="primary" disabled={message === '' || blocked !== null}>
+        Send
+      </button>
+      {blocked !== null && (
+        <p class="composer-note" id="composer-blocked" role="status">
+          {blocked}
         </p>
       )}
-      {state.rows.length === 0 && !failed && (
-        <p class="muted">Nothing yet. The terminal tab shows the session as it starts.</p>
-      )}
-      {state.rows.map((row) => (
-        <RowView key={row.key} row={row} provider={provider} />
-      ))}
-    </div>
+    </form>
   );
 }
 

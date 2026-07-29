@@ -5,7 +5,7 @@
  */
 
 import type { Session, SessionState } from '@tether/shared';
-import { useCallback, useEffect, useState } from 'preact/hooks';
+import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 
 import * as api from './api.ts';
 import { ApiError } from './api.ts';
@@ -106,6 +106,12 @@ function SessionScreen({
   // exactly the one they need this on.
   const [agent, setAgent] = useState<{ state: SessionState; detail?: string }>({ state: 'idle' });
 
+  // The one thing the two panes do share, and only because the wire says so: a
+  // composed message is an `input` frame on the terminal channel, which is where
+  // input sequencing lives. Everything they show still comes from two
+  // independent sources with no cursor between them (report §3).
+  const sender = useRef<((message: string) => void) | null>(null);
+
   return (
     <div class="screen">
       <header class="bar">
@@ -166,12 +172,15 @@ function SessionScreen({
                       : { state, ...(detail === undefined ? {} : { detail }) },
                   )
                 }
+                sender={sender}
+                terminal={status.terminal}
               />
             ) : (
               <TerminalView
                 session={session}
                 onStatus={report('terminal')}
                 onSignedOut={onSignedOut}
+                sender={sender}
               />
             )}
           </div>

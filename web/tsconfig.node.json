@@ -2,7 +2,9 @@
   "extends": "../tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
-    "lib": ["es2024", "dom"]
+    "lib": ["es2024", "dom"],
+    "jsx": "react-jsx",
+    "jsxImportSource": "preact"
   },
   "include": ["vite.config.ts", "src/**/*.test.ts"]
 }

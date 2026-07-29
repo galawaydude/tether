@@ -26,7 +26,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
- * Its own directory inside the sandbox, not `session.spec.ts`'s. The two specs
+ * Its own directory inside the sandbox, not `session.spec.ts`'s. The three specs
  * share one `tether serve`, and that spec asserts on counts — a second session
  * in the same directory would give both rows the same title and make its
  * post-reload locator ambiguous.

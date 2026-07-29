@@ -27,6 +27,8 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   for web's Node-side files (`vite.config.ts` and the tests). Web's `tsconfig.json` is the
   browser program: `types: []` plus that split is what keeps Node globals out of it, since
   vite's own declarations pull `@types/node` into any program containing `vite.config.ts`.
+  That Node-side program also sets `jsx`, because a web test reaching a type declared in a
+  `.tsx` pulls the component file into it and `--jsx` unset is an error there, not a skip.
   `tsc --noEmit` at the repo root is not configured — use `npm run typecheck`.
 - **TypeScript is pinned to 5.x.** TypeScript 7 is released but `typescript-eslint` still
   peers on `<6.1.0`; upgrading TS ahead of that breaks `npm install`.
@@ -265,6 +267,44 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `since` replay after a reconnect free of duplicates. The mirror of the data
   layer's rule holds here too: an **unknown event kind becomes a grey note, never
   a throw** — one uncaught kind would blank the whole page.
+- **The composer's message leaves on the _terminal_ pane's socket, and that is
+  the only thing the two panes share.** A composed message is an `input` frame,
+  and input sequencing — the per-client `seq`, the server's highest-applied map,
+  the client's resend-until-`ack` — lives on that socket; a second one would be a
+  second attach, a second full replay and a second sequence space nothing
+  de-duplicates against the first. So `app.tsx` holds one `sender` ref,
+  `terminal.tsx` fills it in, `conversation.tsx` calls it. The retry set holds
+  only `input` frames: a lost keystroke costs a character, a lost message costs a
+  prompt the user believes they sent, and a phone drops its socket on every
+  screen-lock. Three rules that are easy to undo: **Enter inserts a newline** —
+  the composer has no key handler at all, which is the implementation, and
+  `e2e/composer.spec.ts` is what would catch a "convenience" that submits on it;
+  the optimistic echo is retired by **arrival order, not by matching the text**,
+  because a provider is free to record what it received rather than what was
+  typed and a failed match leaves an echo standing beside its own record forever
+  — the cost, accepted, is that **any** `user` event retires one, and the mappers
+  give that kind to every user-role text block that is not command noise, so a
+  message typed straight into the terminal or any other such record retires the
+  oldest echo early and shows one message with another's text until its own
+  record lands, still never two; a refetch therefore **carries the outstanding
+  echoes across the rebuild** and re-retires them only past the `seq` already
+  applied, since a message sent a moment ago cannot have been superseded by a
+  transcript written before it arrived; and `sendBlocked` refuses only what could
+  not arrive — `waiting`, because a message pasted at a permission prompt answers
+  the dialog; a message over `MAX_TEXT`, which `parseClientFrame` drops and never
+  ACKs, so it would be resent on every reconnect under a permanent "Sending…";
+  and a terminal socket closed `ended` or `gone`, which is why those two closes
+  are separate `Status` values — and an echo already outstanding at either close
+  is **marked with that close, never dropped and never retired**
+  (`markUndelivered`), since the text is what the user would lose and a record
+  that turns up anyway must still retire it exactly once. Its note says only
+  which close it was and never that the message was not delivered: the `ack` is
+  an earlier milestone than the transcript record and lives in the terminal
+  view's unacked set, so a message applied and queued mid-turn by an agent that
+  then exits was delivered, and claiming otherwise is "Sending…" over-claiming in
+  the other direction. `busy` and `retrying` are **not** refused: both
+  providers queue a message mid-turn, the unacked set carries one across a
+  reconnect, and that is the most valuable thing a phone can do.
 - **The session screen keeps both panes mounted and hides one with
   `visibility: hidden`** (`app.tsx`, `.pane-off` in `style.css`). That one
   property is the whole of "switching tabs preserves both scroll positions", and
@@ -282,20 +322,23 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `coerceTypes` are on): `additionalProperties: false` strips instead of rejecting, and
   `{"password": 123}` arrives as `"123"`. `buildServer` turns both off. Do not remove that
   `ajv.customOptions` block, and do not assume stock Fastify behaviour when reading the tests.
-- **`e2e/` is two Playwright specs and they assert counts and geometry, not presence.**
+- **`e2e/` is three Playwright specs and they assert counts and geometry, not presence.**
   They drive the real `tether serve` (`e2e/serve.ts` calls the CLI's own `main`) inside a
   scratch `HOME`/state dir/tmux socket, with `e2e/stub-agent.ts` on `PATH` as `claude` — so
   the session is created through the production path and **CI still never runs a live
-  agent**. What `session.spec.ts` checks that nothing else can is the reload, and what
-  `permission.spec.ts` checks is the hook chain end to end: `toContainText` passes just
-  as happily on a view that replayed itself twice, and on two cards for one tool call.
+  agent**. What `session.spec.ts` checks that nothing else can is the reload, what
+  `permission.spec.ts` checks is the hook chain end to end, and what `composer.spec.ts`
+  checks is the compose chain end to end plus the Enter rule the composer entry above
+  describes, which has no handler to unit-test: `toContainText` passes just as happily
+  on a view that replayed itself twice, on two cards for one tool call, and on an echo
+  still standing beside its own record.
   `session.spec.ts` also measures the New session sheet's box against short viewports and
   starts no session at all, because a control clipped out of a fixed overlay is still in
   the DOM. Three things not to "strengthen" by accident: the locators are scoped to
   `.conv` and `.xterm-rows` because both panes stay mounted; the terminal comparison is of
   the **rendered screen** before versus after — the buffer above it legitimately holds the
   capture _under_ tmux's repaint, and byte-exactness of the recipe is
-  `terminal.test.ts`'s job; and the two specs share one server and one session list, so
+  `terminal.test.ts`'s job; and the three specs share one server and one session list, so
   each takes its own directory and reopens its session **by name**, never `.row-open`.
   The stub knows nothing about where tether's shim, secret or endpoint are — it runs
   whatever `.claude/settings.local.json` lists — so a broken installer fails the test
