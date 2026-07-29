@@ -100,6 +100,28 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   that plugin's `onRoute` hook exists; register it earlier and it silently stays a plain
   HTTP route. The Origin guard needed extending by hand, since an upgrade is a `GET` and so
   is not state-changing, and a cross-origin page's upgrade carries the victim's cookie.
+- **The conversation is read from Claude Code's transcript, and parsed
+  tolerantly on purpose.** `providers/claude-code/transcript.ts` finds and tails
+  `~/.claude/projects/<sanitised cwd>/<provider session id>.jsonl`; `events.ts`
+  maps records to `ConversationEvent`. The format is internal to a tool that
+  ships weekly, so **an unknown record type, block or shape is warned about and
+  ignored, never thrown** — a mapper that throws loses the user's session, and
+  the terminal is a complete fallback for anything dropped. Two things the tailer
+  must keep: it reads forward from a byte offset (never re-reads the file) and
+  its carry is **bytes**, because a flush lands mid-line and mid-glyph routinely.
+  `fs.watch` is only the fast path; the 1s stat poll is what makes it work on
+  filesystems where the watcher silently delivers nothing. Fixtures in
+  `providers/claude-code/fixtures/` are captured from a real session with the
+  version recorded — **CI must never run a live agent** (real credentials, money
+  per run). Verified while capturing them and worth knowing: `thinking` blocks
+  reach disk with an **empty** `thinking` string, so the event is presence-only.
+- **`machine/conversations.ts` has a cursor and `machine/terminal.ts` does not.**
+  The asymmetry is deliberate: tmux re-derives the terminal exactly on every
+  attach, conversation events are re-derivable from nothing the client holds.
+  `seq` is the event's position in the mapped stream, which is why the HTTP
+  history route and a live tailer agree without either persisting anything. A
+  `since` older than the in-memory tail is answered with `refetch`, never with a
+  partial history.
 - **Fastify's schema defaults silently repair a bad body** (`removeAdditional` and
   `coerceTypes` are on): `additionalProperties: false` strips instead of rejecting, and
   `{"password": 123}` arrives as `"123"`. `buildServer` turns both off. Do not remove that

@@ -1,0 +1,6 @@
+{"type":"weather-forecast","uuid":"00000000-0000-4000-8000-000000000001","timestamp":"2026-07-29T04:53:41.000Z","sessionId":"11111111-2222-4333-8444-555555555555","version":"99.0.0","forecast":"sunny"}
+{"type":"assistant","uuid":"00000000-0000-4000-8000-000000000002","timestamp":"2026-07-29T04:53:42.000Z","version":"99.0.0","message":{"role":"assistant","content":[{"type":"sonnet","stanzas":14},{"type":"text","text":"the block before this one is not a shape tether knows"}]}}
+{"type":"assistant","uuid":"00000000-0000-4000-8000-000000000003","timestamp":"2026-07-29T04:53:43.000Z","version":"99.0.0","message":{"role":"assistant","content":{"not":"an array"}}}
+{"type":"user","uuid":"00000000-0000-4000-8000-000000000004","timestamp":"2026-07-29T04:53:44.000Z","version":"99.0.0","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_future","content":[{"type":"text","text":"blocks, not a string"},{"type":"image"}],"is_error":true},{"type":"tool_result","content":"no tool_use_id to join this to"}]}}
+{"type":"user","uuid":"00000000-0000-4000-8000-000000000005","timestamp":"not a date","version":"99.0.0","message":{"role":"user","content":"a timestamp nothing can parse"}}
+{"type":"system","subtype":"a-subtype-from-the-future","uuid":"00000000-0000-4000-8000-000000000006","timestamp":"2026-07-29T04:53:45.000Z","version":"99.0.0"}

@@ -40,9 +40,10 @@ targets, session sharing, usage dashboards, a mobile app.
 ## Status
 
 Toolchain, CI, the tmux driver, authentication, the session registry, the HTTP
-session API and the terminal transport. There is no web UI yet — but every session
-the CLI can start, list, kill and resume can now be driven over HTTP by an
-authenticated client, and attached over the `term` WebSocket channel. This
+session API, the terminal transport and the conversation data layer. There is no
+web UI yet — but every session the CLI can start, list, kill and resume can now be
+driven over HTTP by an authenticated client, attached over the `term` WebSocket
+channel, and followed as structured conversation events over `conv`. This
 milestone is being built one focused PR at a time.
 
 ```
@@ -51,7 +52,19 @@ POST   /api/machines/local/sessions            {"cwd": "…", "title"?: "…", "
 GET    /api/machines/local/sessions/:id
 POST   /api/machines/local/sessions/:id/resume restarts a dead session's conversation
 DELETE /api/machines/local/sessions/:id        kills the tmux session and marks the row dead
+GET    /api/sessions/:id/conversation          the whole conversation, with sequence numbers
+WS     /api/sessions/:id/conv?since=<seq>      conversation events from `seq` onwards
+WS     /api/sessions/:name/term                terminal bytes, both ways
 ```
+
+The conversation is read from Claude Code's own transcript file rather than from
+the terminal. That file is **internal to a tool that ships frequently, not a
+public API**: a release can change it, and when it does the conversation view
+loses detail — never the session, and never the terminal, which depends on none
+of it and is always correct.
+
+`conv` answers a `since` it cannot replay from memory with `{"c":"refetch"}`,
+which means "fetch the history route again"; it never sends a partial history.
 
 Sessions are addressed as `(machineId, sessionId)` from day one, and `machineId` is
 always `local`. That one path segment is what makes a second machine a later split

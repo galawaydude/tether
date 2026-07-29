@@ -15,8 +15,22 @@ export type Timestamp = number;
  */
 export type ConversationEvent =
   | { kind: 'user'; id: string; at: Timestamp; text: string }
-  | { kind: 'assistant'; id: string; at: Timestamp; text: string }
-  /** Presence only; the content of a thinking block is opaque to tether. */
+  | {
+      kind: 'assistant';
+      id: string;
+      at: Timestamp;
+      text: string;
+      /**
+       * Providers that emit running commentary separately from the answer say
+       * which this is. Claude Code does not distinguish them and leaves it unset.
+       */
+      phase?: 'commentary' | 'final_answer';
+    }
+  /**
+   * Presence only; the content of a thinking block is opaque to tether — and in
+   * Claude Code 2.1.220 it is opaque on disk too: every `thinking` block in the
+   * transcript carries a signature and an empty `thinking` string.
+   */
   | { kind: 'thinking'; id: string; at: Timestamp }
   | {
       kind: 'tool_call';
@@ -34,6 +48,8 @@ export type ConversationEvent =
       output: string;
       isError: boolean;
     }
+  /** The provider compacted its own context. A divider, not a message. */
+  | { kind: 'compaction'; id: string; at: Timestamp; trigger?: string }
   | { kind: 'status'; at: Timestamp; state: SessionState; detail?: string };
 
 /** Derived from the provider's own live session registry file. */
@@ -52,6 +68,13 @@ export type SessionState = 'busy' | 'idle' | 'waiting';
 export type ServerFrame =
   /** A conversation event with its monotonic per-session sequence number. */
   | { c: 'conv'; seq: number; e: ConversationEvent }
+  /**
+   * The client's `since` is outside the server's in-memory tail, so the gap
+   * cannot be replayed: refetch `GET /api/sessions/:id/conversation` and start
+   * again from the `seq` it returns. Sending a partial history instead would
+   * leave a hole nothing later notices.
+   */
+  | { c: 'refetch' }
   /** Input `seq` will not be applied again. The client stops retrying it. */
   | { c: 'ack'; seq: number };
 
