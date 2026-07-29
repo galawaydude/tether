@@ -19,15 +19,18 @@ CI runs exactly those (`.github/workflows/ci.yml`).
 - **`shared/` is types only.** It emits `.d.ts` and no JavaScript, and its `prepare` script
   builds it on `npm ci` so `tsc --noEmit` works on a fresh clone. Import from it with
   `import type`; `verbatimModuleSyntax` enforces that.
-- **Each package has two tsconfigs**: `tsconfig.json` (noEmit, includes tests) and, where the
-  package emits, `tsconfig.build.json` (excludes tests). `tsc --noEmit` at the repo root is
-  not configured — use `npm run typecheck`.
+- **Each package has two tsconfigs**: `tsconfig.json` (noEmit) and a second one for the files
+  it does not cover — `tsconfig.build.json` where the package emits, and `web/tsconfig.node.json`
+  for web's Node-side files (`vite.config.ts` and the tests). Web's `tsconfig.json` is the
+  browser program: `types: []` plus that split is what keeps Node globals out of it, since
+  vite's own declarations pull `@types/node` into any program containing `vite.config.ts`.
+  `tsc --noEmit` at the repo root is not configured — use `npm run typecheck`.
 - **TypeScript is pinned to 5.x.** TypeScript 7 is released but `typescript-eslint` still
   peers on `<6.1.0`; upgrading TS ahead of that breaks `npm install`.
-- **npm 12 blocks install scripts by default.** Packages needing them are listed under
-  `allowScripts` in root `package.json` (`esbuild`, for Vite). A dependency that silently
-  fails to build is usually this. `node-pty` (PR #6) will need the same treatment plus a
-  native toolchain — it ships no Linux prebuild.
+- **npm 12 blocks dependency install scripts by default.** A dependency that silently fails
+  to build is usually this; approve it with `npm install-scripts approve <pkg>`. Nothing in
+  the current tree needs it. `node-pty` (PR #6) will — it ships no Linux prebuild, so it
+  needs both an install-script approval and a native toolchain.
 - **Tests run straight from TypeScript** via `node --test` and Node's built-in type
   stripping. There is no test build step; relative imports carry the `.ts` extension.
 

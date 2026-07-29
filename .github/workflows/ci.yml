@@ -52,6 +52,10 @@ jobs:
 
       - name: Scan for secrets
         run: |
-          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
-            | tar -xz -C /usr/local/bin gitleaks
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL -o "${RUNNER_TEMP}/${tarball}" "${base}/${tarball}"
+          curl -sSfL "${base}/gitleaks_${GITLEAKS_VERSION}_checksums.txt" \
+            | grep " ${tarball}\$" | (cd "${RUNNER_TEMP}" && sha256sum -c -)
+          tar -xzf "${RUNNER_TEMP}/${tarball}" -C /usr/local/bin gitleaks
           gitleaks git --redact --verbose .

@@ -19,7 +19,7 @@
     "web"
   ],
   "scripts": {
-    "typecheck": "tsc --noEmit -p shared && tsc --noEmit -p server && tsc --noEmit -p web",
+    "typecheck": "tsc --noEmit -p shared && tsc --noEmit -p server && tsc --noEmit -p web && tsc --noEmit -p web/tsconfig.node.json",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -33,8 +33,5 @@
     "prettier": "^3.9.6",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.65.0"
-  },
-  "allowScripts": {
-    "esbuild@0.28.1": true
   }
 }
