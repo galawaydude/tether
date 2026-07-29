@@ -19,16 +19,18 @@
     "web"
   ],
   "scripts": {
-    "typecheck": "tsc --noEmit -p shared && tsc --noEmit -p server && tsc --noEmit -p web && tsc --noEmit -p web/tsconfig.node.json",
+    "typecheck": "tsc --noEmit -p shared && tsc --noEmit -p server && tsc --noEmit -p web && tsc --noEmit -p web/tsconfig.node.json && tsc --noEmit -p e2e",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "node --test",
     "tether": "node --disable-warning=ExperimentalWarning server/src/cli.ts",
-    "build": "npm run build --workspaces --if-present"
+    "build": "npm run build --workspaces --if-present",
+    "test:e2e": "playwright test"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.62.0",
     "@types/node": "^24.13.3",
     "eslint": "^10.8.0",
     "prettier": "^3.9.6",

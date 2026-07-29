@@ -28,3 +28,7 @@ state/
 
 # Agent-local settings
 .claude/settings.local.json
+
+# Playwright
+test-results/
+playwright-report/
