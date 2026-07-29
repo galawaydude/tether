@@ -38,6 +38,9 @@ export const DEFAULT_POLL_MS = 1000;
  * moments *after* `Date.now()` can carry a stamp moments before it. Without this
  * the file is invisible and the conversation view stays empty for the life of
  * the session, on nothing but which filesystem the user happens to be on.
+ *
+ * A tolerance and not a rule: it is consulted only when no transcript satisfies
+ * the real criterion. See `findTranscript`.
  */
 const MTIME_GRANULARITY_MS = 2000;
 
@@ -65,13 +68,23 @@ export type FoundTranscript = {
   providerSessionId: string;
 };
 
+type Candidate = FoundTranscript & { mtimeMs: number };
+
 /**
  * Find the transcript of the Claude Code session tether started in `cwd`.
  *
  * With a known `providerSessionId` this is a single path. Without one it is the
- * newest transcript in the project directory that was written after tether
- * created the session — the file's own name *is* the provider's session id, so
- * finding it back-fills the registry row and the guess is made once.
+ * newest transcript in the project directory written after tether created the
+ * session — the file's own name *is* the provider's session id, so finding it
+ * back-fills the registry row and the guess is made once.
+ *
+ * That criterion is the rule. Only when nothing in the directory satisfies it is
+ * the search repeated with `MTIME_GRANULARITY_MS` of slack, for the filesystems
+ * whose mtime rounds down past the moment the session was created — so the
+ * tolerance can rescue a session whose own transcript would otherwise be
+ * invisible, but can never outrank a transcript that genuinely qualifies. Which
+ * way this errs matters: the binding is permanent, since `Conversations`
+ * back-fills the registry row on the first hit and never re-checks it.
  *
  * ponytail: two Claude Code sessions started in the same directory within the
  * same instant would be told apart only by mtime, and the newest wins. PR #10's
@@ -98,15 +111,30 @@ export async function findTranscript(session: {
   }
 
   const names = await readdir(dir).catch(() => []);
-  let best: (FoundTranscript & { mtimeMs: number }) | undefined;
+  const candidates: Candidate[] = [];
   for (const name of names) {
     if (!name.endsWith('.jsonl')) continue;
     const path = join(dir, name);
     const info = await stat(path).catch(() => undefined);
-    if (info === undefined || info.mtimeMs < session.createdAt - MTIME_GRANULARITY_MS) continue;
-    if (best !== undefined && info.mtimeMs <= best.mtimeMs) continue;
-    best = { path, providerSessionId: name.slice(0, -'.jsonl'.length), mtimeMs: info.mtimeMs };
+    if (info === undefined) continue;
+    candidates.push({
+      path,
+      providerSessionId: name.slice(0, -'.jsonl'.length),
+      mtimeMs: info.mtimeMs,
+    });
   }
+
+  function newestSince(floor: number): Candidate | undefined {
+    let best: Candidate | undefined;
+    for (const candidate of candidates) {
+      if (candidate.mtimeMs < floor) continue;
+      if (best === undefined || candidate.mtimeMs > best.mtimeMs) best = candidate;
+    }
+    return best;
+  }
+
+  const best =
+    newestSince(session.createdAt) ?? newestSince(session.createdAt - MTIME_GRANULARITY_MS);
   return best === undefined
     ? undefined
     : { path: best.path, providerSessionId: best.providerSessionId };

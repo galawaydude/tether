@@ -4,7 +4,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { appendFile, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, mkdir, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
@@ -108,4 +108,41 @@ test('finding a transcript names the provider’s own session id', async (t) => 
     await findTranscript({ cwd, createdAt: 0, providerSessionId: 'gone', home }),
     undefined,
   );
+});
+
+test('the mtime tolerance is a fallback for a coarse filesystem, never a preference', async (t) => {
+  const home = await temp(t);
+  const cwd = join(home, 'work');
+  await mkdir(cwd);
+  const dir = projectDir(cwd, home);
+  await mkdir(dir, { recursive: true });
+
+  const createdAt = Date.now();
+  const stamp = async (id: string, at: number) => {
+    const path = join(dir, `${id}.jsonl`);
+    await writeFile(path, '{"type":"user"}\n');
+    await utimes(path, new Date(at), new Date(at));
+  };
+
+  // What a filesystem that rounds an mtime down does to this session's own
+  // transcript: written after `createdAt`, stamped before it.
+  const rounded = '11111111-1111-4111-8111-111111111111';
+  await stamp(rounded, createdAt - 500);
+  assert.equal(
+    (await findTranscript({ cwd, createdAt, home }))?.providerSessionId,
+    rounded,
+    'the only candidate there is, rather than no conversation at all',
+  );
+
+  // A transcript that genuinely qualifies takes it back.
+  const qualifies = '22222222-2222-4222-8222-222222222222';
+  await stamp(qualifies, createdAt + 10);
+  assert.equal((await findTranscript({ cwd, createdAt, home }))?.providerSessionId, qualifies);
+
+  // And the tolerance is a tolerance: past it, an older session's transcript is
+  // still not this one's, and `#start` waits for one that is.
+  const stale = new Date(createdAt - 5000);
+  await utimes(join(dir, `${qualifies}.jsonl`), stale, stale);
+  await utimes(join(dir, `${rounded}.jsonl`), stale, stale);
+  assert.equal(await findTranscript({ cwd, createdAt, home }), undefined);
 });
