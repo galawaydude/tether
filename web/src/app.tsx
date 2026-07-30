@@ -191,6 +191,19 @@ function SessionScreen({
     setSummoned(false);
     hatch.current?.focus();
   };
+  // The banner's link is the mirror of that: it is the control that summons, and
+  // it is gone once the terminal is up because it would be offering what is
+  // already on screen — so it hands focus to the header control for the same
+  // reason, rather than dropping it to `<body>`.
+  const summon = () => {
+    setSummoned(true);
+    hatch.current?.focus();
+  };
+
+  // Said in two places, and it has to be the same sentence in both: the banner
+  // when the conversation is on screen, the sheet's own header row when the
+  // terminal is over it.
+  const waitingDetail = agent.detail ?? 'The agent has stopped and wants an answer.';
 
   return (
     // The `<main>` in both shapes: on a phone the list has unmounted, and in the
@@ -228,18 +241,6 @@ function SessionScreen({
           </span>
         </div>
       </header>
-
-      {agent.state === 'waiting' && (
-        <p class="waiting" role="status">
-          <strong>Waiting for you.</strong>{' '}
-          {agent.detail ?? 'The agent has stopped and wants an answer.'}{' '}
-          {!summoned && (
-            <button class="link" onClick={() => setSummoned(true)}>
-              Open the terminal
-            </button>
-          )}
-        </p>
-      )}
 
       <div class="panes">
         {/*
@@ -297,7 +298,18 @@ function SessionScreen({
         >
           <div class="termsheet-bar">
             <h2 class="termsheet-title">Terminal</h2>
-            <p class="termsheet-note">The escape hatch.</p>
+            {/* What the sheet is, until there is something worth more of the
+                row. A user with the terminal up is exactly who needs to know
+                the agent stopped and why — the banner that would say it is
+                behind this — and the row is one ellipsised line either way, so
+                borrowing it costs no height and therefore no tmux resize. */}
+            {agent.state === 'waiting' ? (
+              <p class="termsheet-note termsheet-waiting">
+                <strong>Waiting for you.</strong> {waitingDetail}
+              </p>
+            ) : (
+              <p class="termsheet-note">The escape hatch.</p>
+            )}
             <button type="button" class="ghost" onClick={dismiss}>
               Close
             </button>
@@ -309,6 +321,28 @@ function SessionScreen({
             sender={sender}
           />
         </section>
+        {/*
+         * Inside `.panes` and absolutely positioned over it, never above it in
+         * the flow. The banner mounts and unmounts as the agent stops and
+         * starts, and anything that changes this container's height refits
+         * xterm, which resizes the tmux pane, which makes the agent redraw its
+         * prompt into the scrollback for *every other viewer* of the session —
+         * the same rule `.bar`'s constant height defends. Overlaying costs the
+         * conversation's topmost rows until it is scrolled, which is affordable
+         * because the conversation sticks to its end; padding the panes to make
+         * room would reintroduce exactly the resize this removes.
+         *
+         * Not rendered at all while the terminal is up: the sheet's own header
+         * carries the fact there, so nothing is laid over the way out.
+         */}
+        {agent.state === 'waiting' && !summoned && (
+          <p class="waiting" role="status">
+            <strong>Waiting for you.</strong> {waitingDetail}{' '}
+            <button class="link" onClick={summon}>
+              Open the terminal
+            </button>
+          </p>
+        )}
       </div>
     </main>
   );

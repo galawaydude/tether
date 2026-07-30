@@ -37,6 +37,8 @@ import { expect, test, type Page } from '@playwright/test';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { dismiss, hatch, shots, summon } from './ui.ts';
+
 /**
  * Its own directory inside the sandbox, not `session.spec.ts`'s. The three specs
  * share one `tether serve`, and that spec asserts on counts — a second session
@@ -53,8 +55,7 @@ const project = join(process.env['TETHER_E2E_DIR'] as string, 'permission');
  */
 const unwatched = join(process.env['TETHER_E2E_DIR'] as string, 'unwatched');
 
-/** Where a reviewer's copies go; set by the runner, ignored when it is not. */
-const evidence = process.env['TETHER_E2E_SHOTS'];
+const shoot = shots('permission');
 
 /** The server's own hold, from the one place it is configured. */
 const HOLD_MS = Number(process.env['TETHER_E2E_HOLD_SECONDS'] ?? '15') * 1000;
@@ -69,27 +70,10 @@ const ANSWER = 'yes';
 /** What the agent's own prompt prints when tether did not answer the hook. */
 const OWN_PROMPT = 'Do you want to proceed?';
 
-async function shoot(page: Page, name: string): Promise<void> {
-  if (evidence !== undefined) await page.screenshot({ path: join(evidence, `${name}.png`) });
-}
-
-/** Summon the terminal over the conversation, and wait for its attach. */
-async function summon(page: Page): Promise<void> {
-  await page.getByRole('button', { name: 'Terminal', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Terminal', exact: true })).toHaveAttribute(
-    'aria-expanded',
-    'true',
-  );
+/** Summon and wait for the attach too: this spec types the moment it is up. */
+async function summonLive(page: Page): Promise<void> {
+  await summon(page);
   await expect(page.locator('header .chip[role="status"]')).toHaveText('Live');
-}
-
-/** Put it away again, back to the conversation. */
-async function dismiss(page: Page): Promise<void> {
-  await page.locator('.termsheet').getByRole('button', { name: 'Close' }).click();
-  await expect(page.getByRole('button', { name: 'Terminal', exact: true })).toHaveAttribute(
-    'aria-expanded',
-    'false',
-  );
 }
 
 /** Types at the pane, which is how a real prompt starts. */
@@ -101,7 +85,7 @@ async function typeAtPane(page: Page, text: string): Promise<void> {
 
 /** Summon, type, and put the terminal away again. */
 async function typeAt(page: Page, text: string): Promise<void> {
-  await summon(page);
+  await summonLive(page);
   await typeAtPane(page, text);
   await dismiss(page);
 }
@@ -239,12 +223,19 @@ test('a permission prompt is answered from the conversation view, and only once'
   // where the agent's own dialog now is. Once it is up the link is gone, since
   // it would be offering the thing already on screen.
   await open.click();
-  await expect(page.getByRole('button', { name: 'Terminal', exact: true })).toHaveAttribute(
-    'aria-expanded',
-    'true',
-  );
+  await expect(hatch(page)).toHaveAttribute('aria-expanded', 'true');
   await expect(page.locator('.xterm-rows')).toContainText(OWN_PROMPT);
-  await expect(banner.getByRole('button', { name: 'Open the terminal' })).toHaveCount(0);
+  // The banner goes with it — it would be offering the thing already on screen,
+  // and it must not lie over the sheet's own way out. Its sentence moves into the
+  // sheet's header row instead, which is the surface the user is now on.
+  await expect(banner).toHaveCount(0);
+  await expect(page.locator('.termsheet-waiting')).toContainText(
+    'Claude needs your permission to use Bash',
+  );
+  // And the tap did not cost the keyboard its place: the control that was
+  // clicked has gone, so focus lands on the one that puts the terminal away
+  // again, exactly where dismissing leaves it.
+  await expect(hatch(page)).toBeFocused();
   await shoot(page, '6-the-banner-summons-the-terminal');
 
   // Answering there reconciles to the same one card — the other direction of
@@ -297,7 +288,7 @@ test('the hold follows the terminal overlay: not held while it is up, held once 
   // ── with the terminal up: not held ─────────────────────────────────────────
   // Armed and fired without ever putting the overlay away, so the hook arrives
   // while the client has said it is not watching.
-  await summon(page);
+  await summonLive(page);
   await typeAtPane(page, ASK_UP);
   writeFileSync(join(unwatched, '.tether-e2e-fire'), '');
 

@@ -16,11 +16,12 @@ import { expect, test, type Locator } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { shots } from './ui.ts';
+
 /** Its own directory, like every other spec's: one server, one session list. */
 const project = join(process.env['TETHER_E2E_DIR'] as string, 'desktop');
 
-/** Where a reviewer's copies go; set by the runner, ignored when it is not. */
-const evidence = process.env['TETHER_E2E_SHOTS'];
+const shoot = shots('desktop');
 
 const GREETING = 'stub agent ready';
 
@@ -89,7 +90,7 @@ test('past 900px the list is a rail beside the open session, not a screen before
   expect(overflow.root).toBeLessThanOrEqual(0);
   expect(overflow.body).toBeLessThanOrEqual(0);
 
-  if (evidence !== undefined) await page.screenshot({ path: join(evidence, '9-desktop.png') });
+  await shoot(page, '1-rail-beside-the-session');
 
   // ── And back below the breakpoint ──────────────────────────────────────────
   // The count is the point: a document may have one `<main>`, and the element

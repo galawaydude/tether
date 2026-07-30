@@ -520,6 +520,21 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   of the tab order without touching layout. The two views share nothing else —
   they are two renderings of one process from two independent sources (report
   §3), and there is no cursor between them to reconcile.
+- **Nothing tether draws may change `.panes`' height**, which is the general form
+  of the `.bar` rule below: that box is what xterm is fitted to, so a change to it
+  resizes the tmux pane and makes the agent redraw its prompt into the scrollback
+  for every other viewer. The waiting banner is the piece that comes and goes
+  while a session runs, so `.waiting` is **positioned inside `.panes`, not stacked
+  above them** — mounting it moves nothing, at the price of covering the
+  conversation's topmost rows until it is scrolled (affordable: the conversation
+  sticks to its end; padding the panes to make room is the resize being avoided).
+  While the terminal is up the banner is not rendered at all and its sentence is
+  in the sheet's own header row (`.termsheet-waiting`), so nothing lies over the
+  way out and the fact still reaches the user who most needs it. Both transitions
+  are guarded by `session.spec.ts`'s geometry test, which measures `.term`'s
+  rectangle and xterm's row count through the hidden pane with
+  `getBoundingClientRect` — Playwright reports no box for `visibility: hidden`,
+  which is the state being asserted about.
 - **The look is one system with three rules, and they are written down at the
   top of `web/src/style.css`**: amber means a human (the waiting badge and
   banner, Approve, Send, New session, the spine on your own messages) and
@@ -600,7 +615,11 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `<main>`, and checks the page cannot scroll sideways. Two Playwright projects carry
   that, `phone` and `desktop`, each with a `testIgnore`/`testMatch` so neither runs the
   other's spec at the wrong width — they still share the one server, so the directory
-  and by-name rules below apply to it too.
+  and by-name rules below apply to it too. `e2e/ui.ts` is the harness beside
+  `serve.ts`: the summon/dismiss recipe is spelled there once rather than in four
+  specs, and evidence screenshots are namespaced by spec, because the shared
+  `TETHER_E2E_SHOTS` directory plus one worker meant a number reused in a second
+  spec silently overwrote the first spec's image.
   `toContainText` passes just as happily
   on a view that replayed itself twice, on two cards for one tool call, and on an echo
   still standing beside its own record.

@@ -12,9 +12,11 @@
  * failure this design exists to prevent.
  */
 
-import { expect, test, type Locator, type Page } from '@playwright/test';
-import { mkdirSync } from 'node:fs';
+import { expect, test, type Locator } from '@playwright/test';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+
+import { dismiss, hatch, shots, summon } from './ui.ts';
 
 /** This spec's own directory inside the sandbox; `serve.ts` makes it. */
 const project = join(process.env['TETHER_E2E_DIR'] as string, 'project');
@@ -22,26 +24,28 @@ const project = join(process.env['TETHER_E2E_DIR'] as string, 'project');
 /** The overlay test's own, for the same reason every other spec has one. */
 const overlay = join(process.env['TETHER_E2E_DIR'] as string, 'overlay');
 
-/** Where a reviewer's copies go; set by the runner, ignored when it is not. */
-const evidence = process.env['TETHER_E2E_SHOTS'];
+/** And the geometry test's, which puts a session into `waiting` of its own. */
+const chrome = join(process.env['TETHER_E2E_DIR'] as string, 'chrome');
 
-/** The one control that summons the terminal, and the one that puts it away. */
-const hatch = (page: Page): Locator => page.getByRole('button', { name: 'Terminal', exact: true });
-
-async function summon(page: Page): Promise<void> {
-  await hatch(page).click();
-  await expect(hatch(page)).toHaveAttribute('aria-expanded', 'true');
-}
-
-async function dismiss(page: Page): Promise<void> {
-  await page.locator('.termsheet').getByRole('button', { name: 'Close' }).click();
-  await expect(hatch(page)).toHaveAttribute('aria-expanded', 'false');
-}
+const shoot = shots('session');
 
 /** What `e2e/stub-agent.ts` prints and records; the reload counts them. */
 const GREETING = 'stub agent ready';
 const TYPED = 'ping from the phone';
 const REPLY = `echo ${TYPED}`;
+
+/**
+ * Two of the stub's asks, used by the geometry test below purely to put a
+ * session into `waiting` and back — one held, one not. They belong to
+ * `permission.spec.ts`'s subject; here they are only a way to make the banner
+ * mount. Its own session, so neither spec's card counts touch the other's.
+ */
+const ASK = 'ask to run something';
+const ASK_UP = 'ask with the terminal up';
+const ANSWER = 'yes';
+
+/** The server's own hold, from the one place it is configured. */
+const HOLD_MS = Number(process.env['TETHER_E2E_HOLD_SECONDS'] ?? '15') * 1000;
 
 /**
  * The terminal as the user sees it: the rendered rows, trailing blanks dropped.
@@ -160,9 +164,7 @@ test('the terminal is summoned over the conversation and dismissed, and neither 
   await expect(page.getByRole('button', { name: 'Conversation' })).toHaveCount(0);
   await expect(hatch(page)).toHaveAttribute('aria-expanded', 'false');
   await expect(sheet.locator('.xterm-screen')).toBeHidden();
-  if (evidence !== undefined) {
-    await page.screenshot({ path: join(evidence, '10-conversation-is-the-landing-view.png') });
-  }
+  await shoot(page, '1-conversation-is-the-landing-view');
 
   // Enough conversation to have a place to lose. Through the composer, which is
   // the fast way to make one and does not need the terminal at all.
@@ -195,9 +197,7 @@ test('the terminal is summoned over the conversation and dismissed, and neither 
   // visible in the strip above, and `inert`, so a keyboard cannot reach a
   // control the terminal is sitting on top of.
   await expect(page.locator('.pane:not(.termsheet)')).toHaveAttribute('inert', '');
-  if (evidence !== undefined) {
-    await page.screenshot({ path: join(evidence, '11-terminal-summoned.png') });
-  }
+  await shoot(page, '2-terminal-summoned');
   const screenBefore = await screen(rows);
 
   // ── dismissed, and nothing moved ───────────────────────────────────────────
@@ -215,6 +215,122 @@ test('the terminal is summoned over the conversation and dismissed, and neither 
   expect(await screen(rows)).toBe(screenBefore);
   await dismiss(page);
   expect(await conversation.evaluate((element) => element.scrollTop)).toBe(place);
+});
+
+/**
+ * The invariant the whole design rests on, and the one thing no other test says:
+ * **tether's own chrome never resizes the terminal pane.**
+ *
+ * A change in the panes' height refits xterm, which posts a `resize` frame,
+ * which resizes the tmux pane — and tmux makes the agent redraw its prompt into
+ * the scrollback for *every other viewer* of that session. So the two pieces of
+ * chrome that come and go while a session runs must both leave the pane's box
+ * exactly where it was: the terminal being summoned and dismissed, and the
+ * waiting banner mounting and unmounting as the agent stops and starts.
+ *
+ * Both are asserted as numbers — the pane's rectangle and xterm's own row count,
+ * which is the second signal, because a refit that happened and undid itself
+ * would leave the box right and the rows wrong at the moment it mattered.
+ *
+ * The measurement is `getBoundingClientRect` rather than `boundingBox()`:
+ * Playwright reports no box for a `visibility: hidden` element, and the terminal
+ * is deliberately behind the conversation for half of this test — which is the
+ * state the assertion is *about*.
+ */
+test('tether’s own chrome never resizes the terminal pane', async ({ page }) => {
+  mkdirSync(chrome, { recursive: true });
+
+  await page.goto('/');
+  await page.getByLabel('Password').fill(process.env['TETHER_E2E_PASSWORD'] as string);
+  await page.getByRole('button', { name: 'Sign in' }).click();
+
+  await page.getByRole('button', { name: 'New session' }).click();
+  await page.getByLabel('Working directory').fill(chrome);
+  await page.getByRole('button', { name: 'Start' }).click();
+
+  const conversation = page.locator('.conv');
+  const rows = page.locator('.xterm-rows');
+  const banner = page.locator('.waiting');
+  const agentChip = page.locator('header .chip:not([role])');
+
+  const geometry = async (): Promise<Record<string, number>> =>
+    page.locator('.term').evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      return {
+        x: box.x,
+        y: box.y,
+        width: box.width,
+        height: box.height,
+        rows: element.querySelector('.xterm-rows')?.childElementCount ?? 0,
+      };
+    });
+
+  await expect(conversation.getByText(GREETING, { exact: true })).toHaveCount(1);
+
+  // The baseline is taken with the terminal open and attached, which is the only
+  // state xterm has certainly finished fitting in.
+  await summon(page);
+  await expect(page.locator('header .chip[role="status"]')).toHaveText('Live');
+  await expect(rows).toContainText(GREETING);
+  const settled = await geometry();
+  expect(settled.rows).toBeGreaterThan(0);
+  expect(settled.height).toBeGreaterThan(0);
+
+  // ── summon and dismiss ─────────────────────────────────────────────────────
+  await dismiss(page);
+  expect(await geometry()).toEqual(settled);
+  await summon(page);
+  expect(await geometry()).toEqual(settled);
+
+  // ── waiting, with the terminal up ──────────────────────────────────────────
+  // Fired without dismissing, so tether does not hold and the agent's own prompt
+  // takes the question — which is also what publishes `waiting`.
+  await page.locator('.xterm-screen').click();
+  await page.keyboard.type(ASK_UP);
+  await page.keyboard.press('Enter');
+  writeFileSync(join(chrome, '.tether-e2e-fire'), '');
+  await expect(agentChip).toHaveText('Waiting for you', { timeout: HOLD_MS });
+  expect(await geometry()).toEqual(settled);
+
+  // The banner's fact is still on screen while its element is not, and the way
+  // out is still a whole tap target with nothing laid over it — the two things
+  // the banner is allowed to cost by being an overlay rather than a row.
+  await expect(page.locator('.termsheet-waiting')).toHaveCount(1);
+  await expect(page.locator('.termsheet-waiting')).toContainText('Waiting for you');
+  const close = await page
+    .locator('.termsheet')
+    .getByRole('button', { name: 'Close' })
+    .boundingBox();
+  expect(close?.height ?? 0).toBeGreaterThanOrEqual(44);
+  await expect(page.locator('.termsheet').getByRole('button', { name: 'Close' })).toBeInViewport({
+    ratio: 1,
+  });
+
+  // …and back to idle, still with the terminal up.
+  await page.keyboard.type(ANSWER);
+  await page.keyboard.press('Enter');
+  await expect(agentChip).toHaveText('Idle');
+  expect(await geometry()).toEqual(settled);
+
+  // ── waiting, with the terminal away ────────────────────────────────────────
+  // The bigger half: here the banner really does mount and unmount, over a pane
+  // whose box must not notice. Armed at the pane, then fired once the overlay is
+  // demonstrably put away, which is what makes it a hold rather than a race.
+  await page.locator('.xterm-screen').click();
+  await page.keyboard.type(ASK);
+  await page.keyboard.press('Enter');
+  await dismiss(page);
+  expect(await geometry()).toEqual(settled);
+  writeFileSync(join(chrome, '.tether-e2e-fire'), '');
+
+  await expect(banner).toHaveCount(1, { timeout: HOLD_MS });
+  expect(await geometry()).toEqual(settled);
+  await shoot(page, '3-the-waiting-banner-is-an-overlay');
+
+  await conversation.getByRole('button', { name: 'Approve' }).click();
+  await expect(banner).toHaveCount(0, { timeout: HOLD_MS });
+  await expect(agentChip).toHaveText('Idle');
+  expect(await geometry()).toEqual(settled);
 });
 
 /**

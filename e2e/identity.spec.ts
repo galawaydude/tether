@@ -27,18 +27,15 @@ import { expect, test, type Page } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { dismiss, shots, summon } from './ui.ts';
+
 const project = join(process.env['TETHER_E2E_DIR'] as string, 'shared');
 
-/** Where a reviewer's copies go; set by the runner, ignored when it is not. */
-const evidence = process.env['TETHER_E2E_SHOTS'];
+const shoot = shots('identity');
 
 const GREETING = 'stub agent ready';
 const RESUME = 'resume the old conversation';
 const RESUMED = 'back in the resumed conversation';
-
-async function shoot(page: Page, name: string): Promise<void> {
-  if (evidence !== undefined) await page.screenshot({ path: join(evidence, `${name}.png`) });
-}
 
 /** Start a session in {@link project}, from the list, as a user does. */
 async function start(page: Page, title: string): Promise<void> {
@@ -50,13 +47,13 @@ async function start(page: Page, title: string): Promise<void> {
 
 /** Types at the pane, which is the only place a `/resume` can come from. */
 async function typeAt(page: Page, text: string): Promise<void> {
-  await page.getByRole('button', { name: 'Terminal', exact: true }).click();
+  await summon(page);
   await expect(page.locator('header .chip[role="status"]')).toHaveText('Live');
   await page.locator('.xterm-screen').click();
   await page.keyboard.type(text);
   await page.keyboard.press('Enter');
   await expect(page.locator('.xterm-rows')).toContainText(text);
-  await page.locator('.termsheet').getByRole('button', { name: 'Close' }).click();
+  await dismiss(page);
 }
 
 test('two sessions in one directory each show their own conversation, and follow a resume', async ({
@@ -93,7 +90,7 @@ test('two sessions in one directory each show their own conversation, and follow
   // directory would show the neighbour's here, which is the failure that costs a
   // user their conversation rather than merely hiding it.
   await expect(conversation.getByText(FIRST, { exact: true })).toHaveCount(0);
-  await shoot(page, '9-second-session-in-one-directory');
+  await shoot(page, '1-second-session-in-one-directory');
 
   // ── and the resume ─────────────────────────────────────────────────────────
   // Typed at the pane, so tether learns about it the only way there is: the
@@ -103,7 +100,7 @@ test('two sessions in one directory each show their own conversation, and follow
   // The resumed conversation, from its own start — the view moved to the file
   // the session is writing to now, rather than sitting on one nothing writes to.
   await expect(conversation.getByText(SECOND, { exact: true })).toHaveCount(0);
-  await shoot(page, '10-after-a-resume-at-the-pane');
+  await shoot(page, '2-after-a-resume-at-the-pane');
 
   // The neighbour was never touched by any of it.
   await page.getByRole('button', { name: 'Back to sessions' }).click();
@@ -112,5 +109,5 @@ test('two sessions in one directory each show their own conversation, and follow
   await expect(conversation.getByText(`echo ${FIRST}`, { exact: true })).toHaveCount(1);
   await expect(conversation.getByText(SECOND, { exact: true })).toHaveCount(0);
   await expect(conversation.getByText(RESUMED, { exact: true })).toHaveCount(0);
-  await shoot(page, '11-first-session-unaffected');
+  await shoot(page, '3-first-session-unaffected');
 });

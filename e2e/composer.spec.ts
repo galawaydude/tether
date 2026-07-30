@@ -32,6 +32,8 @@ import { expect, test } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { dismiss, shots, summon } from './ui.ts';
+
 /**
  * Its own directory, like `permission.spec.ts`'s: the three specs share one
  * `tether serve` and one session list, and two sessions in one directory would
@@ -39,8 +41,7 @@ import { join } from 'node:path';
  */
 const project = join(process.env['TETHER_E2E_DIR'] as string, 'composer');
 
-/** Where a reviewer's copies go; set by the runner, ignored when it is not. */
-const evidence = process.env['TETHER_E2E_SHOTS'];
+const shoot = shots('composer');
 
 const GREETING = 'stub agent ready';
 const TYPED = 'summarise what you just did';
@@ -78,15 +79,11 @@ test('a composed message reaches the agent and appears exactly once', async ({ p
   expect(await box.inputValue()).toBe('first line\nsecond line');
   // Still in the box, and nothing has been sent.
   await expect(conversation.getByText('first line', { exact: false })).toHaveCount(0);
-  if (evidence !== undefined) {
-    await page.screenshot({ path: join(evidence, '5-composer-newline.png') });
-  }
+  await shoot(page, '1-newline');
 
   await box.fill('');
   await box.fill(TYPED);
-  if (evidence !== undefined) {
-    await page.screenshot({ path: join(evidence, '6-composer.png') });
-  }
+  await shoot(page, '2-filled');
 
   // ── the claim ──────────────────────────────────────────────────────────────
   // The message shows immediately from the composer's own echo, and the
@@ -98,14 +95,12 @@ test('a composed message reaches the agent and appears exactly once', async ({ p
   await expect(conversation.getByText(REPLY, { exact: true })).toHaveCount(1);
   await expect(conversation.getByText(TYPED, { exact: true })).toHaveCount(1);
   await expect(conversation.locator('.msg-sending')).toHaveCount(0);
-  if (evidence !== undefined) {
-    await page.screenshot({ path: join(evidence, '7-composer-sent.png') });
-  }
+  await shoot(page, '3-sent');
 
   // And it really went through tmux to the agent, not just into the view.
-  await page.getByRole('button', { name: 'Terminal', exact: true }).click();
+  await summon(page);
   await expect(page.locator('.xterm-rows')).toContainText(REPLY);
-  await page.locator('.termsheet').getByRole('button', { name: 'Close' }).click();
+  await dismiss(page);
 
   // ── the sender is rewired on remount ───────────────────────────────────────
   // A composed message leaves on the *terminal* pane's socket, through a ref
@@ -140,7 +135,5 @@ test('a composed message reaches the agent and appears exactly once', async ({ p
   expect(
     await conversation.evaluate((el) => [el.scrollWidth - el.clientWidth, el.clientWidth]),
   ).toEqual([0, 360]);
-  if (evidence !== undefined) {
-    await page.screenshot({ path: join(evidence, '8-composer-keyboard-open.png') });
-  }
+  await shoot(page, '4-keyboard-open');
 });

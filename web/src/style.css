@@ -664,7 +664,17 @@ label {
   color: var(--on-accent);
 }
 
+/* Over the panes, never above them: it is the one piece of chrome that comes and
+   goes while a session runs, and a pane that changes height refits xterm, which
+   resizes the tmux pane for every other viewer. Positioned inside `.panes`, so
+   mounting it moves nothing — see `app.tsx`, which also keeps it out of the DOM
+   entirely while the terminal is summoned rather than laying it over the way
+   out. */
 .waiting {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
   display: flex;
   flex-wrap: wrap;
   gap: 4px 8px;
@@ -784,8 +794,15 @@ label {
   color: var(--dim);
 }
 
+/* When the note is carrying the waiting banner's sentence instead, it is amber —
+   the human's own colour — and it is never the thing the row drops, because it
+   is the only place that fact is said while the terminal is over it. */
+.termsheet-waiting {
+  color: var(--accent);
+}
+
 @media (max-width: 359px) {
-  .termsheet-note {
+  .termsheet-note:not(.termsheet-waiting) {
     display: none;
   }
 }
