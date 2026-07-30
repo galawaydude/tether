@@ -415,8 +415,7 @@ export class Conversations {
     if (session.provider === CODEX) return undefined;
     const record = await readSession(pid, this.#home());
     if (record === undefined) return undefined;
-    const bound = this.#bind(session, record.sessionId);
-    if (bound !== 'unchanged') this.#restart(this.#live.get(session.id), bound === 'moved');
+    if (this.#bind(session, record.sessionId)) this.#restart(this.#live.get(session.id));
     // A file that does not say which session it is cannot be attributed to a row
     // that already names one: no badge rather than a possibly foreign state.
     if (record.sessionId === undefined && session.providerSessionId !== null) return undefined;
