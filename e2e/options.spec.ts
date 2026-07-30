@@ -53,11 +53,21 @@ async function signIn(page: Page): Promise<void> {
 /**
  * What the pane has actually received, read through the terminal overlay.
  *
- * The stub echoes every line typed at it, so a command that arrived shows up
- * twice — as the line and as its echo — and one that did not shows up not at
- * all. Scoped to `.xterm-rows` because both panes stay mounted.
+ * The stub acts out a slash command as a command (`e2e/stub-agent.ts`), so one
+ * that arrived shows up as the line *and* as the agent's own answer to it, and
+ * one that did not shows up not at all. Scoped to `.xterm-rows` because both
+ * panes stay mounted.
  */
 const rows = (page: Page): Locator => page.locator('.xterm-rows');
+
+/**
+ * The conversation, which for an argument-bearing slash command is now the other
+ * half of the evidence: `/model x` and `/effort x` write `<command-name>` and
+ * `<local-command-stdout>`, and the mapper renders both — so this panel's own
+ * claim that "the agent's answer in the conversation is the confirmation" is
+ * something a test can check rather than an intention.
+ */
+const conversation = (page: Page): Locator => page.locator('.conv');
 
 /**
  * Ready is the *terminal* being attached, not the conversation having a line in
@@ -98,8 +108,18 @@ test('each provider offers its own controls, and they reach the pane', async ({ 
   // claiming a value it would have no way to keep true.
   await expect(page.getByLabel('Effort')).toHaveValue('');
 
+  // The applied line, and it is now the *agent's answer* rather than the stub
+  // echoing the keystrokes back: since `e2e/stub-agent.ts` acts out a slash
+  // command as a command, `/effort medium` appears once — the line the pane
+  // received — and `Set effort level to medium` is what says it landed.
+  await expect(conversation(page).locator('.cmd')).toHaveCount(2);
+  await expect(
+    conversation(page).getByText('Set effort level to medium', { exact: true }),
+  ).toHaveCount(1);
+
   await summon(page);
-  await expect(rows(page).getByText('/effort medium')).toHaveCount(2);
+  await expect(rows(page).getByText('/effort medium')).toHaveCount(1);
+  await expect(rows(page).getByText('Set effort level to medium')).toHaveCount(1);
   // The other axis, so this proves a table rather than one wired control.
   await expect(rows(page).getByText('/model sonnet')).toHaveCount(0);
   // The pane itself, because "the control reaches the agent" is the one claim of

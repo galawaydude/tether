@@ -18,9 +18,8 @@
  *   result are already in the main thread, which is what the user follows.
  * - `attachment` records — context Claude Code injects for itself (skill
  *   listings, hook output, file contents it re-read). Not conversation.
- * - The slash-command bookkeeping records (`<command-name>`, `<local-command-…>`)
- *   and the summary a compaction injects as a user message: the boundary event
- *   says a compaction happened, and the summary is written *to* the model.
+ * - The summary a compaction injects as a user message: the boundary event says
+ *   a compaction happened, and the summary is written *to* the model.
  * - The DAG. `parentUuid` makes the transcript a tree — `/rewind` branches and
  *   all — and this maps it in file order, which is the order the user saw.
  *   ponytail: an abandoned branch stays visible; fix it when someone rewinds and
@@ -61,6 +60,57 @@ const IGNORED = new Set([
 
 /** Slash-command bookkeeping Claude Code writes as user messages. */
 const COMMAND_NOISE = /^<(command-name|command-message|command-args|local-command-)/;
+
+/**
+ * The slash-command records, and what each of them is for. Verified against
+ * 2.1.220 by running commands in a pane and reading the transcript back:
+ *
+ * - `<command-name>` — the command, in its own text block, sometimes with
+ *   `<command-args>` beside it. Each tag is matched **wherever it sits** rather
+ *   than at the start, because the order is not stable: `/model` writes
+ *   `<command-name>` first and `/init` writes `<command-message>` first, so
+ *   anchoring loses one of them entirely.
+ * - `<local-command-stdout>` / `-stderr` — what it printed. This is what makes a
+ *   command *visible*: `/model sonnet` and `/effort high` write one, and without
+ *   it the composer's own option bar changes a running agent with nothing on
+ *   screen to show it.
+ * - `<command-message>` is the command's display name and `<local-command-caveat>`
+ *   is an instruction addressed to the model. Neither is conversation.
+ *
+ * Not every command writes any of these — `/resume`, `/cost` and `/status` are
+ * pane-only, and `/clear` moves the session to a whole new transcript. That is a
+ * property of the command, not something this can fix, and it is why the web
+ * app's command table says where each one's answer will appear.
+ */
+const COMMAND_NAME = /<command-name>([\s\S]*?)<\/command-name>/;
+const COMMAND_ARGS = /<command-args>([\s\S]*?)<\/command-args>/;
+const COMMAND_OUT = /<local-command-std(?:out|err)>([\s\S]*?)<\/local-command-std(?:out|err)>/;
+
+/**
+ * Claude Code writes its own colour codes into `<local-command-stdout>` — the
+ * model name in `Set model to \x1b[1mSonnet 5\x1b[22m` is bold on the way to a
+ * terminal. The browser is not one, so an SGR sequence left in would reach the
+ * page as literal `[1m`.
+ */
+// An SGR sequence *is* a control sequence, and matching it is the point.
+// eslint-disable-next-line no-control-regex
+const SGR = /\x1b\[[0-9;]*m/g;
+
+/**
+ * A slash-command record → at most one event. `undefined` for the two tags that
+ * are bookkeeping rather than conversation, so the caller drops them exactly as
+ * it did before this existed.
+ */
+function commandEvent(text: string, id: string, at: number): ConversationEvent | undefined {
+  const clean = (value: string | undefined): string => (value ?? '').replace(SGR, '').trim();
+  const name = clean(COMMAND_NAME.exec(text)?.[1]);
+  if (name !== '') {
+    const args = clean(COMMAND_ARGS.exec(text)?.[1]);
+    return { kind: 'command', id, at, text: args === '' ? name : `${name} ${args}` };
+  }
+  const out = clean(COMMAND_OUT.exec(text)?.[1]);
+  return out === '' ? undefined : { kind: 'command', id, at, text: out, output: true };
+}
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -139,9 +189,13 @@ function userBlocks(blocks: unknown[], uuid: string, at: number, warn: Warn): Co
       }
       case 'text': {
         const text = str(block['text']) ?? '';
-        if (text.trim() !== '' && !COMMAND_NOISE.test(text)) {
-          events.push({ kind: 'user', id, at, text });
+        if (text.trim() === '') return;
+        if (COMMAND_NOISE.test(text)) {
+          const command = commandEvent(text, id, at);
+          if (command !== undefined) events.push(command);
+          return;
         }
+        events.push({ kind: 'user', id, at, text });
         return;
       }
       case 'image':
@@ -218,7 +272,11 @@ export function mapRecord(record: unknown, warn: Warn = () => {}): Mapped {
     // `isCompactSummary` is the summary a compaction feeds back to the model —
     // it is addressed to the model, not written by the user.
     if (record['isCompactSummary'] === true) return mapped([]);
-    if (content.trim() === '' || COMMAND_NOISE.test(content)) return mapped([]);
+    if (content.trim() === '') return mapped([]);
+    if (COMMAND_NOISE.test(content)) {
+      const command = commandEvent(content, uuid, at);
+      return mapped(command === undefined ? [] : [command]);
+    }
     return mapped([{ kind: 'user', id: uuid, at, text: content }]);
   }
   if (Array.isArray(content)) {

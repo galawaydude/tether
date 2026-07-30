@@ -48,6 +48,19 @@ export type ConversationEvent =
       output: string;
       isError: boolean;
     }
+  /**
+   * A slash command the user ran in the session, or a line one printed.
+   *
+   * Not a message: a command is addressed to the agent's own CLI rather than to
+   * the model, and the provider records it as bookkeeping around the turn rather
+   * than as part of it. It is here because it is the **only** evidence outside
+   * the pane that a command tether sent actually ran — the composer can send
+   * one, so the conversation has to be able to show it landing.
+   *
+   * One kind for both halves because they arrive as two separate records with
+   * nothing joining them but file order: `output` says which this is.
+   */
+  | { kind: 'command'; id: string; at: Timestamp; text: string; output?: boolean }
   /** The provider compacted its own context. A divider, not a message. */
   | { kind: 'compaction'; id: string; at: Timestamp; trigger?: string }
   | { kind: 'status'; at: Timestamp; state: SessionState; detail?: string };

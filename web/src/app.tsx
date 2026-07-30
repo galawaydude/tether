@@ -363,6 +363,14 @@ function SessionScreen({
             }
             sender={sender}
             terminal={status.terminal}
+            /*
+             * The same control the waiting banner's link uses, for the same
+             * reason: the composer can send a slash command, and some of them —
+             * `/resume` above all — leave the agent on a chooser only the pane
+             * can show. The note that says so carries this rather than telling a
+             * phone user to go and find the header button.
+             */
+            onSummon={summon}
           />
         </div>
         {/* Over the conversation, never beside it: a permanently visible

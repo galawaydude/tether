@@ -591,6 +591,49 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   the other direction. `busy` and `retrying` are **not** refused: both
   providers queue a message mid-turn, the unacked set carries one across a
   reconnect, and that is the most valuable thing a phone can do.
+- **A slash command from the composer is just text on the terminal socket; the
+  whole feature is knowing where its answer will show up.** `submit` in
+  `conversation.tsx` branches on a leading `/` and nothing else, and a command
+  goes out through the same `onApply` path an option's keystrokes use — **not**
+  the message path, because a command writes no `user` record, so its optimistic
+  echo would stand at "Sending…" forever. Both branches sit behind the same
+  `sendBlocked`, which is what makes a command obey the permission rule a
+  message already obeys. `web/src/commands.ts` is the per-provider table and its
+  one field that matters is `answers`, established by running each command in a
+  pane with tether's own input frame and reading the transcript back: Claude Code
+  writes `<command-name>`/`<local-command-stdout>` for `/model x`, `/effort x`
+  and `/compact`, writes **nothing at all** for `/resume`, `/cost` and `/status`,
+  and moves to a **new session id and transcript** on `/clear`. Codex's set
+  overlaps by name and not by behaviour — its commands take no argument, so
+  `/model <name>` is a paid _prompt_ (the one thing tether refuses outright), and
+  an unrecognised one leaves its text sitting in Codex's composer where the next
+  message would be sent with it attached. Two rules the table is held to: it is
+  **not a gate** — an unknown command is still sent, since refusing one would
+  refuse every custom command a user has and both CLIs ship weekly, and what
+  tether says is that it cannot vouch for it; and `answers` is a **prediction,
+  not a promise** — `/model opus` was found on a real session opening a _Switch
+  model?_ confirmation, and the correction is the machinery that already exists
+  (the provider publishes `waiting`, `app.tsx`'s banner says so, the composer
+  refuses to send), so there is no fourth value and no note may ever say "and
+  nothing else will happen". The note's terminal button is **"Show the
+  terminal"** and may not be renamed to the banner's "Open the terminal": the two
+  are on screen together every time, and one accessible name on two controls is
+  ambiguous for a screen reader and for `getByRole`.
+- **The conversation shows slash commands, and it had to start doing so for the
+  option bar to mean anything.** `COMMAND_NOISE` in
+  `providers/claude-code/events.ts` had dropped every `<command-name>` and
+  `<local-command-stdout>` record since PR #8, so PR #25's `/model` and `/effort`
+  controls changed a running agent with nothing on screen to show it, despite
+  their comments claiming the conversation was the confirmation. Those two tags
+  now map to the `command` event kind — `<command-message>` and
+  `<local-command-caveat>` are still dropped, being a display name and an
+  instruction to the model. Two things easy to break: the tags are matched
+  **wherever they sit**, because the order is not stable (`/model` writes
+  `<command-name>` first, `/init` writes `<command-message>` first) and anchoring
+  loses one of them entirely; and the stdout carries Claude Code's **own SGR
+  codes** — `Set model to \x1b[1mSonnet 5\x1b[22m` — which reach a browser as a
+  literal `[1m` unless stripped. The row is monospace and containerless by the
+  house rules: the machine said it, and a command is not an artefact.
 - **A composer option earns its control by being _verified_ to change a running
   pane — and "no slash command" is not the same as "not settable".**
   `web/src/options.ts` is the per-provider table and `Axis.via` is the seam: two
@@ -777,7 +820,11 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `permission.spec.ts` checks is the hook chain end to end plus the watch/hold
   rule that overlay decides, what `composer.spec.ts`
   checks is the compose chain end to end plus the Enter rule the composer entry above
-  describes, which has no handler to unit-test, and what `identity.spec.ts` checks is that
+  describes, which has no handler to unit-test — and, in its second test, the slash-command
+  chain: that a command is not drawn as a message, that a recorded one really arrives in
+  the conversation, and that a chooser's reaches the pane and is reported rather than
+  claimed. The stub acts out a slash command three ways for it, which is why its `/effort`
+  no longer shows up in the pane twice — and what `identity.spec.ts` checks is that
   each session shows _its own_ conversation and keeps it — two sessions in one directory,
   then a `/resume` typed at one pane (which the stub acts out by moving to a new session
   id and a new transcript, announcing it only through its registry file). That last claim

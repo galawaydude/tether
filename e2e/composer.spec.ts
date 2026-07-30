@@ -26,6 +26,13 @@
  * agent's TUI holds a bracketed paste as one prompt until Enter, and readline
  * cannot. Multi-line delivery is `server/src/machine/terminal.test.ts`'s job,
  * against real tmux.
+ *
+ * The second test is the same chain for a **slash command**, and it is here
+ * rather than in its own spec because it is the same transport with one branch in
+ * front of it. What it checks that no unit test can: that a command is not
+ * rendered as a message, that the one whose answer the transcript keeps really
+ * arrives in the conversation, and that the one whose answer is a chooser reaches
+ * the pane and says so instead of pretending.
  */
 
 import { expect, test } from '@playwright/test';
@@ -136,4 +143,102 @@ test('a composed message reaches the agent and appears exactly once', async ({ p
     await conversation.evaluate((el) => [el.scrollWidth - el.clientWidth, el.clientWidth]),
   ).toEqual([0, 360]);
   await shoot(page, '4-keyboard-open');
+});
+
+/** Its own directory, so this test's session has its own name in the shared list. */
+const commandProject = join(process.env['TETHER_E2E_DIR'] as string, 'composer-cmd');
+
+test('a slash command goes to the agent as a command, not as a prompt', async ({ page }) => {
+  mkdirSync(commandProject, { recursive: true });
+
+  await page.goto('/');
+  await page.getByLabel('Password').fill(process.env['TETHER_E2E_PASSWORD'] as string);
+  await page.getByRole('button', { name: 'Sign in' }).click();
+
+  await page.getByRole('button', { name: 'New session' }).click();
+  await page.getByLabel('Working directory').fill(commandProject);
+  await page.getByRole('button', { name: 'Start' }).click();
+
+  const conversation = page.locator('.conv');
+  const box = page.getByLabel('Message');
+  const send = page.getByRole('button', { name: 'Send' });
+  await expect(conversation.getByText(GREETING, { exact: true })).toHaveCount(1);
+
+  // ── discoverability ────────────────────────────────────────────────────────
+  // The placeholder says `/ commands`; this is what makes that true. It appears
+  // only while a command is being typed, and it is not there for ordinary text.
+  await box.fill('summarise');
+  await expect(page.locator('.composer-cmds')).toHaveCount(0);
+  await box.fill('/re');
+  const list = page.locator('.composer-cmds');
+  await expect(list.getByRole('button')).toHaveCount(2);
+  await expect(list.getByText('/resume', { exact: true })).toHaveCount(1);
+  await shoot(page, '5-command-list');
+
+  // Tapping fills the box rather than sending: a mis-tap on this surface must not
+  // be the one that runs `/clear`.
+  await list.getByRole('button').first().click();
+  await expect(box).toHaveValue('/resume');
+
+  // ── the chooser case: reported, never claimed ──────────────────────────────
+  await send.click();
+  await expect(box).toHaveValue('');
+  // Not a message. No echo, no "Sending…", and no `You` bubble carrying the
+  // command — a card that never retires is exactly what the message path would
+  // have produced here, since a command writes no `user` record.
+  await expect(conversation.locator('.msg-sending')).toHaveCount(0);
+  await expect(conversation.getByText('/resume', { exact: true })).toHaveCount(0);
+  // What it says instead: where the answer is, and the way there.
+  const note = page.locator('.composer-note');
+  await expect(note).toContainText('chooser tether cannot show');
+  await shoot(page, '6-command-sent');
+
+  // And it really reached the agent — which for this one is only provable in the
+  // pane, because a chooser writes nothing anywhere else. That is the claim the
+  // note is making, checked rather than trusted.
+  await page.getByRole('button', { name: 'Show the terminal' }).click();
+  await expect(page.locator('.xterm-rows')).toContainText('Resume session');
+  await shoot(page, '7-terminal-opened');
+  await dismiss(page);
+
+  // ── the recorded case: shown, so nothing has to be claimed ─────────────────
+  // `/model sonnet` writes `<command-name>` and `<local-command-stdout>`, and the
+  // mapper renders both. So the conversation *is* the confirmation, and the note
+  // says so without offering a terminal nobody needs.
+  await box.fill('/model sonnet');
+  await send.click();
+  await expect(conversation.locator('.cmd')).toHaveCount(2);
+  await expect(conversation.getByText('/model sonnet', { exact: true })).toHaveCount(1);
+  await expect(
+    conversation.getByText('Set model to sonnet and saved as your default for new sessions', {
+      exact: true,
+    }),
+  ).toHaveCount(1);
+  // The colour codes the agent wrote around the model name are gone rather than
+  // sitting in the page as a literal `[1m`.
+  await expect(conversation.locator('.cmd-out')).not.toContainText('[1m');
+  await expect(note).toContainText('lands above');
+  await expect(page.getByRole('button', { name: 'Show the terminal' })).toHaveCount(0);
+  await shoot(page, '8-command-recorded');
+
+  // ── ordinary text is still ordinary text ───────────────────────────────────
+  // The branch is a leading slash and nothing else: a message that merely
+  // mentions one is a message, and it still gets the echo and the reply.
+  await box.fill('run /resume for me');
+  await send.click();
+  await expect(conversation.getByText('echo run /resume for me', { exact: true })).toHaveCount(1);
+  await expect(conversation.getByText('run /resume for me', { exact: true })).toHaveCount(1);
+
+  // ── the list may not push Send off a phone with its keyboard up ────────────
+  // This panel is `overflow-y: auto` for the bar-lowering warning's sake, so a
+  // list taller than the pane scrolls Send out of reach rather than clipping
+  // visibly. 360×340 is the viewport that finds it.
+  await page.setViewportSize({ width: 360, height: 340 });
+  await box.fill('/');
+  await expect(page.locator('.composer-cmds button')).toHaveCount(6);
+  const button = await send.boundingBox();
+  if (button === null) throw new Error('Send is not laid out at all at 360×340');
+  expect(button.y + button.height).toBeLessThanOrEqual(340);
+  expect(await conversation.evaluate((el) => el.scrollWidth - el.clientWidth)).toEqual(0);
+  await shoot(page, '9-list-keyboard-open');
 });

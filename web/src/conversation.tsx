@@ -24,6 +24,7 @@ import {
   fetchConversation,
   setPermissionMode,
 } from './api.ts';
+import { matchCommands, planSend, whereLabel } from './commands.ts';
 import {
   addAnswer,
   addEcho,
@@ -71,6 +72,7 @@ export function ConversationView({
   onState,
   sender,
   terminal,
+  onSummon,
 }: {
   sessionId: string;
   /** Whose name goes over an assistant message. Nothing else here reads it. */
@@ -98,6 +100,13 @@ export function ConversationView({
    * would sit under "Sending…" forever with nothing to say why.
    */
   terminal: Status;
+  /**
+   * Raise the terminal. The composer needs it for the slash commands that answer
+   * only there — a chooser like `/resume` leaves the agent waiting for a
+   * selection on a screen the conversation cannot show, so the note that says so
+   * has to carry the way in rather than telling a phone user to go and find it.
+   */
+  onSummon: () => void;
 }) {
   const [state, setState] = useState<Rows>(noRows);
   const [failed, setFailed] = useState(false);
@@ -317,6 +326,7 @@ export function ConversationView({
         onApply={(keys) => {
           for (const key of keys) sender.current?.(key);
         }}
+        onSummon={onSummon}
         sessionId={sessionId}
       />
     </>
@@ -344,6 +354,7 @@ function Composer({
   terminal,
   onSend,
   onApply,
+  onSummon,
   sessionId,
 }: {
   agent: SessionState;
@@ -351,6 +362,7 @@ function Composer({
   terminal: Status;
   onSend: (text: string) => void;
   onApply: (keys: readonly string[]) => void;
+  onSummon: () => void;
   sessionId: string;
 }) {
   const [text, setText] = useState('');
@@ -358,9 +370,18 @@ function Composer({
   /** A choice held back until its warning has been read. Never more than one:
    *  a second warning stacked behind the first is a warning nobody reads. */
   const [held, setHeld] = useState<{ axis: Axis; choice: Choice; note: string } | null>(null);
-  /** What the last permission-mode request actually did, once the server has
-   *  read the pane back. Never what was asked for. */
-  const [outcome, setOutcome] = useState<{ busy: boolean; text: string } | null>(null);
+  /**
+   * What the last option or command actually did, and it is the only place this
+   * composer claims anything: a permission-mode request once the server has read
+   * the pane back — never what was asked for — or where a slash command's answer
+   * is going to turn up. `hatch` asks for the way into the terminal beside it,
+   * which is what a command that answers only there needs.
+   */
+  const [outcome, setOutcome] = useState<{
+    busy: boolean;
+    text: string;
+    hatch?: boolean;
+  } | null>(null);
 
   // The message as it would be sent, so the refusal measures what the server
   // will measure rather than what is on screen.
@@ -378,12 +399,49 @@ function Composer({
   const modeInFlight = outcome !== null && outcome.busy;
   const axes = axesFor(provider);
 
+  /** The commands worth showing under a half-typed one. Empty for ordinary text,
+   *  which is the whole of when this list is not there. */
+  const matches = matchCommands(provider, text);
+
+  const clear = () => {
+    setText('');
+    if (box.current !== null) box.current.style.height = '';
+  };
+
+  /**
+   * Send, and the only branch in it is what the text *is*.
+   *
+   * A slash command goes out on the same path an option's keystrokes do — the
+   * terminal socket, one `input` frame, resend-until-ACKed — and deliberately
+   * **not** the message path: a command is addressed to the agent's CLI, so an
+   * optimistic "You" bubble would be attributing it to the conversation, and the
+   * echo behind it retires on a `user` transcript record that a command never
+   * writes. So it would stand at "Sending…" for the life of the session.
+   *
+   * Both branches are behind the same `blocked` check, which is what makes a
+   * command obey the permission rule a message already obeys: text pasted at a
+   * provider's own permission dialog answers the dialog, and a slash command is
+   * no less dangerous there than a prompt.
+   */
   const submit = (event: Event) => {
     event.preventDefault();
     if (message === '' || blocked !== null) return;
-    onSend(message);
-    setText('');
-    if (box.current !== null) box.current.style.height = '';
+    const plan = planSend(provider, message);
+    if (plan.plan === 'message') {
+      setOutcome(null);
+      onSend(message);
+      clear();
+      return;
+    }
+    // Refused, so the text stays in the box: the note says what to change about
+    // it, and clearing it would make the user type the whole command again.
+    if (plan.plan === 'refuse') {
+      setOutcome({ busy: false, text: plan.note });
+      return;
+    }
+    onApply([plan.send]);
+    setOutcome({ busy: false, text: plan.note, hatch: plan.hatch });
+    clear();
   };
 
   /**
@@ -432,6 +490,34 @@ function Composer({
 
   return (
     <form class="composer" onSubmit={submit}>
+      {/* What `/` means, since the placeholder can only say that it means
+          something. Out of flow and drawn over the conversation — see
+          `.composer-cmds`: this appears and disappears on a keystroke, and a
+          box that took up flow would resize the terminal pane underneath it for
+          every viewer of the session on every character typed. */}
+      {matches.length > 0 && (
+        <ul class="composer-cmds" aria-label="Commands">
+          {matches.map((command) => (
+            <li key={command.name}>
+              {/* Fills the box rather than sending: a command may still want an
+                  argument, and a list that sent on a tap would make a mis-tap
+                  irreversible on the one surface where `/clear` is in reach. */}
+              <button
+                type="button"
+                class="ghost"
+                onClick={() => {
+                  setText(command.name);
+                  box.current?.focus();
+                }}
+              >
+                <span class="cmd-name">{command.name}</span>
+                <span class="cmd-summary">{command.summary}</span>
+                <span class="cmd-where">{whereLabel(command)}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
       <label class="sr-only" for="composer-text">
         Message
       </label>
@@ -517,6 +603,24 @@ function Composer({
       {outcome !== null && (
         <p class={`composer-note ${outcome.busy ? '' : 'composer-said'}`} role="status">
           {outcome.text}
+          {/* The way in, beside the sentence that says it is needed. A command
+              whose answer is a chooser has left the agent waiting on a screen
+              this pane cannot show, and "open the terminal" as prose on a phone
+              is an instruction to go and find a button. */}
+          {outcome.hatch === true && (
+            <>
+              {' '}
+              {/* **Not** "Open the terminal": that is the waiting banner's link
+                  in `app.tsx`, and the two appear together routinely — sending
+                  `/resume` puts Claude Code into `waiting` within a second, so
+                  both are on screen at once. Two controls with one accessible
+                  name is an ambiguity for a screen reader and for
+                  `getByRole({ name })`, which matches on a substring. */}
+              <button type="button" class="link" onClick={onSummon}>
+                Show the terminal
+              </button>
+            </>
+          )}
         </p>
       )}
       {blocked !== null && (
@@ -720,6 +824,11 @@ function RowView({ row, provider, sessionId }: { row: Row; provider: string; ses
           <span aria-hidden="true">✳</span> Thinking…
         </p>
       );
+    case 'command':
+      // Monospace and no box: the machine said it, and a command is not a
+      // message. Its own line rather than a card — a card the size of
+      // `Set model to Sonnet 5` is furniture.
+      return <p class={row.output ? 'cmd cmd-out' : 'cmd'}>{row.text}</p>;
     case 'compaction':
       return <p class="divider">context compacted</p>;
     case 'note':

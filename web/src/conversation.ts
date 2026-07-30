@@ -106,6 +106,13 @@ export type Row =
       blocks: readonly Block[];
     }
   | { key: string; row: 'thinking' }
+  /**
+   * A slash command that ran, or a line it printed. Monospace either way, by the
+   * house rule that monospace means the machine said it — a command is typed at
+   * the agent's CLI, not written to the model, so it is not a message and does
+   * not get a message's box.
+   */
+  | { key: string; row: 'command'; text: string; output: boolean }
   | { key: string; row: 'compaction' }
   /** An event this build does not understand. Deliberately says nothing else. */
   | { key: string; row: 'note'; text: string }
@@ -603,6 +610,8 @@ function toRow(key: string, e: ConversationEvent, byCall: Map<string, ToolRow>):
       // Presence only. The transcript carries an empty `thinking` string, so
       // anything more specific than "it thought here" would be invented.
       return { key, row: 'thinking' };
+    case 'command':
+      return { key, row: 'command', text: e.text, output: e.output === true };
     case 'compaction':
       return { key, row: 'compaction' };
     case 'tool_call': {
