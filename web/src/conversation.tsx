@@ -371,21 +371,27 @@ function Composer({
    *  a second warning stacked behind the first is a warning nobody reads. */
   const [held, setHeld] = useState<{ axis: Axis; choice: Choice; note: string } | null>(null);
   /**
-   * What the permission-mode request did, once the server has read the pane back
-   * — never what was asked for. `busy` is that request being in flight, and this
-   * state is the **only** writer of it.
+   * A permission-mode request being in flight, and it is a **lock rather than a
+   * note**: `apply` sets it and only the request settling clears it, so nothing
+   * that clears what the composer *says* can unlock the control. Derived state
+   * would put that invariant back in the hands of every future caller — the two
+   * below are cleared by whoever last made a claim stale, which is exactly the
+   * wrong owner for it.
    */
-  const [outcome, setOutcome] = useState<{ busy: boolean; text: string } | null>(null);
+  const [modeBusy, setModeBusy] = useState(false);
+  /**
+   * What the permission-mode request did, once the server has read the pane back
+   * — never what was asked for.
+   */
+  const [outcome, setOutcome] = useState<string | null>(null);
   /**
    * Where the last slash command's answer is going to turn up, and `hatch` asks
    * for the way into the terminal beside it — which is what a command that answers
    * only there needs.
    *
    * Its own state rather than the request's above, because the two settle
-   * independently and each would wreck the other: a command sharing that state
-   * would re-enable the mode control while its read-press-read is still in flight,
-   * and the request settling afterwards would replace the one hatch a user has to
-   * reach the chooser the agent is sitting on.
+   * independently: a mode result landing must not replace the one hatch a user has
+   * to reach the chooser the agent is sitting on.
    */
   const [said, setSaid] = useState<{ text: string; hatch: boolean } | null>(null);
 
@@ -398,11 +404,6 @@ function Composer({
   // the prompt in the terminal first" can stop them — the second because a
   // slash command pasted at a permission dialog answers the dialog.
   const optionsBlocked = sendBlocked(agent, '', terminal) !== null;
-  // A permission-mode request is a read-press-read on a pane nobody else may be
-  // pressing at, so a second one while the first is in flight is refused by the
-  // server and would only ever report a mode it did not aim at. The control says
-  // so rather than taking a tap that cannot land.
-  const modeInFlight = outcome !== null && outcome.busy;
   const axes = axesFor(provider);
 
   /** The commands worth showing under a half-typed one. Empty for ordinary text,
@@ -414,12 +415,12 @@ function Composer({
     if (box.current !== null) box.current.style.height = '';
   };
 
-  /** Whatever the composer last said is about something nobody is doing now — but
-   *  a mode request still in flight is live, and clearing it would put its own
-   *  control back within reach of a second tap the server refuses. */
+  /** Whatever the composer last said is about something nobody is doing now.
+   *  Notes only: a request in flight keeps its own control disabled through
+   *  `modeBusy`, which is not this to clear. */
   const clearNotes = () => {
     setSaid(null);
-    setOutcome((current) => (current !== null && current.busy ? current : null));
+    setOutcome(null);
   };
 
   /**
@@ -478,9 +479,15 @@ function Composer({
       onApply(choice.keys ?? []);
       return;
     }
-    setOutcome({ busy: true, text: `Setting permission mode to ${choice.label}…` });
+    // Locked here and unlocked only where the request settles, which is what keeps
+    // the control shut for the whole of the server's read-press-read:
+    // `permission-mode.ts` serialises per pane, so a second concurrent request
+    // presses between the first one's read and its read-back and both then confirm
+    // a mode neither tap aimed at.
+    setModeBusy(true);
+    setOutcome(`Setting permission mode to ${choice.label}…`);
     setPermissionMode(sessionId, choice.value)
-      .then(() => setOutcome({ busy: false, text: `Permission mode is now ${choice.label}.` }))
+      .then(() => setOutcome(`Permission mode is now ${choice.label}.`))
       .catch((error: unknown) => {
         // The server's own code, so the sentence can distinguish "nothing was
         // pressed" from "keys were pressed and it did not arrive", and its body,
@@ -488,8 +495,9 @@ function Composer({
         // through to the neutral wording.
         const code = error instanceof ApiError ? error.code : '';
         const body = error instanceof ApiError ? error.body : null;
-        setOutcome({ busy: false, text: modeFailure(code, choice.label, body) });
-      });
+        setOutcome(modeFailure(code, choice.label, body));
+      })
+      .finally(() => setModeBusy(false));
   };
 
   const pick = (axis: Axis, value: string) => {
@@ -571,7 +579,7 @@ function Composer({
             <button
               type="button"
               class="primary"
-              disabled={optionsBlocked || (held.axis.via === 'permission-mode' && modeInFlight)}
+              disabled={optionsBlocked || (held.axis.via === 'permission-mode' && modeBusy)}
               onClick={() => {
                 apply(held.choice, held.axis);
                 setHeld(null);
@@ -593,7 +601,7 @@ function Composer({
             key={axis.id}
             class="composer-opt"
             aria-label={axis.label}
-            disabled={optionsBlocked || (axis.via === 'permission-mode' && modeInFlight)}
+            disabled={optionsBlocked || (axis.via === 'permission-mode' && modeBusy)}
             value=""
             onChange={(event) => {
               const element = event.currentTarget;
@@ -621,8 +629,8 @@ function Composer({
       {/* What the permission-mode request *did*, which is the only thing this
           axis is allowed to claim — the server read the pane back to say it. */}
       {outcome !== null && (
-        <p class={`composer-note ${outcome.busy ? '' : 'composer-said'}`} role="status">
-          {outcome.text}
+        <p class={`composer-note ${modeBusy ? '' : 'composer-said'}`} role="status">
+          {outcome}
         </p>
       )}
       {/* Where the last command's answer is going, in the same treatment: two
