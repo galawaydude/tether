@@ -39,15 +39,26 @@ const GREETING = 'stub agent ready';
 
 /**
  * Typed at the pane to act out a permission prompt, and then to answer it in
- * the terminal. Three asks because there are three ways one ends: tether
- * approves it, tether denies it, or tether does not answer in time and Claude
- * Code's own prompt takes the question — which is the only path where `ANSWER`
- * is ever typed.
+ * the terminal. Five asks because there are five ways one ends: tether approves
+ * it, tether denies it, tether does not answer in time and Claude Code's own
+ * prompt takes the question — which is the only path where `ANSWER` is ever
+ * typed — and the two the terminal overlay adds, where tether does not hold at
+ * all because nobody is watching the conversation, and then does again once it
+ * is put away. Each carries its own `tool_use_id`, because a card is keyed by
+ * one and a reused id would update the first card rather than make a second.
  */
 const ASKS = {
   'ask to run something': { command: 'rm -rf ./build', callId: 'toolu_01StubPermissionPrompt' },
   'ask to run the other thing': { command: 'rm -rf ./dist', callId: 'toolu_02StubPermissionDeny' },
   'ask and wait it out': { command: 'rm -rf ./cache', callId: 'toolu_03StubPermissionTimeout' },
+  'ask with the terminal up': {
+    command: 'rm -rf ./one',
+    callId: 'toolu_04StubPermissionUnwatched',
+  },
+  'ask with the terminal away': {
+    command: 'rm -rf ./two',
+    callId: 'toolu_05StubPermissionWatched',
+  },
 } as const;
 const ANSWER = 'yes';
 
@@ -58,13 +69,14 @@ const TOOL = 'Bash';
  * A typed ask only **arms** the tool call; this file is what fires it.
  *
  * The reason is tether's own: it holds a proposed call only while the
- * conversation pane is the one in front, and the spec has to be on the Terminal
- * tab to type at all. Firing inside the `line` handler would therefore race the
- * spec's tab switch back — and a test that goes green by winning a race is worse
- * than no test. Decoupling the trigger from the keystroke removes the race
- * instead of hiding it: the spec types, returns to the conversation, and only
- * then writes this file, and the poll below fires only once *both* have
- * happened, in whichever order they land.
+ * conversation is what is on screen, and the spec has to summon the terminal
+ * over it to type at all. Firing inside the `line` handler would therefore race
+ * the spec dismissing it again — and a test that goes green by winning a race is
+ * worse than no test. Decoupling the trigger from the keystroke removes the race
+ * instead of hiding it: the spec types, puts the terminal away, and only then
+ * writes this file, and the poll below fires only once *both* have happened, in
+ * whichever order they land. The spec that wants the opposite — a call proposed
+ * with the terminal still up — gets it by writing the trigger without dismissing.
  */
 const TRIGGER = join(process.cwd(), '.tether-e2e-fire');
 const POLL_MS = 100;

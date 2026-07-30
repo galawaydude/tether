@@ -1,7 +1,8 @@
 /**
  * The terminal pane: xterm.js on one end, the `term` WebSocket on the other.
- * It is one of the two panes inside the session screen (`app.tsx`), which owns
- * the header, the tabs and the status chip this reports up through `onStatus`.
+ * It is the summoned pane inside the session screen (`app.tsx`), which owns the
+ * header, the overlay around this and the status chip it reports up through
+ * `onStatus`.
  *
  * Two properties this file exists to keep:
  *

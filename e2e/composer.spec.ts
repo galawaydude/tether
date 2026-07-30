@@ -103,8 +103,9 @@ test('a composed message reaches the agent and appears exactly once', async ({ p
   }
 
   // And it really went through tmux to the agent, not just into the view.
-  await page.getByRole('button', { name: 'Terminal' }).click();
+  await page.getByRole('button', { name: 'Terminal', exact: true }).click();
   await expect(page.locator('.xterm-rows')).toContainText(REPLY);
+  await page.locator('.termsheet').getByRole('button', { name: 'Close' }).click();
 
   // ── the sender is rewired on remount ───────────────────────────────────────
   // A composed message leaves on the *terminal* pane's socket, through a ref

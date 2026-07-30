@@ -2,7 +2,7 @@
  * ── the look ────────────────────────────────────────────────────────────────
  *
  * tether is for watching an agent work on a machine you own, from a phone, for
- * hours. So the surface is a quiet warm-neutral dark, and colour is spent only
+ * hours. So the surface is a quiet warm-neutral light, and colour is spent only
  * where it carries a fact. Three rules hold the whole thing together:
  *
  *  1. **Amber is you.** The one saturated colour in the app means *a human is
@@ -17,10 +17,16 @@
  *     as prose is the system sans. That split already existed inside the tool
  *     cards — this file carries it through the rest of the app.
  *
+ * The one surface that stays dark is the summoned terminal (`.termsheet`),
+ * which is not a theme exception but the honest colour of the thing: an agent's
+ * TUI picks its ANSI colours for a dark background, and a light pane would need
+ * a whole second ANSI palette to stay legible. It re-declares the handful of
+ * surface tokens for its own chrome and changes nothing else.
+ *
  * Mobile first, and one-handed: the acceptance bar is a phone held in one hand
  * outdoors, so every control is at least 44px, every foreground token clears
- * 5.6:1 on *every* surface it is used on rather than only on the deepest one
- * (most are past 8:1), and the two things a thumb reaches for — the accessory
+ * 5.6:1 on *every* surface it is used on rather than only on the lightest one
+ * (most are past 6.5:1), and the two things a thumb reaches for — the accessory
  * bar and "New session" — sit at the bottom of the screen rather than the top.
  *
  * Desktop is a different shape, not a wider phone: past 900px the session list
@@ -32,36 +38,50 @@
 @import '@xterm/xterm/css/xterm.css';
 
 :root {
-  color-scheme: dark;
+  color-scheme: light;
 
-  /* Surfaces, deepest to nearest. Warm-neutral rather than blue-black: it is
+  /* Surfaces, recessed to nearest. Warm-neutral rather than blue-white: it is
      what lets one amber read as a signal instead of as a second theme colour. */
-  --bg: #0e0e11;
-  --panel: #17171b;
-  --raise: #1e1e24;
-  --line: #292930;
-  --line-lit: #3a3a44;
+  --bg: #faf8f5;
+  --panel: #ffffff;
+  --raise: #f1eee9;
+  --line: #e4e0d9;
+  --line-lit: #c8c2b8;
 
-  --fg: #f3f3f5; /* 17:1 on --bg */
-  --muted: #a8a8b4; /* 8.2:1 on --bg, 7:1 on --raise */
+  --fg: #1c1b19; /* 16.2:1 on --bg */
+  --muted: #5c584f; /* 6.7:1 on --bg, 6.1:1 on --raise */
   /* The floor, used only for machine detail. Set against `--raise` rather than
-     against `--bg`: it lands on all three surfaces, and a token chosen on the
-     deepest one is below the floor everywhere it is actually read. */
-  --dim: #9a9aa8; /* 6.9:1 on --bg, 6.4:1 on --panel, 6:1 on --raise */
+     against `--panel`: it lands on all three surfaces, and a token chosen on
+     the lightest one is below the floor everywhere it is actually read. */
+  --dim: #5b564d; /* 6.9:1 on --bg, 7.3:1 on --panel, 6.3:1 on --raise */
 
-  /* Amber is the human. See rule 1 above. */
-  --accent: #ffb454; /* 10.9:1 on --bg, 10.6:1 against --on-accent */
+  /* Amber is the human. See rule 1 above — and it takes two values on a light
+     surface, which is a fact about light rather than a second colour: the fill
+     is what carries `--on-accent` text (a filled button, the waiting banner and
+     badge), and the ink is the same amber darkened until it can *be* read —
+     as a spine, a border, a focus ring or a word. Bright amber on white is
+     1.8:1, so every one of those would be invisible without it. */
+  --accent: #ffb454; /* 10.6:1 against --on-accent */
+  --accent-ink: #8a4e00; /* 6.6:1 on --panel, 5.7:1 on --raise */
   --on-accent: #1a1103;
 
-  /* Cool: what the machine reports. */
-  --ok: #66d17f;
-  --work: #6fc9e8;
-  --danger: #ff8a80;
+  /* Cool: what the machine reports. Darker than their dark-theme counterparts
+     for the same reason `--accent-ink` exists — these are read as text. */
+  --ok: #136327;
+  --work: #0a6180;
+  --danger: #a81f16;
 
   /* Which agent. Colour as well as word, because two sessions of different
      providers in one project share a title and a directory. */
-  --claude: #c8a2ff;
-  --codex: #7ee0b8;
+  --claude: #5c2ec2;
+  --codex: #0a5c55;
+
+  /* What a chip's or a tag's translucent fill is mixed into. On a dark theme a
+     tint of the tone over the surface moved *away* from the text; on a light
+     one it moves toward it, so the tint is mixed into white instead of into
+     whatever it happens to sit on — which also makes each of those ratios one
+     number rather than one per surface. */
+  --wash: #ffffff;
 
   --sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -182,8 +202,14 @@ body {
   border-bottom: 1px solid var(--line);
 }
 
+/* `flex: 1 1 0`, not `1 1 auto`, and the zero basis is what keeps the bar two
+   rows rather than three. A wrapping flex container fills a line at each item's
+   *base* size and only then shrinks what is on it, so a title whose basis is its
+   own content pushes the Terminal button onto a line of its own — on a 390px
+   phone, for a title short enough to have fitted. At a zero basis the title is
+   simply what is left over, and it ellipsizes as it always did. */
 .bar-title {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -201,6 +227,16 @@ body {
 .bar-title .path {
   font: 12px/1.3 var(--mono);
   color: var(--dim);
+}
+
+/* The way to the terminal, on the same row as the title rather than under it:
+   the back button already makes that row 44px tall, so this control costs the
+   bar no height at all — and a bar that grows resizes the tmux pane. Bordered
+   rather than borderless, like the sheet's Cancel: a control that only says
+   "Terminal" has to read as a control. */
+.bar .bar-term {
+  flex: none;
+  border-color: var(--line-lit);
 }
 
 .bar-chips {
@@ -229,7 +265,7 @@ body {
   width: 3px;
   height: 17px;
   border-radius: 2px;
-  background: var(--accent);
+  background: var(--accent-ink);
 }
 
 .foot {
@@ -270,7 +306,7 @@ input:focus-visible,
 select:focus-visible,
 textarea:focus-visible,
 summary:focus-visible {
-  outline: 3px solid var(--accent);
+  outline: 3px solid var(--accent-ink);
   outline-offset: 2px;
 }
 
@@ -528,7 +564,7 @@ label {
   flex: none;
   padding: 3px 7px;
   border-radius: 5px;
-  background: color-mix(in srgb, currentcolor 16%, transparent);
+  background: color-mix(in srgb, currentcolor 16%, var(--wash));
   font: 600 11.5px/1 var(--mono);
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -580,7 +616,7 @@ label {
   padding: 5px 9px;
   border-radius: 999px;
   border: 1px solid color-mix(in srgb, var(--tone, var(--dim)) 45%, transparent);
-  background: color-mix(in srgb, var(--tone, var(--dim)) 12%, transparent);
+  background: color-mix(in srgb, var(--tone, var(--dim)) 12%, var(--wash));
   color: var(--tone, var(--muted));
   /* Mono because it is the machine reporting, but not upper-cased: "Waiting for
      you" is the longest and most important of these and it has to fit beside a
@@ -657,42 +693,10 @@ label {
   cursor: pointer;
 }
 
-/* ── tabs and panes ─────────────────────────────────────────────────────── */
+/* ── panes and the summoned terminal ────────────────────────────────────── */
 
-/* A segmented control: one recessed track, one raised pill. Not amber — picking
-   a tab is navigation, and amber is reserved for being asked to act. */
-.tabs {
-  display: flex;
-  gap: 4px;
-  margin: 10px 12px;
-  padding: 4px;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-}
-
-.tab {
-  flex: 1;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--muted);
-  font-size: 14.5px;
-  font-weight: 600;
-}
-
-.tab:hover {
-  color: var(--fg);
-}
-
-.tab-on,
-.tab-on:hover {
-  background: var(--raise);
-  color: var(--fg);
-}
-
-/* The two panes are stacked, both always laid out at full size. Hiding the
-   inactive one with `visibility` is what keeps its scroll position, keeps xterm
+/* The two panes are stacked, both always laid out at full size. Hiding the one
+   behind with `visibility` is what keeps its scroll position, keeps xterm
    correctly sized, and takes it out of the tab order and the accessibility tree
    — all three of which `display: none` would cost. */
 .panes {
@@ -710,6 +714,85 @@ label {
 
 .pane-off {
   visibility: hidden;
+}
+
+/* The escape hatch, and it has to look like one.
+ *
+ * It is *over* the conversation rather than instead of it: the inset at the top
+ * leaves a strip of the conversation showing, and the shadow and the rounded
+ * top edge say the same thing again — this is a thing that was summoned and can
+ * be put away, not the other half of a pair. The box is identical open and
+ * closed (only `visibility` changes), so summoning resizes nothing and the tmux
+ * pane never learns this happened.
+ *
+ * Dark, and deliberately: an agent's TUI chooses its ANSI colours for a dark
+ * terminal. Only the tokens its own chrome reads are re-declared here — the
+ * accessory bar picks them up without knowing about any of this — and they are
+ * the values this file used before it went light, so their ratios are the ones
+ * that were already measured against them. */
+.termsheet {
+  --panel: #17171b;
+  --raise: #24242b;
+  --line: #2b2b33;
+  --line-lit: #3a3a44;
+  --fg: #f3f3f5;
+  --muted: #a8a8b4;
+  --dim: #9a9aa8;
+  /* Amber can be read on a dark surface again, so the focus ring is the fill. */
+  --accent-ink: var(--accent);
+
+  top: 24px;
+  border-radius: 16px 16px 0 0;
+  overflow: hidden;
+  background: var(--panel);
+  color: var(--fg);
+  box-shadow: 0 -6px 26px rgb(28 27 25 / 26%);
+}
+
+/* Its own header, so the way out is inside the thing rather than only behind
+   it. One row, and its height cannot follow its text — the same rule as `.bar`,
+   for the same reason: it sits directly above the pane xterm is fitted to. */
+.termsheet-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 6px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.termsheet-title {
+  flex: none;
+  margin: 0;
+  font: 600 13px/1 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* What this is, said once and quietly. Dropped below 360px, where the title and
+   the way out are all the row has room for — a clipped explanation is worse than
+   none, and everything it says is said again by the shape of the thing. */
+.termsheet-note {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--dim);
+}
+
+@media (max-width: 359px) {
+  .termsheet-note {
+    display: none;
+  }
+}
+
+.termsheet-bar .ghost {
+  flex: none;
+  margin-left: auto;
 }
 
 /* ── conversation ───────────────────────────────────────────────────────── */
@@ -746,7 +829,7 @@ label {
 .msg-user {
   margin-left: 14px;
   padding: 10px 14px;
-  border-left: 3px solid var(--accent);
+  border-left: 3px solid var(--accent-ink);
   border-radius: 0 12px 12px 0;
   background: var(--panel);
 }
@@ -820,7 +903,7 @@ label {
 
 /* A proposed call, before the transcript has it. Same card, marked. */
 .tool-pending {
-  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  border-color: color-mix(in srgb, var(--accent-ink) 45%, transparent);
 }
 
 .tool > summary {
@@ -885,7 +968,7 @@ label {
 
 .tool-pending .tool-state,
 .tool-answerable .tool-state {
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 /* A card the agent is blocked on. It opens itself, so it is the one card that
@@ -895,7 +978,7 @@ label {
    input, the one-line result and the buttons come to well under one screen, and
    the list's own stick-to-the-end scrolls the buttons into view regardless. */
 .tool-answerable {
-  border-color: var(--accent);
+  border-color: var(--accent-ink);
 }
 
 /* The one card that wraps instead of scrolling sideways. Everywhere else code
@@ -1088,7 +1171,7 @@ label {
   justify-content: center;
   padding: 12px;
   padding-bottom: max(12px, env(safe-area-inset-bottom));
-  background: rgb(0 0 0 / 66%);
+  background: rgb(28 27 25 / 46%);
   overflow-y: auto;
 }
 
@@ -1142,17 +1225,13 @@ label {
     padding-inline: max(16px, calc((100% - var(--column)) / 2));
   }
 
-  /* Content-sized and aligned with the column's left edge. Two 470px halves of a
-     window-wide track is a phone control that has been stretched, which is the
-     whole complaint this pass exists to answer. */
-  .tabs {
-    width: max-content;
-    margin: 12px max(16px, calc((100% - var(--column)) / 2));
-  }
-
-  .tab {
-    flex: 0 0 auto;
-    min-width: 150px;
+  /* Inset from the pane's edges rather than full-bleed: with room to spare on
+     either side, the conversation stays visible around it and the sheet reads as
+     summoned. On a phone there is no room to spend, so it keeps its full width. */
+  .termsheet {
+    top: 16px;
+    right: 16px;
+    left: 16px;
   }
 
   .waiting {

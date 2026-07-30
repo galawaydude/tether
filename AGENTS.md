@@ -322,9 +322,16 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `#holdFor` skips a session nobody is **watching** — which is not the same as
   subscribed, because the session screen keeps both panes mounted, so the `conv`
   socket is open the whole time a user works in the terminal. The client sends
-  `{c:'watch'}` (the channel's whole client vocabulary) when the tab changes, and
-  switching away mid-hold releases like the last viewer leaving does — a
-  `timeout`, never a deny. Do not "fix" this by
+  `{c:'watch'}` (the channel's whole client vocabulary) when the terminal is
+  summoned or dismissed, and summoning mid-hold releases like the last viewer
+  leaving does — a `timeout`, never a deny. **Watching is exactly "the terminal
+  overlay is closed"**, decided in `app.tsx` and covered by
+  `e2e/permission.spec.ts`'s second test, which drives both halves: the terminal
+  is summoned to answer the agent _there_, so holding then stalls it in front of
+  the surface that answers it, behind an overlay hiding tether's own Approve.
+  Getting it wrong is silent both ways — hold too much and agents stall, hold too
+  little and the feature never fires — so it has a test rather than a comment
+  alone. Do not "fix" this by
   re-deriving Claude Code's permission rules; they are the user's own settings
   and the provider's to apply. **(2) Three timeouts, nested:** server hold <
   the shim's `AbortSignal` < the settings-file `timeout`, all derived from
@@ -494,14 +501,23 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   the other direction. `busy` and `retrying` are **not** refused: both
   providers queue a message mid-turn, the unacked set carries one across a
   reconnect, and that is the most valuable thing a phone can do.
-- **The session screen keeps both panes mounted and hides one with
-  `visibility: hidden`** (`app.tsx`, `.pane-off` in `style.css`). That one
-  property is the whole of "switching tabs preserves both scroll positions", and
-  it also keeps the hidden pane out of the tab order and the accessibility tree.
-  `display: none` resets `scrollTop` and refits xterm to 0×0 and back on every
-  tap; unmounting costs a full tmux replay or a conversation refetch. Note the
-  consequence: nothing inside a hidden pane is focusable, so anything driving
-  xterm's textarea has to switch tabs first. The two views share nothing else —
+- **The conversation is the interface and the terminal is summoned over it.**
+  There is no tab pair: opening a session lands on the conversation, and
+  `.termsheet` (`app.tsx`, `style.css`) is an overlay a header control raises and
+  its own Close puts away. Both panes still stay mounted and the one behind is
+  hidden with `visibility: hidden` (`.pane-off`) — that one property is the whole
+  of "summoning preserves both scroll positions", and it also keeps the hidden
+  pane out of the tab order and the accessibility tree. `display: none` resets
+  `scrollTop` and refits xterm to 0×0 and back on every tap, which resizes the
+  tmux pane for every other viewer too; unmounting costs a full tmux replay or a
+  conversation refetch. The overlay's box is therefore **identical open and
+  closed** — only `visibility` changes — and it is inset at the top so a strip of
+  the conversation shows, which is what makes it read as summoned rather than as
+  the other half of a pair. Two consequences: nothing inside a hidden pane is
+  focusable, so anything driving xterm's textarea has to summon first; and the
+  conversation is visible-but-covered while the overlay is up, so it carries
+  `inert` — the platform's own word for it, and the one thing that takes it out
+  of the tab order without touching layout. The two views share nothing else —
   they are two renderings of one process from two independent sources (report
   §3), and there is no cursor between them to reconcile.
 - **The look is one system with three rules, and they are written down at the
@@ -512,7 +528,17 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   provider tags, state words. The spine — a short bar in a meaningful colour —
   is the app's one graphic idea, and it is the wordmark, the provider stripe on
   a session row and the edge of a user message. Adding a fourth accent, or an
-  amber that is only decoration, is what breaks it.
+  amber that is only decoration, is what breaks it. The theme is **light, and
+  light only** — no toggle, no `prefers-color-scheme` branch — with two
+  consequences that are facts about light rather than new colours: amber takes a
+  fill (`--accent`, which carries `--on-accent` text) and an ink (`--accent-ink`,
+  the same amber darkened until it can be read as a spine, a border, a focus ring
+  or a word, since bright amber on white is 1.8:1), and a chip's or tag's
+  translucent tint is mixed into `--wash` (white) rather than into the surface it
+  sits on, because on a light theme a tint of the tone moves the background
+  _toward_ the text. The one dark surface is `.termsheet`, which re-declares its
+  own chrome tokens: an agent's TUI picks its ANSI colours for a dark terminal,
+  and a light pane would need a second ANSI palette.
 - **There are two layouts and `app.tsx` picks between them.** Past `WIDE`
   (900px) it renders `.workspace`: the session list as a rail beside the open
   session. A media query cannot do that, because it cannot mount a component,
@@ -557,8 +583,11 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   They drive the real `tether serve` (`e2e/serve.ts` calls the CLI's own `main`) inside a
   scratch `HOME`/state dir/tmux socket, with `e2e/stub-agent.ts` on `PATH` as `claude` — so
   the session is created through the production path and **CI still never runs a live
-  agent**. What `session.spec.ts` checks that nothing else can is the reload, what
-  `permission.spec.ts` checks is the hook chain end to end, what `composer.spec.ts`
+  agent**. What `session.spec.ts` checks that nothing else can is the reload and
+  the terminal overlay — that summoning and dismissing it keeps both scroll
+  positions and re-attaches nothing — what
+  `permission.spec.ts` checks is the hook chain end to end plus the watch/hold
+  rule that overlay decides, what `composer.spec.ts`
   checks is the compose chain end to end plus the Enter rule the composer entry above
   describes, which has no handler to unit-test, and what `identity.spec.ts` checks is that
   each session shows _its own_ conversation and keeps it — two sessions in one directory,
@@ -588,11 +617,15 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   The stub knows nothing about where tether's shim, secret or endpoint are — it runs
   whatever `.claude/settings.local.json` lists — so a broken installer fails the test
   rather than quietly proving nothing. A typed ask only **arms** the stub and a
-  trigger file fires it, because the hold needs the conversation pane in front and
-  typing needs the other tab; the stub fires when both have landed, in either
-  order, so nothing depends on which round-trip won. For the same reason the
-  timeout case never taps Terminal — that would release the hold it is watching
-  expire — and reads `.xterm-rows` through the hidden pane instead.
+  trigger file fires it, because the hold needs the conversation on screen and
+  typing needs the terminal over it; the stub fires when both have landed, in
+  either order, so nothing depends on which round-trip won. Writing the trigger
+  _without_ dismissing is how the watch/hold test gets the opposite case. For the
+  same reason the timeout case never summons the terminal — that would release
+  the hold it is watching expire — and reads `.xterm-rows` through the hidden
+  pane instead. A locator inside the conversation while the overlay is up must be
+  a CSS one: the pane is `inert`, so every role locator reads zero there and one
+  that did would prove nothing.
   `retries: 0` is deliberate. `npm ci` does not
   fetch the browser (npm 12 blocks playwright's postinstall);
   `npx playwright install chromium` does, and CI runs it.

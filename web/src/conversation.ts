@@ -58,7 +58,7 @@ export type ToolRow = {
   /**
    * How the hold ended, once it has. `timeout` is not an error and must not read
    * as one: the question simply went back to the provider's own prompt, which
-   * the terminal tab is showing.
+   * the terminal is showing.
    */
   outcome: PermissionOutcome | null;
 };
@@ -493,7 +493,7 @@ export function toolResult(row: ToolRow): string {
       return 'Denied here. The agent was told you refused, and did not run it.';
     case 'timeout':
       // Not a failure, and it must not read as one: tether stopped holding and
-      // the agent's own prompt has the question, which the terminal tab shows.
+      // the agent's own prompt has the question, which the terminal shows.
       return 'No answer here in time — Claude Code is asking in the terminal instead.';
     default:
       return row.pending ? 'Waiting for you to answer in the terminal.' : 'Still running.';

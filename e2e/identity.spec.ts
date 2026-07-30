@@ -56,7 +56,7 @@ async function typeAt(page: Page, text: string): Promise<void> {
   await page.keyboard.type(text);
   await page.keyboard.press('Enter');
   await expect(page.locator('.xterm-rows')).toContainText(text);
-  await page.getByRole('button', { name: 'Conversation', exact: true }).click();
+  await page.locator('.termsheet').getByRole('button', { name: 'Close' }).click();
 }
 
 test('two sessions in one directory each show their own conversation, and follow a resume', async ({
