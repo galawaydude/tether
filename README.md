@@ -68,6 +68,13 @@ the reason, while the agent is waiting on a permission prompt, where a message
 would answer the dialog rather than the agent, when the message is too long for
 the wire to carry, and once the session has ended or the server no longer has it;
 mid-turn it is fine, and the agent queues it.
+
+The phone is still the primary target and gets one screen at a time — the list,
+then the session you opened. A laptop gets a different shape rather than a
+stretched one: past 900px the session list stays on screen as a rail beside the
+open session, so switching sessions costs no trip back, and the conversation is
+capped to a readable column instead of running the full width of the window.
+
 This milestone is being built one focused PR at a time.
 
 ```
@@ -415,8 +422,9 @@ npx playwright install chromium   # once; npm 12 blocks playwright's own postins
 npm run test:e2e                  # the end-to-end specs
 ```
 
-`e2e/` is four Playwright specs on a phone viewport, and they are the only tests
-here that are not unit tests. One logs in, starts a session, watches it, types at
+`e2e/` is five Playwright specs, and they are the only tests here that are not
+unit tests. Four of them run at a phone viewport, which is the client tether is
+designed for. One logs in, starts a session, watches it, types at
 it, **reloads the page**, and asserts the conversation and the terminal come back
 intact and exactly once; it also opens the New session sheet at the shortest
 phone viewports and asserts the card and its **Agent** picker stay on screen,
@@ -433,7 +441,12 @@ send, and that the composer leaves Send on screen with the keyboard up. The
 fourth starts two sessions in **one** directory and asserts each shows its own
 conversation and neither shows the other's, then acts out a `/resume` at one of
 their panes and asserts that view follows the agent to the conversation it
-resumed into. All four run against `e2e/stub-agent.ts` — a script that prints, echoes
+resumed into. The fifth is the only one that runs at a laptop viewport
+(1280×800), because past 900px the app is a different shape rather than a wider
+phone: it measures the rail's box against the open session's, asserts the back
+button is **gone** rather than merely invisible, that the page has exactly one
+`<main>`, and that nothing makes it scroll sideways. All five run against
+`e2e/stub-agent.ts` — a script that prints, echoes
 what you type at it, writes a Claude-Code-shaped transcript, publishes its own
 status file, moves to a new session id and a new transcript on a `/resume`,
 fires whatever hook the project's settings register **and honours the decision

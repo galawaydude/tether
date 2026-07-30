@@ -2,6 +2,12 @@
  * The whole shell: log in, list sessions, open one. No router — there are three
  * screens and one of them is a modal, so a URL scheme would be state to keep in
  * sync for nothing.
+ *
+ * There are two shapes, not one with a media query bolted on. On a phone the
+ * list and the open session are the same screen at different times. Past
+ * `WIDE`, they are side by side — the list is a rail you switch sessions from
+ * without going back — and a media query cannot do that, because it cannot
+ * mount a component. Everything else about the two shapes is CSS.
  */
 
 import type { Session, SessionState } from '@tether/shared';
@@ -15,6 +21,30 @@ import { STATUS_TEXT, TerminalView, type Status } from './terminal.tsx';
 
 /** How often the list refreshes. tmux reconciliation happens server-side per read. */
 const POLL_MS = 5000;
+
+/**
+ * Where a rail beside the session starts paying: below this, 340px of list plus
+ * a conversation is two cramped columns rather than one good one. It matches the
+ * last block of `style.css`, which is where the rest of the desktop shape lives.
+ */
+const WIDE = '(min-width: 900px)';
+
+/**
+ * `matchMedia`, not a resize listener: it fires only on the crossing, and it
+ * carries no secure-context gate — which the browser app may not use, since
+ * every device but the one running tether loads it over plain HTTP.
+ */
+function useWide(): boolean {
+  const [wide, setWide] = useState(() => window.matchMedia(WIDE).matches);
+  useEffect(() => {
+    const query = window.matchMedia(WIDE);
+    const update = () => setWide(query.matches);
+    update();
+    query.addEventListener('change', update);
+    return () => query.removeEventListener('change', update);
+  }, []);
+  return wide;
+}
 
 /**
  * What the agent is doing, in the user's words rather than the provider's.
@@ -41,6 +71,7 @@ export function App() {
   // replacing it a moment later is a flash of the wrong screen on every load.
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [open, setOpen] = useState<Session | null>(null);
+  const wide = useWide();
 
   useEffect(() => {
     api.checkSession().then(
@@ -52,10 +83,40 @@ export function App() {
   if (authenticated === null) return <p class="centre muted">Loading tether…</p>;
   if (!authenticated) return <Login onDone={() => setAuthenticated(true)} />;
   const signedOut = () => setAuthenticated(false);
-  if (open !== null) {
-    return <SessionScreen session={open} onBack={() => setOpen(null)} onSignedOut={signedOut} />;
-  }
-  return <Sessions onOpen={setOpen} onSignedOut={signedOut} />;
+  const list = (
+    <Sessions
+      onOpen={setOpen}
+      onSignedOut={signedOut}
+      rail={wide}
+      openId={wide ? (open?.id ?? null) : null}
+    />
+  );
+  const session =
+    open === null ? null : (
+      <SessionScreen
+        // Keyed, so switching sessions in the rail rebuilds both panes rather
+        // than pointing one live socket at a different tmux session.
+        key={open.id}
+        session={open}
+        onBack={() => setOpen(null)}
+        onSignedOut={signedOut}
+      />
+    );
+
+  if (!wide) return session ?? list;
+  return (
+    <div class="workspace">
+      {list}
+      {session ?? (
+        // The `<main>` of this shape when nothing is open: the right-hand pane is
+        // the primary content either way, and the rail beside it is complementary.
+        <main class="blank">
+          <p class="wordmark">tether</p>
+          <p class="muted">Pick a session on the left, or start a new one.</p>
+        </main>
+      )}
+    </div>
+  );
 }
 
 const TABS = [
@@ -113,19 +174,27 @@ function SessionScreen({
   const sender = useRef<((message: string) => void) | null>(null);
 
   return (
-    <div class="screen">
+    // The `<main>` in both shapes: on a phone the list has unmounted, and in the
+    // rail shape the list is the complementary landmark beside this one.
+    <main class="screen">
       <header class="bar">
-        <button class="ghost" onClick={onBack} aria-label="Back to sessions">
+        <button class="ghost bar-back" onClick={onBack} aria-label="Back to sessions">
           ‹ Sessions
         </button>
         <div class="bar-title">
           <strong>{session.title}</strong>
-          <span class="muted">{session.cwd}</span>
+          <span class="path">{session.cwd}</span>
         </div>
-        <span class={`chip chip-agent-${agent.state}`}>{STATE_TEXT[agent.state]}</span>
-        <span class={`chip chip-${status[tab]}`} role="status">
-          {STATUS_TEXT[status[tab]]}
-        </span>
+        {/* Wrapped together so they occupy one whole row on a phone rather than
+            wrapping only when their own text happens to be long — see `.bar`:
+            a bar that changes height as a status word changes resizes the tmux
+            pane underneath it. */}
+        <div class="bar-chips">
+          <span class={`chip chip-agent-${agent.state}`}>{STATE_TEXT[agent.state]}</span>
+          <span class={`chip chip-${status[tab]}`} role="status">
+            {STATUS_TEXT[status[tab]]}
+          </span>
+        </div>
       </header>
 
       {agent.state === 'waiting' && (
@@ -190,7 +259,7 @@ function SessionScreen({
           </div>
         ))}
       </div>
-    </div>
+    </main>
   );
 }
 
@@ -224,7 +293,8 @@ function Login({ onDone }: { onDone: () => void }) {
   return (
     <main class="centre">
       <form class="card" onSubmit={submit}>
-        <h1>tether</h1>
+        <h1 class="wordmark">tether</h1>
+        <p class="tagline">Your agents, on your machine, from anywhere.</p>
         <label for="password">Password</label>
         <input
           id="password"
@@ -251,9 +321,25 @@ function Login({ onDone }: { onDone: () => void }) {
 function Sessions({
   onOpen,
   onSignedOut,
+  rail,
+  openId,
 }: {
   onOpen: (session: Session) => void;
   onSignedOut: () => void;
+  /**
+   * Whether this list is the rail beside an open session rather than the whole
+   * screen. It decides the landmark and the class the rail's border keys off, and
+   * nothing else: a document may have exactly one `<main>`, and in the rail shape
+   * that is the session on the right, so here the list is a named complementary
+   * landmark instead.
+   */
+  rail: boolean;
+  /**
+   * Which row is the session on screen beside this list, or `null` on a phone,
+   * where the list is never on screen at the same time as a session and a
+   * highlighted row would be marking something the user cannot see.
+   */
+  openId: string | null;
 }) {
   const [sessions, setSessions] = useState<Session[] | null>(null);
   const [states, setStates] = useState<api.SessionStates>({});
@@ -288,10 +374,13 @@ function Sessions({
     await refresh();
   };
 
+  // `.rail` is also what the desktop border keys off, so the class carries the
+  // shape rather than the element name doing it.
+  const Frame = rail ? 'aside' : 'main';
   return (
-    <main class="screen">
+    <Frame class={rail ? 'screen rail' : 'screen'} aria-label={rail ? 'Sessions' : undefined}>
       <header class="bar">
-        <h1 class="bar-title">Sessions</h1>
+        <h1 class="wordmark">tether</h1>
         <button
           class="ghost"
           onClick={async () => {
@@ -315,9 +404,17 @@ function Sessions({
         )}
         {sessions?.map((session) => {
           const note = unresumableNote(session);
+          const on = session.id === openId;
           return (
-            <div class="row" key={session.id}>
-              <button class="row-open" onClick={() => onOpen(session)}>
+            // The provider class is on the row as well as the tag: it is what
+            // colours the spine down the left edge, which is the thing a scan of
+            // the list reaches before it reaches a word.
+            <div class={`row row-${session.provider}${on ? ' row-on' : ''}`} key={session.id}>
+              <button
+                class="row-open"
+                aria-current={on ? 'true' : undefined}
+                onClick={() => onOpen(session)}
+              >
                 {/* The provider first and colour-coded, because the question a
                     mixed list has to answer at a glance on a phone is which agent
                     this is — the title and the directory are often the same for
@@ -328,30 +425,39 @@ function Sessions({
                   </span>
                   <span class="row-title">{session.title}</span>
                 </span>
-                <span class="muted row-cwd">{session.cwd}</span>
-                {note !== null && <span class="muted row-note">{note}</span>}
-              </button>
-              {/* The agent's own state where there is one, and only the
-                  live/dead fact where there is not: a session whose provider is
-                  not reporting must not be badged "idle", which is a claim. */}
-              {session.deadAt !== null ? (
-                <span class="chip chip-ended">dead</span>
-              ) : states[session.id] === undefined ? (
-                <span class="chip chip-live">live</span>
-              ) : (
-                <span class={`chip chip-agent-${states[session.id]!.state}`}>
-                  {STATE_TEXT[states[session.id]!.state]}
+                {/* Clipped at the right on a narrow row, so the full path is on
+                    the element for a pointer that can hover one. */}
+                <span class="row-cwd" title={session.cwd}>
+                  {session.cwd}
                 </span>
-              )}
-              {session.deadAt === null && (
-                <button
-                  class="ghost danger"
-                  onClick={() => kill(session)}
-                  aria-label="Kill session"
-                >
-                  Kill
-                </button>
-              )}
+                {note !== null && <span class="row-note">{note}</span>}
+              </button>
+              {/* Together, because they wrap together: a "Waiting for you" chip
+                  and Kill are 200px of a 340px rail, and the row drops the pair
+                  onto its own line rather than clipping the title to nothing. */}
+              <div class="row-side">
+                {/* The agent's own state where there is one, and only the
+                    live/dead fact where there is not: a session whose provider is
+                    not reporting must not be badged "idle", which is a claim. */}
+                {session.deadAt !== null ? (
+                  <span class="chip chip-ended">dead</span>
+                ) : states[session.id] === undefined ? (
+                  <span class="chip chip-live">live</span>
+                ) : (
+                  <span class={`chip chip-agent-${states[session.id]!.state}`}>
+                    {STATE_TEXT[states[session.id]!.state]}
+                  </span>
+                )}
+                {session.deadAt === null && (
+                  <button
+                    class="ghost danger"
+                    onClick={() => kill(session)}
+                    aria-label="Kill session"
+                  >
+                    Kill
+                  </button>
+                )}
+              </div>
             </div>
           );
         })}
@@ -373,7 +479,7 @@ function Sessions({
           }}
         />
       )}
-    </main>
+    </Frame>
   );
 }
 

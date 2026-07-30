@@ -4,11 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 /**
- * Three specs, one browser, one worker — and one server between them, which is
- * why each spec works in its own directory. The end-to-end tests exist to check
- * the claims nothing else can (report §8): that a reload loses nothing, that a
- * permission prompt is on screen before the transcript has anything to say, and
- * that a composed message reaches the agent and appears exactly once.
+ * One browser, one worker — and one server between every spec, which is why each
+ * spec works in its own directory. The end-to-end tests exist to check the claims
+ * nothing else can (report §8): that a reload loses nothing, that a permission
+ * prompt is on screen before the transcript has anything to say, that a composed
+ * message reaches the agent and appears exactly once, that each session shows its
+ * own conversation, and that past 900px the layout is a different shape.
  *
  * Everything below the sandbox line is deliberate. `TETHER_ALLOWED_ROOTS` is
  * resolved through `realpath` because tether resolves the directory it is given
@@ -45,8 +46,32 @@ export default defineConfig({
   retries: 0,
   workers: 1,
   reporter: 'list',
-  // A phone, because that is the client tether is designed for.
-  use: { baseURL: `http://127.0.0.1:${port}`, ...devices['Pixel 7'] },
+  use: { baseURL: `http://127.0.0.1:${port}` },
+  /**
+   * Two viewports, and every spec belongs to exactly one of them — hence the
+   * `testIgnore`, without which each project would run the other's spec at the
+   * wrong width. The phone is the client tether is designed for and is where the
+   * product claims are checked; the desktop project exists because past 900px
+   * `app.tsx` renders a *different shape*, and a shape no test has ever rendered
+   * is how the secure-context bug reached a real phone.
+   *
+   * They share the one `tether serve` and one session list, so each spec still
+   * works in its own directory and reopens its session by name.
+   */
+  projects: [
+    {
+      name: 'phone',
+      testIgnore: 'desktop.spec.ts',
+      use: { ...devices['Pixel 7'] },
+    },
+    {
+      name: 'desktop',
+      testMatch: 'desktop.spec.ts',
+      // A plain viewport rather than `devices['Desktop Chrome']`: that descriptor
+      // can carry `channel: 'chrome'`, and CI installs chromium only.
+      use: { viewport: { width: 1280, height: 800 } },
+    },
+  ],
   webServer: {
     command: 'node --disable-warning=ExperimentalWarning e2e/serve.ts',
     url: `http://127.0.0.1:${port}/`,
