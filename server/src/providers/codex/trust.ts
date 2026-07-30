@@ -20,13 +20,25 @@
  * There is no TOML parser in Node and this is not worth a dependency, so the
  * scanner below reads and edits *lines*. That is sound only for the canonical
  * shapes Codex itself writes, so anything outside them is **refused rather than
- * guessed at** (`beyond` below): a multi-line string could hide a line that looks
- * like a table header, and a bare `[projects]` table or a top-level `projects.…`
- * dotted key could define this same key somewhere the scanner does not look —
- * where appending a second `[projects."<dir>"]` table would be a duplicate-key
- * error, which is to say tether would have broken the user's Codex config, hook
- * trust hashes and all. A read then answers `unknown` and a write refuses, which
- * is the honest pair: tether says it cannot tell, and offers nothing.
+ * guessed at** (`beyond` below), and the coverage of the refusal has to match the
+ * confidence of the regexes rather than their exact form. Four cases:
+ *
+ * - a **multi-line string** anywhere, which could hide a line that looks like a
+ *   table header;
+ * - anything naming `projects` in a **table header** this scanner does not
+ *   recognise whole — a bare `[projects]`, an `[[projects]]`, a header carrying an
+ *   escape it does not decode, a trailing comment;
+ * - a **top-level `projects` key**, dotted or assigned outright;
+ * - a **`trust_level` assignment** in the target table that the strict form does
+ *   not match whole, such as one carrying a trailing comment.
+ *
+ * Each of them could define this same key somewhere the scanner does not look, or
+ * say something the scanner cannot read — where appending a second
+ * `[projects."<dir>"]` table, or a second `trust_level` beside one already there,
+ * would be a duplicate-key error, which is to say tether would have broken the
+ * user's Codex config, hook trust hashes and all. A read then answers `unknown`
+ * and a write refuses, which is the honest pair: tether says it cannot tell, and
+ * offers nothing.
  *
  * This file is also the one place tether writes to `config.toml`, and only ever
  * this one key. It is where Codex keeps its hook trust hashes and its settings,
@@ -59,14 +71,20 @@ const TABLE = /^\s*\[/;
 /** `[projects."<key>"]` or `[projects.'<key>']`, the two forms TOML allows. */
 const PROJECT_TABLE = /^\s*\[projects\.(?:"((?:[^"\\]|\\.)*)"|'([^']*)')\]\s*$/;
 
-/** A bare `[projects]` table, under which keys could define anything. */
-const BARE_PROJECTS = /^\s*\[projects\]\s*$/;
+/**
+ * Any header naming `projects`, whether or not `PROJECT_TABLE` recognises its
+ * shape — a bare `[projects]`, whose keys could define anything, included.
+ */
+const SOME_PROJECTS_TABLE = /^\s*\[\[?projects\b/;
 
-/** A top-level `projects.… = …` dotted key, which could too. */
-const DOTTED_PROJECTS = /^\s*projects\s*\./;
+/** A top-level `projects` key — dotted or assigned whole — which could define anything too. */
+const TOP_PROJECTS = /^\s*(?:projects|"projects"|'projects')\s*[.=]/;
 
 /** `trust_level = "trusted"`, in either string form. */
 const TRUST_LEVEL = /^\s*trust_level\s*=\s*(?:"([^"\\]*)"|'([^']*)')\s*$/;
+
+/** Any `trust_level` assignment, including the shapes `TRUST_LEVEL` will not read. */
+const SOME_TRUST_LEVEL = /^\s*trust_level\s*=/;
 
 /**
  * A basic string made only of plain characters and the two escapes this scanner
@@ -122,20 +140,20 @@ function scan(text: string, key: string, lines: readonly string[]): Scan {
   for (const [index, line] of lines.entries()) {
     if (TABLE.test(line)) {
       seenTable = true;
-      if (BARE_PROJECTS.test(line)) return { beyond: true };
       inTable = false;
-      if (result.at !== undefined) continue;
       const found = decodeKey(line);
-      // A header naming *some* project with an escape this scanner cannot decode
-      // could be this very key spelled another way.
-      if (found === undefined && /^\s*\[projects\./.test(line)) return { beyond: true };
+      // A header naming *some* project in a shape this scanner does not recognise
+      // whole could be this very key spelled another way. Checked even once the
+      // target table has been found, for exactly that reason.
+      if (found === undefined && SOME_PROJECTS_TABLE.test(line)) return { beyond: true };
+      if (result.at !== undefined) continue;
       if (found === key) {
         result.at = index;
         inTable = true;
       }
       continue;
     }
-    if (!seenTable && DOTTED_PROJECTS.test(line)) return { beyond: true };
+    if (!seenTable && TOP_PROJECTS.test(line)) return { beyond: true };
     if (!inTable) continue;
     const trust = TRUST_LEVEL.exec(line);
     if (trust !== null) {
@@ -143,7 +161,12 @@ function scan(text: string, key: string, lines: readonly string[]): Scan {
       // One of the two alternatives always matched; the empty string is not
       // `trusted` either way, which is the answer an unreadable value deserves.
       result.trustLevel = trust[1] ?? trust[2] ?? '';
+      continue;
     }
+    // An assignment the strict form does not match whole: overwriting the line
+    // would lose what else is on it, and splicing one beside it is the duplicate
+    // key this whole scanner is arranged to avoid.
+    if (SOME_TRUST_LEVEL.test(line)) return { beyond: true };
   }
   return result;
 }

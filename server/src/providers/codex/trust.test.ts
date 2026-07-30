@@ -98,6 +98,48 @@ test('TOML this scanner may not reason about is reported, never guessed at', asy
   // And a projects header carrying an escape the scanner does not decode could be
   // this very key spelled another way.
   assert.equal(await readTrust('/w/a', await home(`[projects."/w/\\u0061"]\n`)), 'unknown');
+  // The refusals cover what the shapes *mean*, not the exact spelling Codex uses:
+  // a trailing comment or an array-of-tables must not slip past them.
+  assert.equal(await readTrust('/w/a', await home(`[projects] # mine\n"/w/a" = { }\n`)), 'unknown');
+  assert.equal(await readTrust('/w/a', await home(`[[projects]]\n`)), 'unknown');
+  assert.equal(
+    await readTrust('/w/a', await home(`projects = { "/w/a" = { trust_level = "trusted" } }\n`)),
+    'unknown',
+  );
+  // And a header the scanner cannot read *after* the target table is still a
+  // header that could be the target table under another spelling.
+  assert.equal(
+    await readTrust('/w/a', await home(`[projects."/w/a"]\n\n[projects."/w/\\u0061"]\n`)),
+    'unknown',
+  );
+});
+
+test('a trust_level the scanner cannot read whole is reported, not overwritten', async () => {
+  // The line does define the key, so reading it as absent and splicing a second
+  // one under the header would be a TOML duplicate-key error.
+  const byHand = `[projects."/w/a"]\ntrust_level = "untrusted" # set by hand\n`;
+  const dir = await home(byHand);
+  assert.equal(await readTrust('/w/a', dir), 'unknown');
+  await assert.rejects(
+    writeTrust('/w/a', { codexHome: dir, stateDir: await scratch() }),
+    /cannot edit safely/,
+  );
+  assert.equal(await readFile(configPath(dir), 'utf8'), byHand, 'refused means untouched');
+
+  // Nor is the commented case quietly read as trusted, which would be the same
+  // guess in the direction that matters most.
+  assert.equal(
+    await readTrust('/w/a', await home(`[projects."/w/a"]\ntrust_level = "trusted" # mine\n`)),
+    'unknown',
+  );
+  // A `trust_level` in some *other* table is nothing to do with this key.
+  assert.equal(
+    await readTrust(
+      '/w/a',
+      await home(`[features]\ntrust_level = "trusted" # mine\n\n[projects."/w/a"]\n`),
+    ),
+    'untrusted',
+  );
 });
 
 test('accepting appends one table and leaves every other byte alone', async () => {
