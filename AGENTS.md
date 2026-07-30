@@ -518,7 +518,16 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `seq` is the event's position in the mapped stream, which is why the HTTP
   history route and a live tailer agree without either persisting anything. A
   `since` older than the in-memory tail is answered with `refetch`, never with a
-  partial history.
+  partial history. What decides a `refetch` when the row is re-bound is **what
+  was published, not how the row got bound**: `#restart` asks `live.following`
+  (the transcript `#start` really attached to) and `live.seq`, because a bind can
+  land while a search is still in flight — a client can hold event 1 from the
+  fallback-located transcript before the _first_ identification arrives. The
+  proxy that used to stand in for it, "a first identification abandons nothing",
+  was false under load and re-sent seq 1 with no refetch; the browser's
+  `addEvents` drops such a duplicate, which is exactly why nothing saw it. Its
+  guard forces the window open with `ConversationsOptions.syncDelay` rather than
+  waiting for a loaded CI box.
 - **The conversation view decides nothing in its JSX.** Web tests run under
   `node --test`, which strips types but cannot compile JSX, so anything decided
   inside a `.tsx` is untestable. `web/src/conversation.ts` therefore turns events

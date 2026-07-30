@@ -106,6 +106,14 @@ export type ConversationsOptions = {
   statusPollMs?: number;
   /** Overrides `TETHER_PERMISSION_TIMEOUT`; 0 stops tether holding at all. */
   permissionTimeoutMs?: number;
+  /**
+   * Awaited inside `#syncFromPane`, and nothing in production passes it. The
+   * window between "this row has no provider session id" and "it has one" is
+   * where a bind can arrive from somewhere else, and that race is load-dependent
+   * on a real machine — see `#restart`. This is what lets a test open the window
+   * on purpose instead of hoping for a loaded CI box.
+   */
+  syncDelay?: () => Promise<void>;
 };
 
 /**
@@ -204,6 +212,13 @@ type Live = {
   detail?: string | undefined;
   /** Resolved once the transcript has been read to its end at least once. */
   ready: Promise<void>;
+  /**
+   * The provider session id whose transcript `#start` actually attached to, which
+   * is not always the one the row names: a bind can land while a search is in
+   * flight. It is what `seq` counts, so `#restart` asks it — rather than the row —
+   * whether there is anything to leave. Undefined until a transcript is found.
+   */
+  following?: string | undefined;
   /** Discovery's memory, so its once-a-second retry is not a re-read. */
   memo: StartMemo;
   tailer?: Tail | undefined;
@@ -246,13 +261,6 @@ type Proposal = {
    */
   outcome?: PermissionOutcome | undefined;
 };
-
-/**
- * What a `#bind` did to a row: named a session it had none for, moved it off the
- * one it was carrying, or nothing. The two are not the same event — only a move
- * abandons a transcript a subscriber may be holding events from.
- */
-type Bound = 'unchanged' | 'identified' | 'moved';
 
 export class Conversations {
   readonly #db: DatabaseSync;
@@ -312,10 +320,10 @@ export class Conversations {
 
   /**
    * Record what a pane says it is running against the row it belongs to, and
-   * report whether the row was *identified* for the first time or *moved* off an
-   * id it was already carrying. Only the second abandons a transcript, and only
-   * the caller knows it synchronously — by the time a restart runs, the row names
-   * the new file either way.
+   * report whether that changed anything. Whether it was a *first* identification
+   * or a move off an id the row already carried is deliberately not reported:
+   * that distinction used to decide whether subscribers were told to refetch, and
+   * it was the wrong question — see `#restart`.
    *
    * **A provider session id is not stable for the life of a tether session.**
    * `/resume` and `--continue` switch Claude Code to a *different* session id and
@@ -332,15 +340,15 @@ export class Conversations {
    * two tailers on one transcript, every line ingested twice, and the one that
    * loses the `live.tailer` field left running for the life of the process.
    */
-  #bind(session: Session, running: string | undefined): Bound {
-    if (running === undefined) return 'unchanged';
+  #bind(session: Session, running: string | undefined): boolean {
+    if (running === undefined) return false;
     const live = this.#live.get(session.id);
     const bound = live === undefined ? session.providerSessionId : live.session.providerSessionId;
     session.providerSessionId = running;
-    if (running === bound) return 'unchanged';
+    if (running === bound) return false;
     setProviderSessionId(this.#db, session.id, running);
     if (live !== undefined) live.session.providerSessionId = running;
-    return bound === null ? 'identified' : 'moved';
+    return true;
   }
 
   /**
@@ -377,8 +385,7 @@ export class Conversations {
       const pid = this.#pidOf(panes, session);
       if (pid === undefined) continue;
       if ((await readSessionId(pid, this.#home())) !== providerSessionId) continue;
-      const bound = this.#bind(session, providerSessionId);
-      if (bound !== 'unchanged') this.#restart(this.#live.get(session.id), bound === 'moved');
+      if (this.#bind(session, providerSessionId)) this.#restart(this.#live.get(session.id));
       return session;
     }
     return undefined;
@@ -402,6 +409,7 @@ export class Conversations {
    */
   async #syncFromPane(session: Session): Promise<void> {
     if (session.provider === CODEX || session.providerSessionId != null) return;
+    await this.#options.syncDelay?.();
     const pid = await this.#panePid(session);
     if (pid === undefined) return;
     this.#bind(session, await readSessionId(pid, this.#home()));
@@ -878,8 +886,7 @@ export class Conversations {
       // tick is what notices — without it the row keeps naming the file the
       // session used to write to, and the conversation view shows a conversation
       // that stopped while the terminal beside it carries on.
-      const bound = record === undefined ? 'unchanged' : this.#bind(live.session, record.sessionId);
-      if (bound !== 'unchanged') this.#restart(live, bound === 'moved');
+      if (record !== undefined && this.#bind(live.session, record.sessionId)) this.#restart(live);
       const state = record?.state;
       // A stale, absent or unmatched file is "tether cannot say", never `idle`:
       // reading it as a state would erase, one tick later, the `waiting` a
@@ -927,26 +934,31 @@ export class Conversations {
   /**
    * Follow the transcript the row now names, having followed another one.
    *
-   * Called only where `#bind` moved the row, so the tailer always has to move —
-   * a row identified for the first time was being followed by a `#start` that
-   * had no id to look up either. `notify` is the narrower question of whether a
-   * subscriber holds events from the file being left: that is a `/resume`, where
-   * the new transcript is not a continuation of the old numbering, so subscribers
-   * are told to refetch rather than sent events that would collide with what they
-   * already hold — the same branch a client gone longer than the tail takes, so
-   * there is no second path for a client to get wrong. On a first identification
-   * they are being sent that very transcript, and a refetch buys them a socket
-   * close and the same history again.
+   * Both questions this asks are asked of `live.following` — the transcript
+   * `#start` really attached to — and never of *how* the row came to be bound.
+   * The distinction it used to be told, first identification versus a move, was
+   * a proxy for "is a subscriber holding events from the file we are leaving",
+   * and the proxy is false: with no id yet, `#start` locates a transcript through
+   * `findTranscript`'s timestamp/mtime fallback and begins delivering from it, so
+   * by the time a poll tick or a hook binds the id for the *first* time a client
+   * can already hold event 1. Treating that as "nobody can be holding anything"
+   * re-numbered from 0 and re-sent it with no refetch — a duplicate the browser's
+   * own `addEvents` happens to drop, and the next consumer will not. It is
+   * load-dependent, which is why the guard is a test with the window forced open
+   * (`syncDelay`) rather than a comment.
    *
-   * It is passed rather than read here because nothing measurable at this point
-   * still knows it: this runs after `await live.ready`, and `live.seq` by then
-   * counts the records `#start` already ingested from the transcript the row now
-   * names — the one this is arriving *at*, not the one it is leaving.
+   * So: nothing to do at all when `#start` already settled on the transcript the
+   * row now names — the common shape of that race, where a restart would only
+   * re-ingest the file it is already following. Otherwise the numbering being
+   * discarded was published if anything was ever counted, and every subscriber is
+   * told to refetch rather than sent events that would collide with what it holds
+   * — the same branch a client gone longer than the tail takes, so there is no
+   * second path for a client to get wrong.
    *
    * Fire-and-forget: the caller is a poll tick or an HTTP route, and there is
    * nothing for either to wait for.
    */
-  #restart(live: Live | undefined, notify: boolean): void {
+  #restart(live: Live | undefined): void {
     if (live === undefined) return;
     void (async () => {
       // The in-flight `#start` first, or its tailer is attached after this has
@@ -955,18 +967,21 @@ export class Conversations {
       // schedules is a timer this then cancels.
       await live.ready.catch(() => {});
       if (live.stopped) return;
+      if (live.following !== undefined && live.following === live.session.providerSessionId) return;
       if (live.retry !== undefined) clearTimeout(live.retry);
       live.retry = undefined;
       const tailer = live.tailer;
       live.tailer = undefined;
       await tailer?.stop();
       if (live.stopped) return;
+      const published = live.seq > 0;
       live.seq = 0;
       live.lines = 0;
       live.tail = [];
       live.seen.clear();
       live.memo.clear();
-      if (notify) for (const send of live.subscribers) send({ c: 'refetch' });
+      live.following = undefined;
+      if (published) for (const send of live.subscribers) send({ c: 'refetch' });
       live.ready = this.#start(live);
     })();
   }
@@ -997,6 +1012,11 @@ export class Conversations {
       this.#warn(`cannot follow ${found.path}: ${String(error)}`);
       return undefined;
     });
+    // Which transcript `seq` now counts, and only where the tailer really
+    // attached: a file that could not be followed has to stay restartable rather
+    // than read as the one tether is already following. Nothing can observe this
+    // half-set — `#restart` waits on the whole of `#start`.
+    if (live.tailer !== undefined) live.following = found.providerSessionId;
 
     // The hook log. It is tether's own file in tether's own state directory, so
     // it is created empty rather than waited for: the hook may not have fired
