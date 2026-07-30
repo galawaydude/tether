@@ -121,7 +121,7 @@ export function TerminalView({
       // The background matches `.term`'s in `style.css` — any difference shows
       // as a seam around the rows — and the cursor is the app's accent, which
       // is the one colour in the product that means a human is involved.
-      theme: { background: '#08080a', foreground: '#e8e8ec', cursor: '#ffb454' },
+      theme: { background: '#16181d', foreground: '#eceef2', cursor: '#ffb454' },
     });
     const fit = new FitAddon();
     term.loadAddon(fit);

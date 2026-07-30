@@ -39,6 +39,21 @@ export function whoLabel(who: 'user' | 'assistant', provider: string): string {
 }
 
 /**
+ * The accessible name of a message's Copy button — the button has no visible
+ * text a screen reader could use on its own, and "Copy" repeated down a
+ * conversation names nothing.
+ *
+ * It deliberately does **not** contain the word "message". The composer's own
+ * label is exactly that word, and Playwright's `getByLabel` matches on a
+ * substring, so a Copy button named "Copy Claude Code message" makes
+ * `getByLabel('Message')` ambiguous and takes two specs down with it. Naming
+ * what is copied — your text, the agent's reply — is clearer anyway.
+ */
+export function copyLabel(who: 'user' | 'assistant', provider: string): string {
+  return who === 'user' ? 'Copy your text' : `Copy the reply from ${providerLabel(provider)}`;
+}
+
+/**
  * Why a dead session cannot be brought back, when it cannot.
  *
  * Codex creates no session identity until the first user message, so a session

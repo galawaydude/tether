@@ -2,8 +2,10 @@
  * ── the look ────────────────────────────────────────────────────────────────
  *
  * tether is for watching an agent work on a machine you own, from a phone, for
- * hours. So the surface is a quiet warm-neutral light, and colour is spent only
- * where it carries a fact. Three rules hold the whole thing together:
+ * hours. So the surface is a calm, desaturated dark — restful rather than
+ * black-and-neon — with the chrome kept at low contrast and the *content*
+ * carrying all of it. Colour is spent only where it carries a fact. Four rules
+ * hold the whole thing together:
  *
  *  1. **Amber is you.** The one saturated colour in the app means *a human is
  *     needed or a human acted*: the waiting badge, the waiting banner, Approve,
@@ -14,20 +16,26 @@
  *     not ask.
  *  3. **Monospace means the machine said it.** Paths, tool names, tool output,
  *     provider tags and state words are mono; everything a person wrote or read
- *     as prose is the system sans. That split already existed inside the tool
- *     cards — this file carries it through the rest of the app.
+ *     as prose is the system sans.
+ *  4. **A box means an artefact; prose means the agent.** Your own messages sit
+ *     in a bordered box and tool calls sit in cards, because both are things
+ *     with edges. The agent's reply gets no container at all — it is the
+ *     content, and it flows. That asymmetry is most of why the screen reads as
+ *     a conversation rather than as a log, so nothing may put the agent's prose
+ *     back in a box.
  *
- * The one surface that stays dark is the summoned terminal (`.termsheet`),
- * which is not a theme exception but the honest colour of the thing: an agent's
- * TUI picks its ANSI colours for a dark background, and a light pane would need
- * a whole second ANSI palette to stay legible. It re-declares the handful of
- * surface tokens for its own chrome and changes nothing else.
+ * There is one theme and no toggle. The terminal (`.term`) is darker than the
+ * app around it rather than a different world: an agent's TUI picks its ANSI
+ * colours for a dark background, and now so does everything else, so the
+ * summoned sheet needs no palette of its own.
  *
  * Mobile first, and one-handed: the acceptance bar is a phone held in one hand
- * outdoors, so every control is at least 44px, every foreground token clears
- * 5.6:1 on *every* surface it is used on rather than only on the lightest one
- * (most are past 6.5:1), and the two things a thumb reaches for — the accessory
- * bar and "New session" — sit at the bottom of the screen rather than the top.
+ * outdoors, so every control is at least 44px and every foreground token clears
+ * 5.6:1 on *every* surface it is used on — including the translucent fill a
+ * chip or a tag lays down for itself — rather than only on the darkest one. The
+ * measured worst case across all of them is 5.69:1 and most are past 6.5:1. The
+ * two things a thumb reaches for — the accessory bar and "New session" — sit at
+ * the bottom of the screen rather than the top.
  *
  * Desktop is a different shape, not a wider phone: past 900px the session list
  * becomes a rail beside the open session (`.workspace`, chosen in `app.tsx`),
@@ -38,58 +46,62 @@
 @import '@xterm/xterm/css/xterm.css';
 
 :root {
-  color-scheme: light;
+  color-scheme: dark;
 
-  /* Surfaces, recessed to nearest. Warm-neutral rather than blue-white: it is
-     what lets one amber read as a signal instead of as a second theme colour. */
-  --bg: #faf8f5;
-  --panel: #ffffff;
-  --raise: #f1eee9;
-  --line: #e4e0d9;
-  --line-lit: #c8c2b8;
+  /* Surfaces, raised to nearest, and deliberately close together: the chrome is
+     meant to recede and the words on it are what should be seen. Cool-neutral
+     rather than pure grey, which is what lets one amber read as a signal
+     instead of as a second theme colour. */
+  --bg: #21242a;
+  --panel: #262a30;
+  --raise: #2e323a;
+  --line: #333842;
+  --line-lit: #454b57;
 
-  --fg: #1c1b19; /* 16.2:1 on --bg */
-  --muted: #5c584f; /* 6.7:1 on --bg, 6.1:1 on --raise */
+  --fg: #eceef2; /* 13.4:1 on --bg, 11.1:1 on --raise */
+  --muted: #b3b9c4; /* 7.9:1 on --bg, 6.5:1 on --raise */
   /* The floor, used only for machine detail. Set against `--raise` rather than
-     against `--panel`: it lands on all three surfaces, and a token chosen on
-     the lightest one is below the floor everywhere it is actually read. */
-  --dim: #5b564d; /* 6.9:1 on --bg, 7.3:1 on --panel, 6.3:1 on --raise */
+     against `--bg`: it lands on all three surfaces, and a token chosen on the
+     darkest one is below the floor everywhere it is actually read. */
+  --dim: #a6adb8; /* 6.9:1 on --bg, 6.4:1 on --panel, 5.7:1 on --raise */
 
-  /* Amber is the human. See rule 1 above — and it takes two values on a light
-     surface, which is a fact about light rather than a second colour: the fill
-     is what carries `--on-accent` text (a filled button, the waiting banner and
-     badge), and the ink is the same amber darkened until it can *be* read —
-     as a spine, a border, a focus ring or a word. Bright amber on white is
-     1.8:1, so every one of those would be invisible without it. */
+  /* Amber is the human. It kept two tokens on the light theme because bright
+     amber on white is 1.8:1 and every border, spine and word had to be a
+     darkened second value. On a dark surface it simply reads — 8.8:1 on --bg,
+     7.3:1 on --raise — so the ink *is* the fill. Both names stay, because the
+     two jobs are still different (`--accent` carries `--on-accent` text;
+     `--accent-ink` is read as ink), and a future surface may split them again. */
   --accent: #ffb454; /* 10.6:1 against --on-accent */
-  --accent-ink: #8a4e00; /* 6.6:1 on --panel, 5.7:1 on --raise */
+  --accent-ink: #ffb454;
   --on-accent: #1a1103;
 
-  /* Cool: what the machine reports. Darker than their dark-theme counterparts
-     for the same reason `--accent-ink` exists — these are read as text. */
-  --ok: #136327;
-  --work: #0a6180;
-  --danger: #a81f16;
+  /* Cool: what the machine reports. Lighter than their light-theme
+     counterparts for the same reason the amber collapsed — these are read as
+     text, and on a dark surface that means going up rather than down. */
+  --ok: #6ecf7e;
+  --work: #6cc4ea;
+  --danger: #ff8f82;
 
   /* Which agent. Colour as well as word, because two sessions of different
      providers in one project share a title and a directory. */
-  --claude: #5c2ec2;
-  --codex: #0a5c55;
+  --claude: #c3a8ff;
+  --codex: #5cdcc9;
 
-  /* What a chip's or a tag's translucent fill is mixed into. On a dark theme a
-     tint of the tone over the surface moved *away* from the text; on a light
-     one it moves toward it, so the tint is mixed into white instead of into
-     whatever it happens to sit on — which also makes each of those ratios one
-     number rather than one per surface. */
-  --wash: #ffffff;
+  /* What a chip's, a tag's or the error box's translucent fill is mixed into.
+     Mixing a bright tone into the surface it happens to sit on moves that
+     surface *toward* the text, so the tint is mixed into one value darker than
+     any of them instead — which also makes each of those ratios one number
+     rather than one per surface. */
+  --wash: #1b1e23;
 
   --sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
   --tap: 44px;
   /* The reading column. A conversation set 1500px wide is unreadable, and a
-     terminal is not — only the conversation side uses this. */
-  --column: 860px;
+     terminal is not — only the conversation side uses this. ~90 characters at
+     the body size, which is the measure prose is comfortable at. */
+  --column: 760px;
 }
 
 * {
@@ -224,9 +236,53 @@ body {
   white-space: nowrap;
 }
 
-.bar-title .path {
-  font: 12px/1.3 var(--mono);
+/* ── the breadcrumb strip ────────────────────────────────────────────────────
+ *
+ * Where this session is, on its own quiet line under the bar rather than
+ * stacked inside it. It carries the working directory today; the branch it will
+ * one day sit beside is a server fact tether does not have yet, so the strip is
+ * a row that another segment can join and nothing is reserved for one.
+ *
+ * Its height is fixed by `nowrap` and constant padding, and that is load-bearing
+ * for the same reason `.bar`'s is: this box sits directly above the pane xterm
+ * is fitted to, and anything that changes height resizes the tmux pane for every
+ * other viewer. The directory is per session and never changes under it. */
+.crumbs {
+  flex: none;
+  padding: 6px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  font: 12.5px/1.35 var(--mono);
   color: var(--dim);
+}
+
+.crumb-path {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+/* The leading segments give way first and the last one never does: a path
+   clipped at the front still says which directory this is, and one clipped at
+   the end says nothing at all. */
+.crumb-path > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.crumb-path > .crumb-last {
+  flex: none;
+  color: var(--muted);
+}
+
+/* No colour of its own. A separator set to a border token measured 1.65:1 and
+   was simply not there; the slashes are how a path is read, not decoration
+   around it, so they take the strip's own `--dim` like the leading segments. */
+.crumb-path > .crumb-sep {
+  flex: none;
 }
 
 /* The way to the terminal, on the same row as the title rather than under it:
@@ -447,8 +503,39 @@ label {
   border-color: var(--line-lit);
 }
 
+/* Over the list and outside its scroller, so it never scrolls away. Constant
+   height, like every other piece of chrome in this file. */
+.search {
+  flex: none;
+  padding: 8px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+/* When the sessions under it were last worked on. A grouping heading rather
+   than a row, and the machine's own word for a pile of sessions, so it is mono
+   and quiet. */
+.day {
+  margin: 16px 4px 6px;
+  font: 600 11.5px/1 var(--mono);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.day:first-child {
+  margin-top: 2px;
+}
+
 /* A session. The spine down the left is which agent it is, told before the eye
    reaches a word — the same device as the wordmark and your own messages.
+ *
+ * No outline at rest: the list is the calmest screen in the app, and a stack of
+ * bordered cards is what made it read as a table of records rather than as
+ * threads. Three surfaces carry the states instead — nothing, `--panel` under a
+ * pointer, `--raise` for the one that is open — and all three are measured,
+ * because `.tag` and `.chip` lay their own translucent wash over whatever the
+ * row happens to be.
  *
  * It wraps, and the 200px basis below is what decides when: a "Waiting for you"
  * chip beside Kill is 200px of the 340px rail, and a row that keeps them all on
@@ -461,17 +548,14 @@ label {
   align-items: center;
   gap: 4px 6px;
   padding: 4px 6px 4px 0;
-  margin-bottom: 8px;
-  border: 1px solid var(--line);
+  margin-bottom: 2px;
   border-left: 3px solid var(--spine, var(--line-lit));
-  border-radius: 4px 12px 12px 4px;
-  background: var(--panel);
+  border-radius: 3px 10px 10px 3px;
+  background: transparent;
 }
 
 .row:hover {
-  border-color: var(--line-lit);
-  border-left-color: var(--spine, var(--line-lit));
-  background: var(--raise);
+  background: var(--panel);
 }
 
 .row-claude-code {
@@ -498,11 +582,9 @@ label {
 .row-on,
 .row-on:hover {
   background: var(--raise);
-  /* The whole border in the provider's colour, and the spine twice as wide — a
-     solid bar, not a wash, and inside the row's own padding where no text sits,
-     so it composites with nothing. Together they are what keeps "selected"
-     unmistakable against hover, which shares this background. */
-  border-color: var(--spine, var(--line-lit));
+  /* The spine twice as wide — a solid bar, not a wash, and inside the row's own
+     padding where no text sits, so it composites with nothing. That plus a
+     surface hover does not use is what keeps "selected" unmistakable. */
   box-shadow: inset 3px 0 0 0 var(--spine, var(--line-lit));
 }
 
@@ -598,12 +680,15 @@ label {
   font-size: 14px;
 }
 
+/* Mixed into `--wash` rather than into the panel it sits on, by the same rule
+   as `.chip` below: a bright tone tinted into a dark surface lifts that surface
+   toward the text and the ratio cannot then be won by choosing a brighter red. */
 .error {
   margin: 0;
   padding: 10px 12px;
   border-radius: 10px;
   border: 1px solid color-mix(in srgb, var(--danger) 55%, transparent);
-  background: color-mix(in srgb, var(--danger) 12%, var(--panel));
+  background: color-mix(in srgb, var(--danger) 12%, var(--wash));
   color: var(--danger);
   font-size: 15px;
 }
@@ -742,28 +827,28 @@ label {
  * closed (only `visibility` changes), so summoning resizes nothing and the tmux
  * pane never learns this happened.
  *
- * Dark, and deliberately: an agent's TUI chooses its ANSI colours for a dark
- * terminal. Only the tokens its own chrome reads are re-declared here — the
- * accessory bar picks them up without knowing about any of this — and they are
- * the values this file used before it went light, so their ratios are the ones
- * that were already measured against them. */
+ * It declares no palette of its own. It used to — the whole app was light and
+ * this one surface had to be dark, because an agent's TUI chooses its ANSI
+ * colours for a dark terminal. The app is dark now, so the seven token
+ * overrides that lived here are gone; the sheet reads the same tokens as
+ * everything else and simply picks the darkest surface among them, `--wash`,
+ * for its own frame. That is the honest choice as well as the legible one: this
+ * box is the terminal's frame, and the terminal is deeper than the app. A
+ * shadow alone cannot say "summoned" on a dark theme, so the separation is
+ * carried by the surface step, the lit top edge and the inset. */
 .termsheet {
-  --panel: #17171b;
-  --raise: #24242b;
-  --line: #2b2b33;
-  --line-lit: #3a3a44;
-  --fg: #f3f3f5;
-  --muted: #a8a8b4;
-  --dim: #9a9aa8;
-  /* Amber can be read on a dark surface again, so the focus ring is the fill. */
-  --accent-ink: var(--accent);
-
   top: 24px;
   border-radius: 16px 16px 0 0;
   overflow: hidden;
-  background: var(--panel);
+  background: var(--wash);
   color: var(--fg);
-  box-shadow: 0 -6px 26px rgb(28 27 25 / 26%);
+  border-top: 1px solid var(--line-lit);
+  box-shadow: 0 -10px 34px rgb(0 0 0 / 55%);
+}
+
+/* The accessory bar belongs to the sheet's frame, not to the app's chrome. */
+.termsheet .keys {
+  background: var(--wash);
 }
 
 /* Its own header, so the way out is inside the thing rather than only behind
@@ -838,11 +923,14 @@ label {
 
 /* ── conversation ───────────────────────────────────────────────────────── */
 
+/* Generous, on purpose: this is read for hours and there is nothing below the
+   fold worth cramming up. The gap is what separates one turn from the next, so
+   it is larger than anything inside a turn. */
 .conv {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 14px 12px;
+  gap: 22px;
+  padding: 18px 14px 22px;
   /* Nothing in here may widen the page: a file path, a stack trace or a line of
      minified JS is routine, and sideways scrolling the whole app to read one is
      the difference between usable and unusable on a phone. */
@@ -858,37 +946,101 @@ label {
   min-width: 0;
 }
 
-/* The agent's prose is the content, so it gets no box — a session that is mostly
-   boxes reads as a log rather than as a conversation. Boxes mean machine
-   artefact: tool calls, and your own messages. */
+/* Rule 4 of the four at the top of this file, and the single decision that
+   makes the screen read as a conversation: **the agent's reply has no
+   container at all.** No border, no fill, no indent — it is the content, and it
+   flows. Everything with edges is an artefact: your own messages, and tool
+   cards. Putting the agent back in a box turns the page into a log again. */
 .msg {
   padding: 0;
+  position: relative;
 }
 
-/* Yours: indented, and spined in the colour that means "a human". Scanning back
-   for "what did I ask" is the commonest thing anyone does here. */
+/* Yours: a real box, all four sides, with the amber spine down the left that
+   means "a human" — the same graphic idea as the wordmark and a session row's
+   provider stripe. Scanning back for "what did I ask" is the commonest thing
+   anyone does here, and the box is what makes it one glance rather than a read. */
 .msg-user {
-  margin-left: 14px;
-  padding: 10px 14px;
+  margin-left: 10px;
+  padding: 12px 16px;
+  border: 1px solid var(--line);
   border-left: 3px solid var(--accent-ink);
-  border-radius: 0 12px 12px 0;
+  border-radius: 3px 12px 12px 3px;
   background: var(--panel);
 }
 
 .msg-who {
-  margin: 0 0 5px;
-  font: 600 11.5px/1 var(--mono);
+  margin: 0 0 6px;
+  font: 600 11px/1 var(--mono);
   color: var(--dim);
   text-transform: uppercase;
-  letter-spacing: 0.09em;
+  letter-spacing: 0.1em;
 }
 
 .msg-text {
   margin: 0;
+  /* Room to breathe: the agent's reply is the longest prose on the screen and
+     the one thing here that is genuinely read rather than scanned. */
+  line-height: 1.65;
   /* The agent's own line breaks are meaningful; a long unbroken token wraps
      rather than pushing the card wider. */
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+/* ── per-message actions ─────────────────────────────────────────────────────
+ *
+ * Quiet furniture that is not furniture: present only where there is a pointer
+ * to reveal it with, and revealed only on hover or focus. On a touch screen it
+ * is not rendered at all — a permanent button on every message is exactly the
+ * density a 360px phone cannot spend, and `hover: hover` is the platform's own
+ * way of asking which kind of device this is.
+ *
+ * `:focus-within` rather than hover alone is what keeps it reachable from a
+ * keyboard: the button is in the tab order either way, and focusing it is what
+ * makes it visible. */
+.msg-actions {
+  display: none;
+}
+
+@media (hover: hover) {
+  .msg-actions {
+    position: absolute;
+    top: 0;
+    right: 0;
+    display: flex;
+    opacity: 0;
+    transition: opacity 120ms ease;
+  }
+
+  .msg:hover > .msg-actions,
+  .msg:focus-within > .msg-actions {
+    opacity: 1;
+  }
+
+  /* It floats over the message's own first line, so it carries the surface that
+     message sits on — otherwise the text underneath reads straight through a
+     `.ghost` control and both become unreadable at once. Two values, because
+     the asymmetry above means the two kinds of message sit on different
+     surfaces: prose on the ground, yours in a `--panel` box. */
+  .msg-actions > button {
+    min-height: var(--tap);
+    padding: 0 10px;
+    background: var(--bg);
+    border-color: var(--line);
+    font: 12px/1 var(--mono);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .msg-user .msg-actions > button {
+    background: var(--panel);
+  }
+
+  .msg-actions > button:hover {
+    background: var(--raise);
+    color: var(--fg);
+  }
 }
 
 .thinking,
@@ -1165,7 +1317,10 @@ label {
 /* ── terminal ───────────────────────────────────────────────────────────── */
 
 /* Matches `TerminalView`'s xterm theme background exactly; any difference shows
-   as a seam around the rows. */
+   as a seam around the rows. Darker than every app surface and on the same cool
+   neutral, so the terminal reads as the deepest thing on screen rather than as a
+   hole cut in it — while staying dark enough for an agent's ANSI palette, which
+   is the only real constraint on this value. */
 /* A stacking context of its own, so xterm's internal layers (its accessibility
    tree overlay sits at `z-index: 10`) stay inside the terminal rather than
    competing with the sheet's own chrome. Relative with no offsets, so the box
@@ -1176,7 +1331,7 @@ label {
   flex: 1;
   min-height: 0;
   padding: 6px;
-  background: #08080a;
+  background: #16181d;
 }
 
 .term .xterm {
@@ -1218,7 +1373,7 @@ label {
   justify-content: center;
   padding: 12px;
   padding-bottom: max(12px, env(safe-area-inset-bottom));
-  background: rgb(28 27 25 / 46%);
+  background: rgb(0 0 0 / 62%);
   overflow-y: auto;
 }
 
@@ -1265,11 +1420,18 @@ label {
     width: 100%;
     max-width: var(--column);
     margin-inline: auto;
-    padding: 20px 16px;
+    padding: 24px 16px 28px;
   }
 
   .composer {
     padding-inline: max(16px, calc((100% - var(--column)) / 2));
+  }
+
+  /* Full-bleed strip, contents in the reading column — the same treatment as
+     the composer and the waiting banner, so the path starts above the first
+     message rather than out at the window edge. */
+  .crumbs {
+    padding-inline: max(12px, calc((100% - var(--column)) / 2));
   }
 
   /* Inset from the pane's edges rather than full-bleed: with room to spare on

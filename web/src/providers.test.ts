@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   CODEX,
+  copyLabel,
   DEFAULT_PROVIDER,
   PROVIDERS,
   providerLabel,
@@ -30,6 +31,20 @@ test('an assistant message is signed by whichever agent is actually running', ()
   assert.equal(whoLabel('user', CODEX), 'You');
   assert.equal(whoLabel('assistant', CODEX), 'Codex');
   assert.equal(whoLabel('assistant', DEFAULT_PROVIDER), 'Claude Code');
+});
+
+test('a Copy button says what it copies, and never says “message”', () => {
+  assert.equal(copyLabel('user', CODEX), 'Copy your text');
+  assert.equal(copyLabel('assistant', CODEX), 'Copy the reply from Codex');
+  // The composer's own label is the single word "Message" and Playwright's
+  // `getByLabel` matches on a substring, so a Copy button carrying that word
+  // makes every `getByLabel('Message')` in the e2e suite ambiguous. It cost two
+  // specs once; this is the guard, and it is cheaper than the next bisect.
+  for (const who of ['user', 'assistant'] as const) {
+    for (const provider of [DEFAULT_PROVIDER, CODEX, 'some-future-agent']) {
+      assert.doesNotMatch(copyLabel(who, provider), /message/i);
+    }
+  }
 });
 
 test('a dead session says it cannot be resumed only when it genuinely cannot', () => {
