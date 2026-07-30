@@ -117,6 +117,10 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   in by that same effect) while its conversation pane worked perfectly.
   `keys.ts`'s `newClientId` — `getRandomValues`, which carries no gate — and its
   test in `keys.test.ts` are the guard for that one; a new one needs its own.
+  The second one is `copyText` in `conversation.tsx`, which is `execCommand`
+  rather than `navigator.clipboard` for exactly this reason and says so — a
+  deprecated API that works everywhere the app loads beats a modern one that is
+  `undefined` on every device but the host.
 - **The `term` socket's handshake completes before its route handler runs.**
   `@fastify/websocket` upgrades and _then_ calls the handler, so the browser's
   `onopen` has already fired — and its first act is to send its size and re-send
@@ -462,7 +466,15 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   drops any `seq` at or below the highest applied, which is what makes the
   `since` replay after a reconnect free of duplicates. The mirror of the data
   layer's rule holds here too: an **unknown event kind becomes a grey note, never
-  a throw** — one uncaught kind would blank the whole page.
+  a throw** — one uncaught kind would blank the whole page. The same split holds
+  for the session list: `web/src/sessions.ts` owns the search filter, the day
+  grouping and the breadcrumb segments, and `app.tsx` only picks elements. So
+  does the wording of a control's accessible name — `copyLabel` lives in
+  `providers.ts` beside `whoLabel`, and its test pins the one rule that is not
+  obvious from looking at it: **no accessible name in the conversation may
+  contain the word "message"**, because the composer's own label is that word
+  and Playwright's `getByLabel` matches on a substring, so one that does makes
+  `getByLabel('Message')` ambiguous and takes two e2e specs down at once.
 - **The composer's message leaves on the _terminal_ pane's socket, and that is
   the only thing the two panes share.** A composed message is an `input` frame,
   and input sequencing — the per-client `seq`, the server's highest-applied map,
@@ -523,7 +535,11 @@ CI runs exactly those (`.github/workflows/ci.yml`).
 - **Nothing tether draws may change `.panes`' height**, which is the general form
   of the `.bar` rule below: that box is what xterm is fitted to, so a change to it
   resizes the tmux pane and makes the agent redraw its prompt into the scrollback
-  for every other viewer. The waiting banner is the piece that comes and goes
+  for every other viewer. Everything stacked above the panes is therefore fixed
+  height by construction — `.bar`, and `.crumbs`, the breadcrumb strip carrying
+  the working directory, which is `nowrap` with constant padding over a value
+  that cannot change under a running session. A branch added to that strip later
+  has to keep both properties. The waiting banner is the piece that comes and goes
   while a session runs, so `.waiting` is **positioned inside `.panes`, not stacked
   above them** — mounting it moves nothing, at the price of covering the
   conversation's topmost rows until it is scrolled (affordable: the conversation
@@ -553,25 +569,35 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   the **conversation** got the tap, not merely that the banner did not, since a
   second inert layer in between would pass the weaker form with the rows
   underneath just as unreachable.
-- **The look is one system with three rules, and they are written down at the
+- **The look is one system with four rules, and they are written down at the
   top of `web/src/style.css`**: amber means a human (the waiting badge and
   banner, Approve, Send, New session, the spine on your own messages) and
   nothing decorative may use it; the machine's own states are cool and never
   amber; monospace means the machine said it — paths, tool names, tool output,
-  provider tags, state words. The spine — a short bar in a meaningful colour —
-  is the app's one graphic idea, and it is the wordmark, the provider stripe on
-  a session row and the edge of a user message. Adding a fourth accent, or an
-  amber that is only decoration, is what breaks it. The theme is **light, and
-  light only** — no toggle, no `prefers-color-scheme` branch — with two
-  consequences that are facts about light rather than new colours: amber takes a
-  fill (`--accent`, which carries `--on-accent` text) and an ink (`--accent-ink`,
-  the same amber darkened until it can be read as a spine, a border, a focus ring
-  or a word, since bright amber on white is 1.8:1), and a chip's or tag's
-  translucent tint is mixed into `--wash` (white) rather than into the surface it
-  sits on, because on a light theme a tint of the tone moves the background
-  _toward_ the text. The one dark surface is `.termsheet`, which re-declares its
-  own chrome tokens: an agent's TUI picks its ANSI colours for a dark terminal,
-  and a light pane would need a second ANSI palette.
+  provider tags, state words; and **a box means an artefact while prose means
+  the agent**. That fourth rule is the load-bearing one and the reason the
+  screen reads as a conversation rather than a log: your own messages are a
+  bordered box and tool calls are cards, and **the agent's reply has no
+  container at all** — no border, no fill, no indent. Putting it back in one
+  undoes the whole effect. The spine — a short bar in a meaningful colour — is
+  the app's one graphic idea, and it is the wordmark, the provider stripe on a
+  session row and the left edge of a user message. Adding a fifth accent, or an
+  amber that is only decoration, is what breaks it. The theme is **dark, and
+  dark only** — no toggle, no `prefers-color-scheme` branch, no light fallback —
+  and two things follow from dark rather than being new colours: `--accent` and
+  `--accent-ink` hold the _same_ amber, because amber reads on a dark surface
+  and only needed a darkened second value on white (both names stay: one carries
+  `--on-accent` text, one is read as ink); and every translucent tint —
+  `.chip`, `.tag`, `.error` — is mixed into `--wash`, which is **darker than any
+  surface**, because mixing a bright tone into the surface it sits on lifts that
+  surface toward the text and the ratio then cannot be won by choosing a
+  brighter tone at all. `.termsheet` declares no palette of its own: it picks
+  `--wash` for its frame, and the terminal (`.term`, whose colour must stay
+  byte-identical to `TerminalView`'s xterm `theme.background`) is one step
+  darker again. **The floor is 5.6:1 on every surface a token is actually used
+  on, including the tint a chip lays down for itself** — the measured worst case
+  is 5.69:1 — and the way to check a change is to compute it, not to look at it.
+  Three consecutive rounds regressed contrast or tap size by eye.
 - **There are two layouts and `app.tsx` picks between them.** Past `WIDE`
   (900px) it renders `.workspace`: the session list as a rail beside the open
   session. A media query cannot do that, because it cannot mount a component,

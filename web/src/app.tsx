@@ -11,12 +11,14 @@
  */
 
 import type { Session, SessionState } from '@tether/shared';
+import { Fragment } from 'preact';
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 
 import * as api from './api.ts';
 import { ApiError } from './api.ts';
 import { ConversationView } from './conversation.tsx';
 import { CODEX, DEFAULT_PROVIDER, PROVIDERS, providerLabel, unresumableNote } from './providers.ts';
+import { crumbs, groupSessions } from './sessions.ts';
 import { STATUS_TEXT, TerminalView, type Status } from './terminal.tsx';
 
 /** How often the list refreshes. tmux reconciliation happens server-side per read. */
@@ -215,7 +217,6 @@ function SessionScreen({
         </button>
         <div class="bar-title">
           <strong>{session.title}</strong>
-          <span class="path">{session.cwd}</span>
         </div>
         {/* The escape hatch, and the only navigation left on this screen. A
             toggle rather than an open-only button: it is the control that is on
@@ -241,6 +242,34 @@ function SessionScreen({
           </span>
         </div>
       </header>
+
+      {/* Where this session is. Out of the bar and onto its own strip, which is
+          what lets the directory be read as a path rather than as a subtitle —
+          and the strip is a row, so the branch it will one day sit beside is a
+          segment to append rather than a redesign. Nothing is reserved for one
+          here: tether does not know the branch yet, and a placeholder for a
+          fact the server cannot supply is furniture.
+
+          Its height is constant, which matters as much here as on `.bar`: this
+          box sits above the pane xterm is fitted to. `nowrap`, fixed padding,
+          and a directory that cannot change under a running session.
+
+          Not a `<nav>`: a navigation landmark with nothing to navigate to is a
+          landmark a screen-reader user lands in and leaves again. The segments
+          are decoration over a fact, so the fact is said once, whole, in the
+          hidden line — hearing "tmp tether-shots api" with the separators
+          stripped is not hearing a path. */}
+      <div class="crumbs">
+        <span class="sr-only">Working directory: {session.cwd}</span>
+        <span class="crumb-path" aria-hidden="true" title={session.cwd}>
+          {crumbs(session.cwd).map((segment, at, all) => (
+            <Fragment key={at}>
+              <span class="crumb-sep">/</span>
+              <span class={at === all.length - 1 ? 'crumb-last' : undefined}>{segment}</span>
+            </Fragment>
+          ))}
+        </span>
+      </div>
 
       {/* The one announcer of the agent's own state, and it is always in the
           tree: a live region inserted at the same moment as its text is
@@ -449,6 +478,12 @@ function Sessions({
   const [states, setStates] = useState<api.SessionStates>({});
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  /**
+   * What is typed in the search box. Client-side over the list already fetched
+   * — a machine has a handful of sessions, so a server round trip per keystroke
+   * would be latency bought with nothing.
+   */
+  const [query, setQuery] = useState('');
 
   const refresh = useCallback(async () => {
     try {
@@ -478,6 +513,8 @@ function Sessions({
     await refresh();
   };
 
+  const groups = groupSessions(sessions ?? [], query, Date.now());
+
   // `.rail` is also what the desktop border keys off, so the class carries the
   // shape rather than the element name doing it.
   const Frame = rail ? 'aside' : 'main';
@@ -496,6 +533,23 @@ function Sessions({
         </button>
       </header>
 
+      {/* Over the list rather than inside its scroller, so it is still there
+          after scrolling. `type="search"` for the platform's own clear control
+          and its keyboard; a placeholder is not an accessible name, so it also
+          carries one. */}
+      <div class="search">
+        <input
+          type="search"
+          aria-label="Search sessions"
+          placeholder="Search sessions…"
+          autocapitalize="off"
+          autocorrect="off"
+          spellcheck={false}
+          value={query}
+          onInput={(event) => setQuery((event.target as HTMLInputElement).value)}
+        />
+      </div>
+
       <div class="scroll">
         {error !== null && (
           <p class="error" role="alert">
@@ -506,65 +560,77 @@ function Sessions({
         {sessions?.length === 0 && (
           <p class="muted">No sessions yet. Start one below and it keeps running here.</p>
         )}
-        {sessions?.map((session) => {
-          const note = unresumableNote(session);
-          const on = session.id === openId;
-          return (
-            // The provider class is on the row as well as the tag: it is what
-            // colours the spine down the left edge, which is the thing a scan of
-            // the list reaches before it reaches a word.
-            <div class={`row row-${session.provider}${on ? ' row-on' : ''}`} key={session.id}>
-              <button
-                class="row-open"
-                aria-current={on ? 'true' : undefined}
-                onClick={() => onOpen(session)}
-              >
-                {/* The provider first and colour-coded, because the question a
-                    mixed list has to answer at a glance on a phone is which agent
-                    this is — the title and the directory are often the same for
-                    two sessions of different providers in the same project. */}
-                <span class="row-head">
-                  <span class={`tag tag-${session.provider}`}>
-                    {providerLabel(session.provider)}
-                  </span>
-                  <span class="row-title">{session.title}</span>
-                </span>
-                {/* Clipped at the right on a narrow row, so the full path is on
-                    the element for a pointer that can hover one. */}
-                <span class="row-cwd" title={session.cwd}>
-                  {session.cwd}
-                </span>
-                {note !== null && <span class="row-note">{note}</span>}
-              </button>
-              {/* Together, because they wrap together: a "Waiting for you" chip
-                  and Kill are 200px of a 340px rail, and the row drops the pair
-                  onto its own line rather than clipping the title to nothing. */}
-              <div class="row-side">
-                {/* The agent's own state where there is one, and only the
-                    live/dead fact where there is not: a session whose provider is
-                    not reporting must not be badged "idle", which is a claim. */}
-                {session.deadAt !== null ? (
-                  <span class="chip chip-ended">dead</span>
-                ) : states[session.id] === undefined ? (
-                  <span class="chip chip-live">live</span>
-                ) : (
-                  <span class={`chip chip-agent-${states[session.id]!.state}`}>
-                    {STATE_TEXT[states[session.id]!.state]}
-                  </span>
-                )}
-                {session.deadAt === null && (
+        {/* Grouped under the day each was last worked on, which is how anyone
+            with more than a handful of these looks for one. `Date.now()` at
+            render: the list already re-renders every `POLL_MS`, so "Today"
+            becomes "Yesterday" on its own without a second timer. */}
+        {groups.length === 0 && sessions !== null && sessions.length > 0 && (
+          <p class="muted">Nothing matches “{query.trim()}”.</p>
+        )}
+        {groups.map((group) => (
+          <Fragment key={group.day}>
+            <h2 class="day">{group.day}</h2>
+            {group.sessions.map((session) => {
+              const note = unresumableNote(session);
+              const on = session.id === openId;
+              return (
+                // The provider class is on the row as well as the tag: it is what
+                // colours the spine down the left edge, which is the thing a scan of
+                // the list reaches before it reaches a word.
+                <div class={`row row-${session.provider}${on ? ' row-on' : ''}`} key={session.id}>
                   <button
-                    class="ghost danger"
-                    onClick={() => kill(session)}
-                    aria-label="Kill session"
+                    class="row-open"
+                    aria-current={on ? 'true' : undefined}
+                    onClick={() => onOpen(session)}
                   >
-                    Kill
+                    {/* The provider first and colour-coded, because the question a
+                        mixed list has to answer at a glance on a phone is which agent
+                        this is — the title and the directory are often the same for
+                        two sessions of different providers in the same project. */}
+                    <span class="row-head">
+                      <span class={`tag tag-${session.provider}`}>
+                        {providerLabel(session.provider)}
+                      </span>
+                      <span class="row-title">{session.title}</span>
+                    </span>
+                    {/* Clipped at the right on a narrow row, so the full path is on
+                        the element for a pointer that can hover one. */}
+                    <span class="row-cwd" title={session.cwd}>
+                      {session.cwd}
+                    </span>
+                    {note !== null && <span class="row-note">{note}</span>}
                   </button>
-                )}
-              </div>
-            </div>
-          );
-        })}
+                  {/* Together, because they wrap together: a "Waiting for you" chip
+                      and Kill are 200px of a 340px rail, and the row drops the pair
+                      onto its own line rather than clipping the title to nothing. */}
+                  <div class="row-side">
+                    {/* The agent's own state where there is one, and only the
+                        live/dead fact where there is not: a session whose provider is
+                        not reporting must not be badged "idle", which is a claim. */}
+                    {session.deadAt !== null ? (
+                      <span class="chip chip-ended">dead</span>
+                    ) : states[session.id] === undefined ? (
+                      <span class="chip chip-live">live</span>
+                    ) : (
+                      <span class={`chip chip-agent-${states[session.id]!.state}`}>
+                        {STATE_TEXT[states[session.id]!.state]}
+                      </span>
+                    )}
+                    {session.deadAt === null && (
+                      <button
+                        class="ghost danger"
+                        onClick={() => kill(session)}
+                        aria-label="Kill session"
+                      >
+                        Kill
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </Fragment>
+        ))}
       </div>
 
       <div class="foot">

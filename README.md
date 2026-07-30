@@ -47,7 +47,10 @@ session API, the terminal transport, the conversation data layer, the browser ap
 the conversation view, and the composer. Run `tether serve`, open the address it
 prints, and you can log in, see the sessions on this machine — each tagged with the
 agent it is running — start one in a directory you name under either agent, and
-follow it. Opening a session lands you in the **conversation**: your prompts, the
+follow it. The list groups sessions under the day each was last worked on, with a
+search box over it that filters on title and directory, so finding one on a
+machine that has been running a while is a scan rather than a scroll. Opening a
+session lands you in the **conversation**: your prompts, the
 agent's replies, and a collapsed card per tool call that opens onto its input and
 result. There is no second tab to choose — **Terminal** in the header summons the
 real TUI over the conversation, with a bar for the keys a phone keyboard has not

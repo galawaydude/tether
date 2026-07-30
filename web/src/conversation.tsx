@@ -33,7 +33,7 @@ import {
   type Rows,
   type ToolRow,
 } from './conversation.ts';
-import { whoLabel } from './providers.ts';
+import { copyLabel, whoLabel } from './providers.ts';
 import type { Send, Status } from './terminal.tsx';
 
 /** Same shape of backoff as the terminal channel, and for the same phone. */
@@ -379,6 +379,59 @@ function parse(data: unknown): ServerFrame | undefined {
   }
 }
 
+/**
+ * Copy, and deliberately **not** `navigator.clipboard`.
+ *
+ * That API is secure-context only, and tether is plain HTTP off loopback by
+ * design — so it is present on the machine serving the app and absent on the
+ * phone this product exists for, which is exactly the failure mode
+ * `CLAUDE.md`'s insecure-context entry records costing a whole terminal pane.
+ * `execCommand('copy')` carries no such gate. It is deprecated and it is also
+ * the only thing here that works everywhere this app is loaded.
+ *
+ * ponytail: a textarea and one call, no permission flow and no fallback chain.
+ * If a browser ever drops `execCommand` this needs `navigator.clipboard` in
+ * front of it, guarded on being defined rather than on the context.
+ */
+function copyText(text: string): void {
+  // Where focus was, because removing the textarea drops it to `<body>`: the
+  // actions are revealed by `:focus-within`, so a keyboard user who did not get
+  // their button back has lost both the row and their place in the tab order.
+  const was = document.activeElement;
+  const box = document.createElement('textarea');
+  box.value = text;
+  // Off-screen but focusable: `display: none` cannot be selected from.
+  box.setAttribute('aria-hidden', 'true');
+  box.style.cssText = 'position:fixed;top:-1000px;opacity:0';
+  document.body.append(box);
+  // Focused explicitly: where `select()` alone does not move focus, the copy
+  // takes the document's existing selection instead of this text.
+  box.focus();
+  box.select();
+  try {
+    document.execCommand('copy');
+  } finally {
+    box.remove();
+    if (was instanceof HTMLElement) was.focus();
+  }
+}
+
+/**
+ * The one per-message action, and it is furniture only where there is a pointer
+ * to reveal it with — `style.css` does not render it at all on a touch screen,
+ * where a permanent button on every message is density a 360px phone cannot
+ * spend. Inside the `<article>`, so hover and focus scope to one message.
+ */
+function MessageActions({ text, label }: { text: string; label: string }) {
+  return (
+    <div class="msg-actions">
+      <button type="button" class="ghost" aria-label={label} onClick={() => copyText(text)}>
+        Copy
+      </button>
+    </div>
+  );
+}
+
 function RowView({ row, provider, sessionId }: { row: Row; provider: string; sessionId: string }) {
   switch (row.row) {
     case 'message':
@@ -389,6 +442,7 @@ function RowView({ row, provider, sessionId }: { row: Row; provider: string; ses
               the agent's own line breaks, and a renderer would be a dependency
               plus an injection surface for output tether does not control. */}
           <p class="msg-text">{row.text}</p>
+          <MessageActions text={row.text} label={copyLabel(row.who, provider)} />
         </article>
       );
     case 'thinking':
