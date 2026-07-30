@@ -13,6 +13,7 @@ the version here.
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `rollout-0.145.0.jsonl` | One real session, three turns: an auto-approved `exec_command`, an `exec_command` that needed approval (with the sandbox-denied first attempt before it), and an `apply_patch`. Covers every record type the mapper knows and every one it deliberately drops.                                                                                                                      |
 | `hooks-0.145.0.ndjson`  | The eleven hook events that same session fired, in the shim's own on-disk form (the payload plus tether's `at` and `ppid`). Both `PermissionRequest` records are here, including the one whose `tool_input` is byte-identical to two different `PreToolUse` records — which is the correlation's hard case.                                                                         |
+| `errors-0.145.0.jsonl`  | Two real `event_msg/task_complete` records for turns that **failed**: an expired ChatGPT login (`codex_error_info: "unauthorized"`) and a backend 500 (`internal_server_error`). The second is the false positive the auth surface exists to avoid; the successful turns in `rollout-0.145.0.jsonl` carry no `error` key at all, which is the third case.                           |
 | `unknown.jsonl`         | Synthetic — necessarily so: no real rollout contains a record type tether does not know. A future top-level type, a future `event_msg` and `response_item` payload type, a missing payload, a payload that is not an object, tool records with no `call_id`, unparseable arguments, an unparseable timestamp and a future `phase`. All of it must be ignored, none of it may throw. |
 
 ## How the capture was made
@@ -46,6 +47,31 @@ Three edits were made to the capture and nothing else:
   waiting to happen, and nothing reads it: `thinking` is presence-only.
 - Nothing else. Every field the mapper, the fold or the join reads is byte-exact
   as Codex wrote it.
+
+## How `errors-0.145.0.jsonl` was captured
+
+No credentials and no spend, under a scratch `CODEX_HOME`:
+
+- **`unauthorized`** — an `auth.json` written by hand in ChatGPT mode carrying a
+  syntactically valid but bogus token, against Codex's real backend. Codex tries
+  to refresh it, cannot, and ends the turn with its own sentence: `Your access
+token could not be refreshed. Please log out and sign in again.`
+- **`internal_server_error`** — a `[model_providers.*]` pointed at a local HTTP
+  server answering every request with 500.
+
+Nothing was edited: both lines are as Codex wrote them.
+
+The negative result is the more useful half, and it is why `events.ts` reads only
+the typed field. A 401 reaches `task_complete` in **two** classifications: the
+one above, and `other` when it comes from a custom `[model_providers.*]` — where
+the message is `unexpected status 401 Unauthorized: …` and the credentials are a
+user's own API key rather than the login tether would be telling them to renew.
+A connection refused is `other` too. The full vocabulary is sixteen names and the
+binary carries all of them:
+
+```sh
+strings -n 4 "$(readlink -f "$(command -v codex)")" | grep -o 'CodexErrorInfocontext_window_exceeded.*'
+```
 
 ## Two things the capture settled that are worth keeping
 

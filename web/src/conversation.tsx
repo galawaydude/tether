@@ -27,6 +27,7 @@ import {
 import { matchCommands, planSend, whereLabel } from './commands.ts';
 import {
   addAnswer,
+  AUTH_ADVICE,
   addEcho,
   addEvents,
   addPending,
@@ -54,7 +55,14 @@ import {
   type Axis,
   type Choice,
 } from './options.ts';
-import { copyLabel, providerLabel, whoLabel } from './providers.ts';
+import {
+  AUTH_TERMINAL_LABEL,
+  COMMAND_TERMINAL_LABEL,
+  copyLabel,
+  providerLabel,
+  turnErrorLabel,
+  whoLabel,
+} from './providers.ts';
 import type { Send, Status } from './terminal.tsx';
 
 /** Same shape of backoff as the terminal channel, and for the same phone. */
@@ -290,7 +298,13 @@ export function ConversationView({
           <p class="muted">Nothing yet. The terminal shows the session as it starts.</p>
         )}
         {state.rows.map((row) => (
-          <RowView key={row.key} row={row} provider={provider} sessionId={sessionId} />
+          <RowView
+            key={row.key}
+            row={row}
+            provider={provider}
+            sessionId={sessionId}
+            onSummon={onSummon}
+          />
         ))}
         {/* Keyed by position: an echo is retired from the front, so the key of
             everything behind it shifts by one and Preact re-renders text into
@@ -645,14 +659,14 @@ function Composer({
           {said.hatch && (
             <>
               {' '}
-              {/* **Not** "Open the terminal": that is the waiting banner's link
-                  in `app.tsx`, and the two appear together routinely — sending
-                  `/resume` puts Claude Code into `waiting` within a second, so
-                  both are on screen at once. Two controls with one accessible
-                  name is an ambiguity for a screen reader and for
-                  `getByRole({ name })`, which matches on a substring. */}
+              {/* This name is one of three that must not contain one another —
+                  the rule, the guard and the strings themselves live in
+                  `providers.ts`. The part that is local to here: this one and
+                  the waiting banner's appear together routinely, because
+                  sending `/resume` puts Claude Code into `waiting` within a
+                  second, so both are on screen at once. */}
               <button type="button" class="link" onClick={onSummon}>
-                Show the terminal
+                {COMMAND_TERMINAL_LABEL}
               </button>
             </>
           )}
@@ -840,7 +854,17 @@ function Spans({ spans }: { spans: readonly Span[] }) {
   );
 }
 
-function RowView({ row, provider, sessionId }: { row: Row; provider: string; sessionId: string }) {
+function RowView({
+  row,
+  provider,
+  sessionId,
+  onSummon,
+}: {
+  row: Row;
+  provider: string;
+  sessionId: string;
+  onSummon: () => void;
+}) {
   switch (row.row) {
     case 'message':
       return (
@@ -866,6 +890,53 @@ function RowView({ row, provider, sessionId }: { row: Row; provider: string; ses
       return <p class={row.output ? 'cmd cmd-out' : 'cmd'}>{row.text}</p>;
     case 'compaction':
       return <p class="divider">context compacted</p>;
+    case 'error':
+      // The provider's own sentence, in a box, because a box means an artefact
+      // and this is one: its CLI wrote it, the model did not. Tether's own line
+      // goes underneath and only for the case it can stand behind.
+      return (
+        // A plain `<div>`, not an `<aside>`: this row is part of the
+        // conversation's own flow rather than complementary to it, and an
+        // `<aside>` here has no sectioning ancestor, so it would map to an
+        // unnamed `complementary` landmark — one per failed turn, in the same
+        // landmark list as the rail's named one.
+        <div class={`turn-error${row.auth ? ' turn-error-act' : ''}`}>
+          {/* The box says whose words these are to anyone who can see it; this
+              is the same attribution for anyone who cannot, and the counterpart
+              of the `msg-who` heading a message carries. */}
+          <h3 class="sr-only">{turnErrorLabel(provider)}</h3>
+          <p class="turn-error-text">{row.text}</p>
+          {row.auth && (
+            <p class="turn-error-advice">
+              {AUTH_ADVICE.text}{' '}
+              {/* The tappable half. Neither provider emits a sign-in URL into
+                  anything outside the pane — Claude Code's five auth messages
+                  say "Please run /login" and carry no link, Codex says "log out
+                  and sign in again" — and reading one off the screen would be
+                  the terminal-parsing the plan rejects. So what is tappable is
+                  the way there, which is the same escape hatch the composer's
+                  command note offers for the same reason: an answer that lives
+                  on a screen this pane cannot show.
+
+                  Its wording lives in `providers.ts` with the rest of the
+                  accessible names, held apart from the composer note's "Show the
+                  terminal" and the waiting banner's "Open the terminal" by a
+                  test there: all three can be on screen together and
+                  `getByRole({ name })` matches on a substring.
+
+                  ponytail: it summons and does not also send `/login`. That
+                  would land a Claude Code user directly on the login chooser —
+                  but it is Claude Code's command alone (Codex signs in with a
+                  shell command, so the same text would sit unsent in its
+                  composer), so it is a per-provider table entry for one step.
+                  Add it when someone signs in often enough to mind. */}
+              <button type="button" class="link" onClick={onSummon}>
+                {AUTH_TERMINAL_LABEL}
+              </button>
+            </p>
+          )}
+        </div>
+      );
     case 'note':
       return <p class="note">{row.text}</p>;
     case 'tool':

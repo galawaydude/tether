@@ -7,6 +7,7 @@ import {
   addEcho,
   addEvents,
   addPending,
+  AUTH_ADVICE,
   diffExtras,
   elapsedLabel,
   errorAdvice,
@@ -880,4 +881,47 @@ test('an answerable card carries the finding, and an ordinary one still notes it
   const clean = addPending(noRows(), { ...PROPOSED, input: { command: 'npm test' } }, DEADLINE)
     .rows[0] as ToolRow;
   assert.deepEqual(clean.suspects, []);
+});
+
+test('a failed turn is a row of its own, and only an auth one asks for anything', () => {
+  const rows = toRows(
+    stream(
+      {
+        kind: 'error',
+        id: 'e1',
+        at: AT,
+        text: 'Please run /login · API Error: 401 OAuth token has expired.',
+        auth: true,
+      },
+      { kind: 'error', id: 'e2', at: AT, text: 'API Error: 500 Internal server error.' },
+    ),
+  );
+
+  // Not a message: rendering the agent's CLI in the agent's voice is how "your
+  // login expired" reads as the agent saying something strange.
+  assert.deepEqual(
+    rows.map((row) => row.row),
+    ['error', 'error'],
+  );
+  assert.deepEqual(
+    rows.map((row) => (row.row === 'error' ? row.auth : null)),
+    [true, false],
+  );
+
+  // The provider's own sentence, kept verbatim — it is what the pane says too.
+  assert.equal(
+    rows[0]?.row === 'error' ? rows[0].text : '',
+    'Please run /login · API Error: 401 OAuth token has expired.',
+  );
+});
+
+test('tether’s advice on an auth failure is the same claim its tool cards make', () => {
+  // `act` is the needs-you/retrying distinction the typed-error work set, and
+  // this reuses it rather than inventing a second vocabulary for one screen.
+  assert.equal(AUTH_ADVICE.act, true);
+  assert.equal(errorAdvice('API Error: 401 {"type":"authentication_error"}')?.act, AUTH_ADVICE.act);
+
+  // It may not name a provider: one string on this screen already does and it
+  // is wrong on a Codex card. See `providerLabel`.
+  assert.doesNotMatch(AUTH_ADVICE.text, /Claude|Codex/);
 });

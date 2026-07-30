@@ -62,7 +62,13 @@ that scrolls inside itself rather than widening the page. An `Edit` or a `Write`
 opens onto the change itself: added and removed lines with a `+`/`−` gutter, not
 a paragraph describing one. A call that failed says whether it is _retrying_
 itself or _needs you_, so a glance is enough to know whether to pick the phone
-up. And a turn that runs unusually long shows how long beside the state chip —
+up. A whole **turn** the agent's own CLI reported as failed gets a row of its
+own, in that CLI's words rather than tether's — and where the CLI itself typed
+the failure as an authentication one, the row says nothing will retry it and
+offers the way to the terminal, so an expired login reads as an expired login
+rather than as a session that quietly stopped working. Any other failure is
+shown and nothing is claimed about it.
+And a turn that runs unusually long shows how long beside the state chip —
 a fast one shows nothing, so the number appearing is itself the news.
 There is no second tab to choose — **Terminal** in the header summons the
 real TUI over the conversation, with a bar for the keys a phone keyboard has not

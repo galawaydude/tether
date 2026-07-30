@@ -424,3 +424,53 @@ test('a huge tool input is capped the same way the transcript’s is', () => {
   assert.ok(input.content.length < MAX_OUTPUT * 2);
   assert.match(input.content, /truncated by tether/);
 });
+
+/**
+ * The whole of the authentication-expiry claim, in three assertions: the signal
+ * produces the flag, an unrelated failure does not, and a healthy session has
+ * neither. Driven from `api-errors-2.1.220.jsonl` — four real records captured
+ * by answering every API request with one status; `events.ts`'s `AUTH_ERROR`
+ * has the table and how it was produced.
+ */
+test('an API failure is the provider’s own words, and only an auth one is flagged', () => {
+  const warnings: string[] = [];
+  const { events } = mapLines(fixture(`api-errors-${CAPTURED_VERSION}.jsonl`), (m) =>
+    warnings.push(m),
+  );
+  assert.deepEqual(warnings, [], 'a synthetic API-error record is a shape tether knows');
+
+  // Not `assistant`: the model wrote none of these.
+  assert.deepEqual(kinds(events), ['error', 'error', 'error', 'error']);
+  const flags = events.map((e) => (e.kind === 'error' ? e.auth : undefined));
+
+  // 401 and 403 both classify as `authentication_failed`.
+  assert.deepEqual(flags, [true, true, undefined, undefined]);
+
+  // The false positive the whole design exists to avoid: a rate limit and a
+  // server error say nothing about credentials, and a phrase match over the
+  // sentence would not have been able to tell — 429's own text contains
+  // "rejected". Nothing but the provider's typed field decides this.
+  const [, , limited, server] = events;
+  assert.match(
+    limited?.kind === 'error' ? limited.text : '',
+    /^API Error: Request rejected \(429\)/,
+  );
+  assert.match(server?.kind === 'error' ? server.text : '', /^API Error: 500/);
+
+  // The sentence is Claude Code's, verbatim: it already says what to do, and a
+  // friendlier one invented here would contradict the pane it is quoting.
+  const [expired] = events;
+  assert.equal(
+    expired?.kind === 'error' ? expired.text : '',
+    'Please run /login · API Error: 401 OAuth token has expired. Please obtain a new token or refresh your existing token.',
+  );
+});
+
+test('a session that never failed produces no error row at all', () => {
+  const { events } = mapLines(SESSION);
+  assert.deepEqual(
+    events.filter((e) => e.kind === 'error'),
+    [],
+    'no signal shows nothing, rather than a placeholder',
+  );
+});

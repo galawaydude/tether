@@ -541,11 +541,18 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   for the session list: `web/src/sessions.ts` owns the search filter, the day
   grouping and the breadcrumb segments, and `app.tsx` only picks elements. So
   does the wording of a control's accessible name — `copyLabel` lives in
-  `providers.ts` beside `whoLabel`, and its test pins the one rule that is not
-  obvious from looking at it: **no accessible name in the conversation may
-  contain the word "message"**, because the composer's own label is that word
-  and Playwright's `getByLabel` matches on a substring, so one that does makes
-  `getByLabel('Message')` ambiguous and takes two e2e specs down at once.
+  `providers.ts` beside `whoLabel`, and `providers.test.ts` pins the two rules
+  that are not obvious from looking at them. **No accessible name in the
+  conversation may contain the word "message"**, because the composer's own
+  label is that word and Playwright's `getByLabel` matches on a substring, so
+  one that does makes `getByLabel('Message')` ambiguous and takes two e2e specs
+  down at once. And the **three** names that summon the terminal —
+  `AUTH_TERMINAL_LABEL` on a failed turn's row, `COMMAND_TERMINAL_LABEL` on the
+  composer's command note, `WAITING_TERMINAL_LABEL` on the waiting banner — must
+  not contain one another, for the same substring reason applied to
+  `getByRole({ name })`; any two of them can be on screen together. The test
+  compares the strings the buttons actually render, which is why the buttons
+  take their names from there rather than spelling them inline.
 - **Agent text is rendered as markdown, and the safety of that is structural
   rather than a filter.** `web/src/markdown.ts` parses a **bounded** subset —
   headings, `*`-only emphasis, lists, links, inline code, block quotes, fenced
@@ -598,6 +605,14 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   start of the output — tool output is arbitrary text, and a `grep` that finds
   "rate limit" in a log must not be reported as the provider rate-limiting.
   `null` — no claim at all — is the right answer for anything not recognised.
+  A failed **turn** carries the same claim from the other direction: the `error`
+  event kind shows the provider's own sentence, and `AUTH_ADVICE` — the same
+  `Advice` type, deliberately the same first sentence as the tool card's
+  `authentication_error` entry — is added only where the provider _typed_ the
+  failure as an authentication one, never matched out of its prose. Each
+  provider's `events.ts` names the field and the version it was verified
+  against; a false "your login expired" costs a real re-authentication, which is
+  why anything else says nothing.
 - **The composer's message leaves on the _terminal_ pane's socket, and that is
   the only thing the two panes share.** A composed message is an `input` frame,
   and input sequencing — the per-client `seq`, the server's highest-applied map,
@@ -670,10 +685,9 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   model?_ confirmation, and the correction is the machinery that already exists
   (the provider publishes `waiting`, `app.tsx`'s banner says so, the composer
   refuses to send), so there is no fourth value and no note may ever say "and
-  nothing else will happen". The note's terminal button is **"Show the
-  terminal"** and may not be renamed to the banner's "Open the terminal": the two
-  are on screen together every time, and one accessible name on two controls is
-  ambiguous for a screen reader and for `getByRole`.
+  nothing else will happen". The note's terminal button takes its name from
+  `COMMAND_TERMINAL_LABEL` and may not be renamed to collide with the other two
+  terminal-summoning names — the rule and its guard are in `providers.ts`, above.
 - **The conversation shows slash commands, and it had to start doing so for the
   option bar to mean anything.** `COMMAND_NOISE` in
   `providers/claude-code/events.ts` had dropped every `<command-name>` and

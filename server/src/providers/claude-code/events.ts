@@ -114,6 +114,49 @@ function commandEvent(text: string, id: string, at: number): ConversationEvent |
   return out === '' ? undefined : { kind: 'command', id, at, text: capOutput(out), output: true };
 }
 
+/**
+ * Claude Code's own name for why a turn failed, when it failed against the API.
+ *
+ * Such a turn is written as an ordinary `assistant` record with
+ * `model: "<synthetic>"` — the model wrote none of it — plus three fields of its
+ * own: `isApiErrorMessage: true`, `apiErrorStatus`, and `error`, which is the
+ * classification. Verified against 2.1.220 by pointing `ANTHROPIC_BASE_URL` at a
+ * local server that answers every request with one status (no credentials, no
+ * spend) and reading the transcript back:
+ *
+ * | status | `error`                 | text it wrote                                     |
+ * | ------ | ----------------------- | ------------------------------------------------- |
+ * | 401    | `authentication_failed` | `Please run /login · API Error: 401 OAuth token …` |
+ * | 403    | `authentication_failed` | `Please run /login · API Error: 403 Request not …` |
+ * | 429    | `rate_limit`            | `API Error: Request rejected (429) · …`           |
+ * | 500    | `server_error`          | `API Error: 500 Internal server error. …`         |
+ *
+ * That is the whole reason this is a field and not a regular expression over the
+ * sentence: `rate_limit` and `server_error` are the false positives a phrase
+ * match would produce, and the record hands tether the answer instead. The
+ * record is written **after** Claude Code has exhausted its own retries (ten of
+ * them, ~3 minutes on a 401), so its presence already means the turn is over.
+ *
+ * The sentence is Claude Code's, and it is what tether shows. One branch of
+ * 2.1.220's own classifier files a gateway 401 as `authentication_failed` while
+ * writing "This may be a temporary network issue, please try again" — so a
+ * friendlier sentence invented here would contradict the provider on the screen
+ * it is quoting. Same rule as `Notification`, below.
+ *
+ * `apiErrorIsTransient` rides on the same record and is **deliberately not
+ * read**, so nobody has to investigate it twice. In the 2.1.220 bundle it is set
+ * on the `rate_limit` branch only and never on either `authentication_failed`
+ * branch, and the CLI's own classifier computes transience as
+ * `apiErrorIsTransient === true || error === 'overloaded' || error ===
+ * 'server_error'` — so the flag cannot reach the auth row this feature exists to
+ * surface. Empirically the record is written only once the retries are spent:
+ * the captured 429 run reached attempt 10/10 and then wrote a single record
+ * carrying `apiErrorIsTransient: false`, with nothing written mid-retry. So a
+ * row here is a turn that is over either way, and gating on the flag would only
+ * hide failures.
+ */
+const AUTH_ERROR = 'authentication_failed';
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
@@ -268,6 +311,30 @@ export function mapRecord(record: unknown, warn: Warn = () => {}): Mapped {
   const at = timestamp(record);
   const message = record['message'];
   const content = isObject(message) ? message['content'] : undefined;
+
+  // Before the assistant branch: the record is shaped like a message and is not
+  // one. See `AUTH_ERROR` for the fields and how they were established.
+  if (record['isApiErrorMessage'] === true) {
+    // `capOutput` already flattens both shapes `content` arrives in — a string
+    // on some records, blocks on others — so there is no second flattener here.
+    // Anything else is a record with nothing to say rather than a sentence:
+    // `capOutput` would stringify it, and `JSON.stringify` of nothing is "null".
+    const text =
+      typeof content === 'string' || Array.isArray(content) ? capOutput(content).trim() : '';
+    return mapped(
+      text === ''
+        ? []
+        : [
+            {
+              kind: 'error',
+              id: uuid,
+              at,
+              text,
+              ...(record['error'] === AUTH_ERROR ? { auth: true as const } : {}),
+            },
+          ],
+    );
+  }
 
   if (typeof content === 'string') {
     if (type === 'assistant') return mapped([{ kind: 'assistant', id: uuid, at, text: content }]);
