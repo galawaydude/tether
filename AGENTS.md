@@ -565,6 +565,29 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   the other direction. `busy` and `retrying` are **not** refused: both
   providers queue a message mid-turn, the unacked set carries one across a
   reconnect, and that is the most valuable thing a phone can do.
+- **A composer option is a keystroke sequence, and an axis earns a control only
+  by being _verified_ to change a running pane.** `web/src/options.ts` is the
+  whole feature: a per-provider table whose values are `input` frames sent on
+  that same terminal socket (so no new plumbing, and the resend-until-ACKed set
+  finishes a two-frame picker sequence across a reconnect). The reference client
+  the captain supplied owns its agent and can offer every axis it has; tether
+  owns a TUI in a pane and can only type at it, so **the CLI's flag list is not
+  the table** — `--permission-mode` and `--model` both exist on Claude Code and
+  only the second is offered. What each provider does and does not get, and the
+  live evidence for every entry _and every omission_, is in that file's own
+  comments; the short version is that Claude Code's `/model` and `/effort` take
+  their value as an argument, Codex's slash commands take none at all
+  (`/model gpt-5.6-terra` is sent to the model as a **prompt**), and an axis
+  tether cannot both set and read is left out rather than shown dead. Two rules
+  not to undo: a control is a **menu, not a display** — it resets to the axis
+  name after applying, because tether cannot keep a value true against a user
+  typing in the pane, and the agent's own answer in the conversation is the
+  confirmation — and a value that lowers the permission bar is **held** behind
+  its sentence (`lowersBar`), which `e2e/options.spec.ts` checks by reading the
+  pane _while the warning is up_. `e2e/serve.ts` shims the stub as `codex` as
+  well as `claude` for that spec; the stub writes a Claude-shaped transcript
+  either way, so a Codex session there has no conversation and the spec asserts
+  on keystrokes rather than rows.
 - **The conversation is the interface and the terminal is summoned over it.**
   There is no tab pair: opening a session lands on the conversation, and
   `.termsheet` (`app.tsx`, `style.css`) is an overlay a header control raises and

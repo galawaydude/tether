@@ -91,6 +91,24 @@ test('each provider offers its own controls, and they reach the pane', async ({ 
   await expect(rows(page).getByText('/effort medium')).toHaveCount(2);
   // The other axis, so this proves a table rather than one wired control.
   await expect(rows(page).getByText('/model sonnet')).toHaveCount(0);
+  await dismiss(page);
+
+  // ── the narrowest phone ────────────────────────────────────────────────────
+  // Two claims that only a real layout can make, both about not spending the
+  // conversation's height on chrome. The controls and Send stay on **one** row
+  // — a second is 52px, which at 360×340 (this phone with its keyboard up) is
+  // most of what is left — and the placeholder fits the one row a textarea has
+  // before it is typed in, so its second half is not simply cut off.
+  await page.setViewportSize({ width: 360, height: 640 });
+  const bar = page.locator('.composer-bar');
+  const one = await page.locator('.composer button.primary').boundingBox();
+  expect((await bar.boundingBox())?.height).toBeCloseTo(one?.height as number, 0);
+  expect(
+    await page
+      .locator('.composer-text')
+      .evaluate((el) => el.scrollHeight - (el as HTMLElement).clientHeight),
+  ).toBeLessThanOrEqual(0);
+  await shoot(page, '4-claude-360');
 });
 
 test('a Codex composer offers Codex’s axis, and warns before it lowers the bar', async ({

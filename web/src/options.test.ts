@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { axesFor, choiceIn, composerHint, lowersBar } from './options.ts';
-import { CODEX, DEFAULT_PROVIDER } from './providers.ts';
+import { CODEX, DEFAULT_PROVIDER, PROVIDERS } from './providers.ts';
 
 const axisIds = (provider: string) => axesFor(provider).map((axis) => axis.id);
 
@@ -103,8 +103,13 @@ test('no control on this screen is named “Message” or “Agent”', () => {
 });
 
 test('the placeholder teaches, and names the agent that is running', () => {
-  assert.equal(composerHint('Codex'), 'Message Codex — / for its commands, Enter for a new line');
-  // The Enter rule is the one a phone user discovers by losing a half-written
-  // prompt, so it is the one the placeholder spends its words on.
-  assert.match(composerHint('Claude Code'), /Enter for a new line/);
+  assert.equal(composerHint('Codex'), 'Message Codex — / commands');
+  assert.match(composerHint('Claude Code'), /^Message Claude Code — /);
+  // A textarea is one row until it is typed in, so a placeholder that wraps at
+  // 360px loses its second half. This is that width budget, checked in
+  // characters because that is the part logic can see — the pixels are
+  // `e2e/options.spec.ts`'s job.
+  for (const provider of PROVIDERS) {
+    assert.ok(composerHint(provider.label).length <= 32, `${provider.label} placeholder is long`);
+  }
 });

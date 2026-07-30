@@ -188,10 +188,17 @@ export function lowersBar(choice: Choice): string | null {
 /**
  * The teaching placeholder, naming the agent that is actually running.
  *
- * It teaches the one rule of this composer that a phone user will otherwise
- * discover by losing a half-written prompt: Enter is a line break here, and
- * Send is a button.
+ * What it teaches is that the agent's **own** slash commands can be typed here,
+ * which is how a user reaches every axis this table had to leave out — and the
+ * reference's placeholder spends its words the same way.
+ *
+ * It has to hold on **one line at 360px**, which is most of why it is this
+ * short: a textarea is one row until it is typed in, so a placeholder that
+ * wraps is a placeholder with its second half cut off. The box is 293px wide
+ * there and the longest agent name this build knows renders at 284px, so the
+ * budget is real and nearly spent — `e2e/options.spec.ts` measures the pixels
+ * and the unit test pins the character count that stands in for them.
  */
 export function composerHint(agentName: string): string {
-  return `Message ${agentName} — / for its commands, Enter for a new line`;
+  return `Message ${agentName} — / commands`;
 }
