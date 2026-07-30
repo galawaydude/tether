@@ -891,7 +891,8 @@ CI runs exactly those (`.github/workflows/ci.yml`).
     transcript the stub already opened rather than teaching the stub a new trick.
   - Two Playwright projects, `phone` and `desktop`, each with a `testIgnore`/`testMatch`
     so neither runs the other's spec at the wrong width. `e2e/ui.ts` is the harness beside
-    `serve.ts`: the summon/dismiss recipe is spelled there once rather than in five specs,
+    `serve.ts`: the summon/dismiss recipe is spelled there once rather than in every spec
+    that needs it,
     and evidence screenshots are namespaced by spec, because the shared
     `TETHER_E2E_SHOTS` directory plus one worker meant a number reused in a second spec
     silently overwrote the first spec's image.

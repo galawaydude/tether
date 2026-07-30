@@ -576,7 +576,10 @@ designed for. One (`session.spec.ts`) logs in, starts a session, watches it, typ
 it, **reloads the page**, and asserts the conversation and the terminal come back
 intact and exactly once; it also summons the terminal over the conversation and
 dismisses it, asserting both keep their scroll position and that the terminal is
-not re-attached; and it opens the New session sheet at the shortest
+not re-attached; it measures at 360×640 that nothing tether draws — the waiting
+banner included — changes the terminal's box or its row count, since a change
+there resizes the tmux pane for every other viewer; and it opens the New session
+sheet at the shortest
 phone viewports and asserts the card and its **Agent** picker stay on screen,
 since the sheet is the one screen that grows with its copy. The second (`permission.spec.ts`) drives the hook chain end to end: it acts out
 three permission prompts and answers them three ways: **Approve** on the card
