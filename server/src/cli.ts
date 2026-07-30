@@ -24,7 +24,14 @@ import {
   stopSession,
 } from './machine/sessions.ts';
 import { PtyUnavailableError, createTerminals, loadPty } from './machine/terminal.ts';
-import { HOOK_EVENTS, hookStatus, installHook, removeHook } from './providers/codex/hooks.ts';
+import {
+  HOOK_EVENTS,
+  type HookStatus,
+  hookStatus,
+  installHook,
+  PERMISSION_TIMEOUT_SECONDS,
+  removeHook,
+} from './providers/codex/hooks.ts';
 import { codexHome } from './providers/codex/spawn.ts';
 import { DEFAULT_SOCKET, allowedRoots } from './machine/tmux.ts';
 import { MIN_PASSWORD_LENGTH, createAuthStore } from './web/auth.ts';
@@ -103,6 +110,23 @@ function codexHookExplanation(hooksPath: string, shimPath: string): string {
 }
 
 /**
+ * An installation tether wrote, and has since outgrown.
+ *
+ * Both halves matter and neither is guessed at: a shim whose bytes are not the
+ * ones this tether writes cannot POST, and a `PermissionRequest` entry not
+ * carrying {@link PERMISSION_TIMEOUT_SECONDS} is one `machine/conversations.ts`
+ * refuses to hold a turn behind. Either way the badge still works and the
+ * buttons cannot, which is a different sentence from "not installed" and needs
+ * saying — once, here.
+ */
+function outdated(status: HookStatus): boolean {
+  return (
+    status.installed.length > 0 &&
+    (!status.shimCurrent || status.permissionTimeout !== PERMISSION_TIMEOUT_SECONDS)
+  );
+}
+
+/**
  * `status` | `install` | `remove`. Read-only by default: `tether codex-hook`
  * with no action reports and changes nothing, because a command that writes to
  * a file tether does not own should have to be asked for by name.
@@ -141,6 +165,20 @@ async function codexHookCommand(argv: readonly string[]): Promise<number> {
         'whether a session is working or idle, and a permission prompt is still',
         'answered in the terminal. The hook adds the live “waiting for you” badge',
         'and the Approve/Deny buttons, and nothing else.',
+        // Only for an installation tether can see is out of date, and only here,
+        // in a command the user typed. `not installed` is a supported answer and
+        // gets nothing added to it — a user who declined on purpose is not
+        // nagged, which the captain's decision forbids by name.
+        ...(outdated(before)
+          ? [
+              '',
+              'This installation is from an older tether. It still reports that a session',
+              'is waiting for you, but it has no way to carry an answer back, so tether',
+              'will not offer Approve/Deny on it — you answer in the terminal, as before.',
+              'Run `tether codex-hook install` to update it. The conversation, the',
+              'terminal and working/idle are unaffected either way.',
+            ]
+          : []),
       ].join('\n') + '\n',
     );
     return 0;

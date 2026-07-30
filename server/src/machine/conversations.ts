@@ -33,7 +33,12 @@ import {
 import { readSession, readSessionId } from '../providers/claude-code/status.ts';
 import { findTranscript, type StartMemo } from '../providers/claude-code/transcript.ts';
 import { mapHook as mapCodexHook, mapLines as mapCodexLines } from '../providers/codex/events.ts';
-import { hookLogPath, MAX_HOLD_MS } from '../providers/codex/hooks.ts';
+import {
+  hookLogPath,
+  installedPermissionTimeout,
+  MAX_HOLD_MS,
+  PERMISSION_TIMEOUT_SECONDS,
+} from '../providers/codex/hooks.ts';
 import { findRollout } from '../providers/codex/rollout.ts';
 import { CODEX, codexHome } from '../providers/codex/spawn.ts';
 import { CodexStatus } from '../providers/codex/status.ts';
@@ -623,7 +628,11 @@ export class Conversations {
       calls.delete(oldest);
     }
 
-    const holdMs = this.#holdFor(signal.hold, live);
+    // Codex is the provider whose hook `timeout` tether may not reconcile, so
+    // it is the provider whose hook `timeout` tether has to read. Once per
+    // prompt: only `PermissionRequest` ever reaches here for Codex.
+    const ceilingMs = session.provider === CODEX ? await this.#codexCeiling() : Infinity;
+    const holdMs = this.#holdFor(signal.hold, live, ceilingMs);
     if (holdMs === 0) {
       // No `deadline`, so the card offers no buttons: tether is reporting this
       // call, not answering it.
@@ -725,16 +734,51 @@ export class Conversations {
    *   times over. Codex needs no such list, because `PermissionRequest` only
    *   fires when it really is asking — that is what `prompting` means.
    *
-   * The one provider-specific number is the ceiling. Codex's own hook `timeout`
-   * is a constant that tether may not rewrite without re-prompting a trust
-   * review the user already gave, so the hold is clamped under it here rather
-   * than reconciled onto disk there (`providers/codex/hooks.ts`). Only an
-   * operator asking for a hold of minutes ever meets it.
+   * `ceilingMs` is what the provider's own configuration allows — `Infinity`
+   * where nothing constrains it, and for Codex whatever `#codexCeiling` read off
+   * disk, which is either {@link MAX_HOLD_MS} or 0 for "do not hold at all".
+   * Clamping to 0 is how the gate is spelled: the caller decides whether a hold
+   * is permitted, this decides how long one may be.
    */
-  #holdFor(hold: HoldBasis, live: Live | undefined): number {
+  #holdFor(hold: HoldBasis, live: Live | undefined, ceilingMs = Infinity): number {
     if (hold === 'never' || live === undefined || live.watching.size === 0) return 0;
     const holdMs = Math.max(0, this.#options.permissionTimeoutMs ?? permissionTimeoutMs());
-    return live.session.provider === CODEX ? Math.min(holdMs, MAX_HOLD_MS) : holdMs;
+    return Math.min(holdMs, ceilingMs);
+  }
+
+  /**
+   * Whether tether may hold a Codex turn at all, and for how long.
+   *
+   * The invariant is stated in `providers/permission.ts`: tether may hold only
+   * while the provider's own on-disk hook configuration carries the timeout the
+   * hold is sized against. Claude Code satisfies it by reconciling
+   * `settings.local.json` on every install and at every `listen`. Codex cannot
+   * be reconciled — rewriting its entry re-hashes it and puts a trust review in
+   * front of a user who already gave one — so the file is read instead, and this
+   * is where.
+   *
+   * A **gate**, not a clamp, and the reason is a number: the `PermissionRequest`
+   * entry an older tether wrote carries `timeout: 3`, and 3s minus
+   * `KILL_MARGIN_MS` is negative. There is no hold that fits under a 3s hook
+   * timeout — only no hold. And a shorter hold would be worse than none: Codex
+   * kills the shim at 3s and raises its own dialog while tether still shows a
+   * live deadline, so a tap would report an approval the agent never received.
+   * 0 is the existing "report the prompt, no buttons" path — a `pending` with no
+   * deadline and the `waiting` badge, which is exactly what a Codex session
+   * showed before it could be answered here, and a supported state rather than a
+   * failure.
+   *
+   * Read per prompt and deliberately not cached: a prompt happens a handful of
+   * times a turn at human speed, `hooks.json` is one small file, and
+   * `tether codex-hook install` can run mid-session. A cache is the thing that
+   * would make this stale all over again.
+   */
+  async #codexCeiling(): Promise<number> {
+    const installed = await installedPermissionTimeout({
+      codexHome: this.#codexHome(),
+      stateDir: this.#stateDir(),
+    });
+    return installed === PERMISSION_TIMEOUT_SECONDS ? MAX_HOLD_MS : 0;
   }
 
   #send(live: Live | undefined, frame: ServerFrame): void {

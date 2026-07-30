@@ -63,13 +63,28 @@
  * writes to `hooks.json` ever depends on a runtime value, so in steady state
  * tether never rewrites a trusted entry at all.
  *
+ * The other side of that bargain is that this file can go out of date and
+ * nothing may quietly fix it. Nothing rewrites a Codex installation behind the
+ * user's back, so after an upgrade the shim and the `timeout` on disk are still
+ * whichever ones the last `codex-hook install` wrote. Two things follow, and
+ * they are the whole of the answer: `machine/conversations.ts` reads the
+ * `timeout` before it holds anything ({@link installedPermissionTimeout}), so a
+ * stale installation reports prompts without buttons rather than reporting an
+ * answer nobody received; and {@link hookStatus} says so, inside a command the
+ * user typed. Not in a banner, not at startup, not beside a running session.
+ *
  * Nothing in `providers/` may import from `web/` (report §5).
  */
 
-import { chmod, mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { ABORT_MARGIN_MS, ensureHookSecret, KILL_MARGIN_MS } from '../permission.ts';
+import {
+  ABORT_MARGIN_MS,
+  ensureHookSecret,
+  KILL_MARGIN_MS,
+  writeAtomically,
+} from '../permission.ts';
 
 /**
  * The events tether registers. `PreToolUse`/`PostToolUse` bracket
@@ -320,16 +335,45 @@ async function readHooksFile(path: string): Promise<HooksFile> {
   return parsed as HooksFile;
 }
 
-/** Same directory, so the rename is atomic and the mode is the caller's umask. */
-async function writeAtomically(path: string, text: string): Promise<void> {
-  const temporary = `${path}.tether-tmp`;
-  await writeFile(temporary, text, { mode: 0o600 });
-  await rename(temporary, path);
-}
-
 /** tether's own entry: the only one whose command is tether's shim. */
 function isOurs(handler: HookHandler, shim: string): boolean {
   return handler.command === shim;
+}
+
+/**
+ * The `timeout` Codex will really enforce on tether's `PermissionRequest` hook,
+ * or `undefined` when there is no entry of tether's to read one off.
+ *
+ * The lowest of them if somehow there are several, because every one of them
+ * runs and the shortest is the one that kills the shim. `undefined` covers a
+ * missing file, a shape `readHooksFile` refuses, tether's entry being absent and
+ * a `timeout` that is not a number — all of which mean the same thing to the
+ * caller: tether cannot say what Codex is waiting for.
+ */
+function permissionTimeoutOf(file: HooksFile, shim: string): number | undefined {
+  const seconds = (file.hooks?.['PermissionRequest'] ?? [])
+    .flatMap((group) => group.hooks)
+    .filter((handler) => isOurs(handler, shim))
+    .map((handler) => handler['timeout'])
+    .filter((timeout): timeout is number => typeof timeout === 'number');
+  return seconds.length === 0 ? undefined : Math.min(...seconds);
+}
+
+/**
+ * The same value, read from disk — the gate `machine/conversations.ts` holds a
+ * Codex turn behind, and the fact {@link hookStatus} reports.
+ *
+ * The invariant is in `../permission.ts`: tether may hold only while the
+ * provider's own configuration carries the timeout the hold is sized against.
+ * Codex's entry may not be reconciled onto disk (see the head of this module),
+ * so it is read instead, and one reader answers both callers.
+ */
+export async function installedPermissionTimeout(options: {
+  codexHome: string;
+  stateDir: string;
+}): Promise<number | undefined> {
+  const file = await readHooksFile(hooksJsonPath(options.codexHome)).catch(() => undefined);
+  return file === undefined ? undefined : permissionTimeoutOf(file, hookShimPath(options.stateDir));
 }
 
 export type InstallResult = {
@@ -423,7 +467,7 @@ export async function installHook(options: {
   }
 
   await mkdir(options.codexHome, { recursive: true, mode: 0o700 });
-  await writeAtomically(path, `${JSON.stringify({ ...file, hooks }, null, 2)}\n`);
+  await writeAtomically(path, `${JSON.stringify({ ...file, hooks }, null, 2)}\n`, 0o600);
   return {
     hooksPath: path,
     shimPath: shim,
@@ -478,7 +522,7 @@ export async function removeHook(options: {
   }
 
   if (removed.length === 0) return { hooksPath: path, removed };
-  await writeAtomically(path, `${JSON.stringify({ ...file, hooks }, null, 2)}\n`);
+  await writeAtomically(path, `${JSON.stringify({ ...file, hooks }, null, 2)}\n`, 0o600);
   return { hooksPath: path, removed };
 }
 
@@ -501,6 +545,25 @@ export type HookStatus = {
    * is the same informed act as accepting the prompt.
    */
   featureEnabled: boolean;
+  /**
+   * Whether the shim on disk is the one this tether would write.
+   *
+   * Nothing rewrites it behind the user's back — `installProviderHook` and
+   * `reconcileProviderHooks` both skip Codex, because this is a file tether does
+   * not own and a trust gate it may not walk through unasked — so an
+   * installation from an older tether keeps running that older shim after an
+   * upgrade. It still logs, so the badge still works; it does not POST, so
+   * nothing can be answered. Reported because `registered: <five events>` on its
+   * own says the opposite.
+   */
+  shimCurrent: boolean;
+  /**
+   * The `timeout` Codex will enforce on tether's `PermissionRequest` entry, if
+   * tether has one. Anything but {@link PERMISSION_TIMEOUT_SECONDS} means tether
+   * will not hold a turn on this installation at all — see the invariant in
+   * `../permission.ts` and the gate in `machine/conversations.ts`.
+   */
+  permissionTimeout?: number;
 };
 
 /** What is actually registered right now, for `tether codex-hook status`. */
@@ -518,12 +581,15 @@ export async function hookStatus(options: {
   const installed = Object.entries(file.hooks ?? {})
     .filter(([, groups]) => groups.some((g) => g.hooks.some((h) => isOurs(h, shim))))
     .map(([event]) => event);
+  const permissionTimeout = permissionTimeoutOf(file, shim);
   return {
     hooksPath: path,
     shimPath: shim,
     installed,
     ...(unreadable === undefined ? {} : { unreadable }),
     featureEnabled: await featureEnabled(options.codexHome),
+    shimCurrent: (await readFile(shim, 'utf8').catch(() => undefined)) === SHIM_SOURCE,
+    ...(permissionTimeout === undefined ? {} : { permissionTimeout }),
   };
 }
 

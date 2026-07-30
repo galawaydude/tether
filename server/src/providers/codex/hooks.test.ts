@@ -26,6 +26,7 @@ import {
   hookShimPath,
   hookStatus,
   hooksJsonPath,
+  installedPermissionTimeout,
   installHook,
   MAX_HOLD_MS,
   PERMISSION_TIMEOUT_SECONDS,
@@ -242,6 +243,66 @@ test('status reports what is registered and whether Codex will run it at all', a
   assert.equal((await hookStatus({ codexHome, stateDir })).featureEnabled, true);
   await writeFile(join(codexHome, 'config.toml'), '[other]\nhooks = true\n');
   assert.equal((await hookStatus({ codexHome, stateDir })).featureEnabled, false);
+});
+
+test('status can tell a current installation from one an older tether wrote', async (t) => {
+  const { codexHome, stateDir } = await lab(t);
+  const { shimPath, hooksPath } = await installHook({ codexHome, stateDir });
+
+  const fresh = await hookStatus({ codexHome, stateDir });
+  assert.equal(fresh.shimCurrent, true);
+  assert.equal(fresh.permissionTimeout, PERMISSION_TIMEOUT_SECONDS);
+  assert.equal(
+    await installedPermissionTimeout({ codexHome, stateDir }),
+    PERMISSION_TIMEOUT_SECONDS,
+    'one reader, and the gate in `machine/conversations.ts` uses this one',
+  );
+
+  // Exactly what an upgrade leaves behind: nothing rewrites a Codex installation
+  // on its own, so the log-only shim and the 3s `timeout` an older tether wrote
+  // are still there and `installed` still lists all five events. Both halves are
+  // reported, because either one alone means the buttons cannot work.
+  await writeFile(shimPath, '#!/usr/bin/env node\n// an older tether\n', { mode: 0o700 });
+  const oldShim = await hookStatus({ codexHome, stateDir });
+  assert.deepEqual(oldShim.installed, [...HOOK_EVENTS], 'registered, and still not answerable');
+  assert.equal(oldShim.shimCurrent, false);
+
+  await installHook({ codexHome, stateDir });
+  const file = JSON.parse(await readFile(hooksPath, 'utf8')) as {
+    hooks: Record<string, { hooks: Record<string, unknown>[] }[]>;
+  };
+  for (const group of file.hooks['PermissionRequest'] ?? []) {
+    for (const handler of group.hooks) handler['timeout'] = 3;
+  }
+  await writeFile(hooksPath, `${JSON.stringify(file, null, 2)}\n`);
+  const oldTimeout = await hookStatus({ codexHome, stateDir });
+  assert.equal(oldTimeout.shimCurrent, true, 're-installing rewrote the shim');
+  assert.equal(oldTimeout.permissionTimeout, 3);
+
+  // A correction the user is told about, because Codex re-hashes the entry.
+  const corrected = await installHook({ codexHome, stateDir });
+  assert.deepEqual(corrected.updated, ['PermissionRequest']);
+  assert.equal(
+    (await hookStatus({ codexHome, stateDir })).permissionTimeout,
+    PERMISSION_TIMEOUT_SECONDS,
+  );
+});
+
+test('there is no timeout to read where tether has no entry', async (t) => {
+  const { codexHome, stateDir } = await lab(t);
+  assert.equal(await installedPermissionTimeout({ codexHome, stateDir }), undefined, 'no file');
+  await withExisting(codexHome);
+  assert.equal(
+    await installedPermissionTimeout({ codexHome, stateDir }),
+    undefined,
+    'a hooks.json that is somebody else’s entirely',
+  );
+  await writeFile(hooksJsonPath(codexHome), '{ not json');
+  assert.equal(
+    await installedPermissionTimeout({ codexHome, stateDir }),
+    undefined,
+    'and a file tether refuses to read is a timeout tether cannot say — never a hold',
+  );
 });
 
 test('the shim records what it is given, and cannot be talked out of its directory', async (t) => {

@@ -197,6 +197,18 @@ export class CodexStatus {
         this.#set('waiting', str(record['tool_name']));
         return;
       case 'PostToolUse': {
+        // This looks like it has a hole and does not. A **denied** call never
+        // reaches here — Codex fires no `PostToolUse` for one, confirmed in the
+        // hook log for two denials — so nothing here is what takes the badge
+        // back down after a Deny. `task_complete` is: Codex ends the turn on a
+        // denial, the rollout says so, and `#rollout` above clears `waiting` to
+        // `idle`. Verified live against codex-cli 0.145.0, twice: the header
+        // read *Waiting for you*, the user tapped Deny in the conversation view,
+        // and it read *Idle* within three seconds and stayed there. So do not
+        // add a `busy` announcement on a settled decision to compensate — it
+        // would publish a state tether never read, which is the thing the status
+        // poller's own rules forbid.
+        //
         // With a correlated call, only that call's completion answers the
         // prompt; without one, any completion is the best evidence there is.
         const callId = str(record['tool_use_id']);

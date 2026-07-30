@@ -65,6 +65,22 @@ export function permissionTimeoutMs(env = process.env): number {
  * value from the hold — Codex's is a fixed ceiling, because rewriting its entry
  * would re-prompt a trust review the user has already given
  * (`codex/hooks.ts`).
+ *
+ * Which leaves one invariant, and it is the one a third provider inherits:
+ *
+ *   tether may hold an agent's turn only while the provider's own on-disk hook
+ *   configuration actually carries the timeout that hold is sized against.
+ *   Claude Code satisfies it by reconciling the file; Codex satisfies it by
+ *   checking the file. A provider that can do neither may not hold.
+ *
+ * The nesting above is an argument about three numbers, and it is worth nothing
+ * if the outermost one is a number tether merely assumes. An installation an
+ * older tether wrote, or a user edited, can carry a `timeout` far below the
+ * hold — and then the provider kills the hook and puts its own dialog up while
+ * tether is still showing a live deadline, so a tap reports an approval the
+ * agent never received. Not holding is always available and always safe: the
+ * prompt is reported without buttons and answered in the pane, which is what
+ * every session did before it could be answered here.
  */
 export const ABORT_MARGIN_MS = 3000;
 export const KILL_MARGIN_MS = 5000;
@@ -124,7 +140,7 @@ export function hookEndpointPath(stateDir: string): string {
  * call: two sessions spawning at once install the same shim, and a shared
  * scratch name would let them interleave into it.
  */
-async function writeAtomically(path: string, text: string, mode: number): Promise<void> {
+export async function writeAtomically(path: string, text: string, mode: number): Promise<void> {
   const temporary = `${path}.tether-tmp-${randomBytes(6).toString('hex')}`;
   await writeFile(temporary, text, { mode });
   await rename(temporary, path);

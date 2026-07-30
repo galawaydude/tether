@@ -246,7 +246,16 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `PERMISSION_TIMEOUT_SECONDS` and the shim's abort are fixed, the hold is clamped
   under them by `MAX_HOLD_MS` in `#holdFor`, and `reconcileProviderHooks` does not
   touch `hooks.json` at all. Verified: moving the hold from 20s to 180s leaves the
-  file byte-identical.
+  file byte-identical. The price is that a Codex installation can go stale — no
+  upgrade path rewrites it — so the invariant both providers are held to is stated
+  once in `providers/permission.ts`: **tether may hold a turn only while the
+  provider's own on-disk hook configuration carries the timeout that hold is sized
+  against.** Claude Code satisfies it by reconciling the file; Codex satisfies it
+  by reading it (`installedPermissionTimeout`, gated in `#codexCeiling` — a gate
+  and not a clamp, because an older entry says `timeout: 3` and 3s minus
+  `KILL_MARGIN_MS` is negative). A provider that can do neither may not hold. The
+  only place a stale installation is ever mentioned to the user is
+  `tether codex-hook status`, which the user typed; `not installed` stays neutral.
 - **Codex's `PermissionRequest` is the whole of its answering path, and it is not
   a second copy of Claude Code's.** Four of the five registered events are
   fire-and-forget into the hook log; only this one POSTs to `/internal/hook` and
@@ -264,7 +273,12 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   comparison is `inputKey` (trimmed strings) rather than bytes. A failed
   correlation is _normal_ — a user may trust this entry and decline `PreToolUse` —
   and degrades to `waiting` plus the tool's name: the badge and no buttons, never
-  a card keyed by a call tether guessed at. What keeps a wrong guess from being
+  a card keyed by a call tether guessed at. A **denied** call fires no
+  `PostToolUse` at all, so nothing there clears the badge after a Deny;
+  `task_complete` does, because Codex ends the turn on a denial (verified live
+  against 0.145.0, twice: _Waiting for you_ → _Idle_ within 3s). Do not add a
+  `busy` announcement on a settled decision to fill the apparent hole — it would
+  publish a state tether never read. What keeps a wrong guess from being
   dangerous is that the hold **is** the blocked HTTP request, so a tap always
   answers the call Codex is really asking about; the correlation only decides which
   card wears the buttons. The two things the shared machinery had to learn for it:

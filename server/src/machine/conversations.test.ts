@@ -17,7 +17,12 @@ import { mapLines as mapClaudeLines } from '../providers/claude-code/events.ts';
 import { sessionStatusPath } from '../providers/claude-code/status.ts';
 import { projectDir } from '../providers/claude-code/transcript.ts';
 import { mapLines as mapCodexLines } from '../providers/codex/events.ts';
-import { MAX_HOLD_MS } from '../providers/codex/hooks.ts';
+import {
+  hooksJsonPath,
+  installHook,
+  MAX_HOLD_MS,
+  PERMISSION_TIMEOUT_SECONDS,
+} from '../providers/codex/hooks.ts';
 import { Conversations, mapperFor, stderrWarn, TAIL_EVENTS } from './conversations.ts';
 import { applyRegistrySchema, createSession, getSession, type Session } from './registry.ts';
 import { killServer, listPanes, newSession } from './tmux.ts';
@@ -345,6 +350,11 @@ async function codexHarness(t: TestContext, options: { permissionTimeoutMs?: num
   await mkdir(day, { recursive: true });
   await mkdir(join(stateDir, 'codex-hooks'), { recursive: true });
   const hookLog = join(stateDir, 'codex-hooks', `${CODEX_SESSION}.ndjson`);
+  // The real installer, into a scratch CODEX_HOME. tether will not hold a Codex
+  // turn unless the `timeout` on disk is the one the hold is sized against (the
+  // invariant in `providers/permission.ts`), so a session that can be answered
+  // is one whose hook is really installed — writing the log by hand is not it.
+  await installHook({ codexHome, stateDir });
 
   const db = new DatabaseSync(':memory:');
   applyRegistrySchema(db);
@@ -374,7 +384,7 @@ async function codexHarness(t: TestContext, options: { permissionTimeoutMs?: num
 
   const conversations = new Conversations(db, { codexHome, stateDir, pollMs: POLL, ...options });
   t.after(() => conversations.closeAll());
-  return { db, session, conversations, rollout, hookLog };
+  return { db, session, conversations, rollout, hookLog, codexHome, stateDir };
 }
 
 test('a codex session is read by the codex mapper and back-fills its own row', async (t) => {
@@ -1197,4 +1207,58 @@ test('a codex hold is clamped under the timeout Codex was asked to trust', async
   const holdMs = (h.client.pendings[0]?.deadline ?? 0) - Date.now();
   assert.ok(holdMs > 0 && holdMs <= MAX_HOLD_MS, `held for ${holdMs}ms`);
   assert.ok(MAX_HOLD_MS < 10 * 60_000, 'the clamp really is the binding constraint here');
+});
+
+/** The `timeout` on tether's own `PermissionRequest` entry, rewritten in place. */
+async function setPermissionTimeout(codexHome: string, seconds: number): Promise<void> {
+  const path = hooksJsonPath(codexHome);
+  const file = JSON.parse(await readFile(path, 'utf8')) as {
+    hooks: Record<string, { hooks: Record<string, unknown>[] }[]>;
+  };
+  for (const group of file.hooks['PermissionRequest'] ?? []) {
+    for (const handler of group.hooks) handler['timeout'] = seconds;
+  }
+  await writeFile(path, `${JSON.stringify(file, null, 2)}\n`);
+}
+
+test('the hold follows the timeout on disk, in both directions', async (t) => {
+  // The invariant in `providers/permission.ts`: tether may hold only while
+  // Codex's own configuration carries the timeout the hold is sized against.
+  // Nothing rewrites a Codex installation on upgrade — the trust gate is not
+  // tether's to walk through unasked — so a `hooks.json` an older tether wrote
+  // is the ordinary case, and it is read rather than assumed.
+  const h = await codexHeld(t, { permissionTimeoutMs: 60_000 });
+  const prompt = hookLine(codexPreToolUse()) + hookLine(codexPermissionRequest());
+
+  await appendFile(h.hookLog, prompt);
+  void h.conversations.hook(h.session, codexPermissionRequest());
+  await h.client.waitForOther(h.client.pendings, 1);
+  assert.ok((h.client.pendings[0]?.deadline ?? 0) > Date.now(), 'a real installation holds');
+  h.conversations.answer(h.session.id, CODEX_CALL, 'allow');
+
+  // What an older tether left behind. A gate and not a clamp: 3s minus
+  // `KILL_MARGIN_MS` is negative, so there is no shorter hold to fall back to —
+  // Codex would kill the shim at 3s and raise its own dialog while tether still
+  // showed a live deadline, and a tap would report an approval nothing received.
+  await setPermissionTimeout(h.codexHome, 3);
+  await appendFile(h.hookLog, prompt);
+  assert.equal(await h.conversations.hook(h.session, codexPermissionRequest()), undefined);
+  const stale = h.client.pendings.at(-1);
+  assert.equal(stale?.e.callId, CODEX_CALL, 'the prompt is still reported');
+  assert.equal(stale?.deadline, undefined, 'without a deadline, so the card wears no buttons');
+  assert.equal(h.client.states.at(-1)?.state, 'waiting', 'and the badge is still the badge');
+  assert.equal(
+    h.conversations.answer(h.session.id, CODEX_CALL, 'allow'),
+    false,
+    'nothing is holding it, so nothing can report that it was approved',
+  );
+
+  // And back: the gate reads the file every time, so `codex-hook install` puts
+  // the buttons back mid-session with nothing to restart and nothing cached.
+  await setPermissionTimeout(h.codexHome, PERMISSION_TIMEOUT_SECONDS);
+  await appendFile(h.hookLog, prompt);
+  void h.conversations.hook(h.session, codexPermissionRequest());
+  await h.client.waitForOther(h.client.pendings, 3);
+  assert.ok((h.client.pendings[2]?.deadline ?? 0) > Date.now(), 'answerable again');
+  h.conversations.answer(h.session.id, CODEX_CALL, 'deny');
 });
