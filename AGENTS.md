@@ -528,13 +528,24 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   above them** — mounting it moves nothing, at the price of covering the
   conversation's topmost rows until it is scrolled (affordable: the conversation
   sticks to its end; padding the panes to make room is the resize being avoided).
-  While the terminal is up the banner is not rendered at all and its sentence is
-  in the sheet's own header row (`.termsheet-waiting`), so nothing lies over the
-  way out and the fact still reaches the user who most needs it. Both transitions
-  are guarded by `session.spec.ts`'s geometry test, which measures `.term`'s
+  While the terminal is up the banner is not rendered at all and its sentence
+  hangs off the **bottom** of the sheet's header instead (`.termsheet-waiting`,
+  `top: 100%` on a positioned `.termsheet-bar`), so nothing lies over the way
+  out, the header keeps its height, and the reason wraps to as many lines as it
+  needs — `agent.detail` is "Claude needs your permission to use Bash", and a
+  reason ellipsised at "permission to…" is the "approving blind" this surface
+  exists against. Neither overlay may swallow a tap: `.waiting` is
+  `pointer-events: none` with its own link back to `auto`, so a tool card under
+  it still opens, and `.termsheet-waiting` lies over a terminal a user may be
+  typing at. The one announcer of agent state is a separate always-present
+  `.sr-only` live region in `app.tsx` — always present because a live region
+  inserted with its text is announced unreliably, and separate so what a blind
+  user hears does not depend on which surface is up. All of it is guarded by
+  `session.spec.ts`'s geometry test at 360×640, which measures `.term`'s
   rectangle and xterm's row count through the hidden pane with
   `getBoundingClientRect` — Playwright reports no box for `visibility: hidden`,
-  which is the state being asserted about.
+  which is the state being asserted about — plus the waiting line's overflow in
+  both axes and an `elementFromPoint` hit test through the banner.
 - **The look is one system with three rules, and they are written down at the
   top of `web/src/style.css`**: amber means a human (the waiting badge and
   banner, Approve, Send, New session, the spine on your own messages) and

@@ -684,6 +684,13 @@ label {
   background: var(--accent);
   color: var(--on-accent);
   font-size: 14.5px;
+  /* Covering the top of the conversation must not disable it: a tool card's
+     summary under here still opens. Only the link below takes the tap. */
+  pointer-events: none;
+}
+
+.waiting .link {
+  pointer-events: auto;
 }
 
 /* Reads as a word in the sentence and is still a 44px tap target: it is the one
@@ -769,6 +776,10 @@ label {
   gap: 10px;
   padding: 6px 8px 6px 14px;
   border-bottom: 1px solid var(--line);
+  /* The anchor for the waiting line that hangs below it, and a stacking context
+     so that line paints over the terminal rather than under xterm's own layers. */
+  position: relative;
+  z-index: 1;
 }
 
 .termsheet-title {
@@ -794,15 +805,28 @@ label {
   color: var(--dim);
 }
 
-/* When the note is carrying the waiting banner's sentence instead, it is amber —
-   the human's own colour — and it is never the thing the row drops, because it
-   is the only place that fact is said while the terminal is over it. */
+/* The waiting banner, said again where a user with the terminal up will see it.
+   `top: 100%` hangs it off the header whatever height that row happens to be,
+   and being out of flow is what lets it wrap to as many lines as the reason
+   needs while the header — and therefore the pane xterm is fitted to — keeps
+   exactly the height it had. Amber and `--on-accent` like the banner itself, so
+   it is the same fact in the same colour rather than a second treatment; and
+   click-through, because it lies over a terminal a user may be typing at. */
 .termsheet-waiting {
-  color: var(--accent);
+  position: absolute;
+  top: 100%;
+  right: 0;
+  left: 0;
+  margin: 0;
+  padding: 10px 14px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 14.5px;
+  pointer-events: none;
 }
 
 @media (max-width: 359px) {
-  .termsheet-note:not(.termsheet-waiting) {
+  .termsheet-note {
     display: none;
   }
 }
@@ -1142,7 +1166,13 @@ label {
 
 /* Matches `TerminalView`'s xterm theme background exactly; any difference shows
    as a seam around the rows. */
+/* A stacking context of its own, so xterm's internal layers (its accessibility
+   tree overlay sits at `z-index: 10`) stay inside the terminal rather than
+   competing with the sheet's own chrome. Relative with no offsets, so the box
+   xterm is fitted to is unchanged. */
 .term {
+  position: relative;
+  z-index: 0;
   flex: 1;
   min-height: 0;
   padding: 6px;

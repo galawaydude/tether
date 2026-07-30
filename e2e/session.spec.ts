@@ -239,6 +239,11 @@ test('the terminal is summoned over the conversation and dismissed, and neither 
  */
 test('tether’s own chrome never resizes the terminal pane', async ({ page }) => {
   mkdirSync(chrome, { recursive: true });
+  // 360×640, the smallest phone the product targets, and set before the
+  // baseline so the viewport never changes inside the test. It is also the
+  // width at which the waiting reason cannot fit on one line, which is what
+  // makes the "nothing is clipped" assertion below say anything.
+  await page.setViewportSize({ width: 360, height: 640 });
 
   await page.goto('/');
   await page.getByLabel('Password').fill(process.env['TETHER_E2E_PASSWORD'] as string);
@@ -297,6 +302,16 @@ test('tether’s own chrome never resizes the terminal pane', async ({ page }) =
   // the banner is allowed to cost by being an overlay rather than a row.
   await expect(page.locator('.termsheet-waiting')).toHaveCount(1);
   await expect(page.locator('.termsheet-waiting')).toContainText('Waiting for you');
+  // Whole, not merely present: an ellipsis here cuts the *reason* — the one
+  // thing this line exists to say — and "approving blind" is what this surface
+  // is against. Measured rather than eyeballed, in both axes, because a
+  // nowrap line clips sideways and a fixed-height one clips downwards.
+  expect(
+    await page.locator('.termsheet-waiting').evaluate((element) => ({
+      sideways: element.scrollWidth - element.clientWidth,
+      down: element.scrollHeight - element.clientHeight,
+    })),
+  ).toEqual({ sideways: 0, down: 0 });
   const close = await page
     .locator('.termsheet')
     .getByRole('button', { name: 'Close' })
@@ -326,6 +341,36 @@ test('tether’s own chrome never resizes the terminal pane', async ({ page }) =
   await expect(banner).toHaveCount(1, { timeout: HOLD_MS });
   expect(await geometry()).toEqual(settled);
   await shoot(page, '3-the-waiting-banner-is-an-overlay');
+
+  // Covering the conversation's top rows is the price of not resizing the pane;
+  // *disabling* them is not, so the banner is click-through everywhere except
+  // its own link. Hit-tested rather than clicked: what is under the banner at
+  // this moment is whatever the conversation happens to be showing, and the
+  // claim is about which element receives the tap, not about what it does.
+  const bannerBox = await banner.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    return { x: box.x, y: box.y, width: box.width, height: box.height };
+  });
+  expect(bannerBox.height).toBeGreaterThan(0);
+  const under = await page.evaluate(
+    ([x, y]) => document.elementFromPoint(x as number, y as number)?.closest('.waiting') !== null,
+    [bannerBox.x + 4, bannerBox.y + bannerBox.height - 4],
+  );
+  expect(under).toBe(false);
+
+  // And the one thing that *is* meant to take a tap still does, at full size.
+  const open = banner.getByRole('button', { name: 'Open the terminal' });
+  const openBox = await open.boundingBox();
+  expect(openBox?.height ?? 0).toBeGreaterThanOrEqual(44);
+  expect(
+    await page.evaluate(
+      ([x, y]) => document.elementFromPoint(x as number, y as number)?.closest('.link') !== null,
+      [
+        (openBox as { x: number; width: number }).x + (openBox as { width: number }).width / 2,
+        (openBox as { y: number; height: number }).y + (openBox as { height: number }).height / 2,
+      ],
+    ),
+  ).toBe(true);
 
   await conversation.getByRole('button', { name: 'Approve' }).click();
   await expect(banner).toHaveCount(0, { timeout: HOLD_MS });

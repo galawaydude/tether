@@ -242,6 +242,16 @@ function SessionScreen({
         </div>
       </header>
 
+      {/* The one announcer of the agent's own state, and it is always in the
+          tree: a live region inserted at the same moment as its text is
+          announced unreliably, while one whose content changes is announced
+          dependably. Empty until the agent stops, so busy/idle is not narrated
+          — and separate from anything on screen, so what a blind user hears
+          does not depend on whether the terminal happens to be summoned. */}
+      <p class="sr-only" aria-live="polite" aria-atomic="true">
+        {agent.state === 'waiting' ? `Waiting for you. ${waitingDetail}` : ''}
+      </p>
+
       <div class="panes">
         {/*
          * `inert` while the terminal is over it, which is the platform's own
@@ -298,21 +308,22 @@ function SessionScreen({
         >
           <div class="termsheet-bar">
             <h2 class="termsheet-title">Terminal</h2>
-            {/* What the sheet is, until there is something worth more of the
-                row. A user with the terminal up is exactly who needs to know
-                the agent stopped and why — the banner that would say it is
-                behind this — and the row is one ellipsised line either way, so
-                borrowing it costs no height and therefore no tmux resize. */}
-            {agent.state === 'waiting' ? (
-              <p class="termsheet-note termsheet-waiting">
-                <strong>Waiting for you.</strong> {waitingDetail}
-              </p>
-            ) : (
-              <p class="termsheet-note">The escape hatch.</p>
-            )}
+            <p class="termsheet-note">The escape hatch.</p>
             <button type="button" class="ghost" onClick={dismiss}>
               Close
             </button>
+            {/* A user with the terminal up is exactly who needs to know the
+                agent stopped and why, and the reason is the whole point of
+                saying it — "Claude needs your permission to use Bash" clipped
+                at "permission to…" is not a reason. So it hangs below the
+                header rather than sitting in it: out of flow, free to wrap to
+                as many lines as it needs, and costing the header and therefore
+                the terminal pane no height at all. */}
+            {agent.state === 'waiting' && (
+              <p class="termsheet-waiting">
+                <strong>Waiting for you.</strong> {waitingDetail}
+              </p>
+            )}
           </div>
           <TerminalView
             session={session}
@@ -332,11 +343,15 @@ function SessionScreen({
          * because the conversation sticks to its end; padding the panes to make
          * room would reintroduce exactly the resize this removes.
          *
-         * Not rendered at all while the terminal is up: the sheet's own header
-         * carries the fact there, so nothing is laid over the way out.
+         * Not rendered at all while the terminal is up: the sheet carries the
+         * fact there instead, so nothing is laid over the way out.
+         *
+         * It is also the only thing on this overlay that takes a tap. The
+         * conversation underneath stays live, because covering the top of a
+         * list is not the same as disabling it.
          */}
         {agent.state === 'waiting' && !summoned && (
-          <p class="waiting" role="status">
+          <p class="waiting">
             <strong>Waiting for you.</strong> {waitingDetail}{' '}
             <button class="link" onClick={summon}>
               Open the terminal
