@@ -652,12 +652,12 @@ function Composer({
           {said.hatch && (
             <>
               {' '}
-              {/* **Not** "Open the terminal": that is the waiting banner's link
-                  in `app.tsx`, and the two appear together routinely — sending
-                  `/resume` puts Claude Code into `waiting` within a second, so
-                  both are on screen at once. Two controls with one accessible
-                  name is an ambiguity for a screen reader and for
-                  `getByRole({ name })`, which matches on a substring. */}
+              {/* This name is one of three that must not contain one another —
+                  the rule and its guard live with `AUTH_TERMINAL_LABEL` in
+                  `providers.ts`. The part that is local to here: this one and
+                  the waiting banner's appear together routinely, because
+                  sending `/resume` puts Claude Code into `waiting` within a
+                  second, so both are on screen at once. */}
               <button type="button" class="link" onClick={onSummon}>
                 Show the terminal
               </button>
