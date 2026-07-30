@@ -384,7 +384,13 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   the `.tsx` leaves the test suite. An answerable card is the one card that opens
   itself and wraps rather than scrolls sideways: `rm -rf ./build` and `rm -rf /`
   differ at the right edge, and a clipped command is the "approving blind" the
-  surface exists to prevent.
+  surface exists to prevent. One string there is still not
+  provider-neutral: the expired-hold sentence hard-codes "Claude Code is asking
+  in the terminal instead", so it names the wrong agent on a Codex card, while
+  everything else on that card reads the same either way. The fix is to take the
+  name from `providerLabel` in `web/src/providers.ts` — where the rest of the web
+  app already reads a provider's name from, so it is the existing seam and not a
+  new one — and it belongs to whoever next owns `web/src/conversation.ts`.
 - **The hook secret is a `0600` file read at hook execution time, and the
   settings file gets only a path.** `settings.local.json` lives in the user's
   repository, so a token in it is one `git add` from being published (report
