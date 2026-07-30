@@ -102,6 +102,9 @@ test('each provider offers its own controls, and they reach the pane', async ({ 
   await expect(rows(page).getByText('/effort medium')).toHaveCount(2);
   // The other axis, so this proves a table rather than one wired control.
   await expect(rows(page).getByText('/model sonnet')).toHaveCount(0);
+  // The pane itself, because "the control reaches the agent" is the one claim of
+  // this feature a reviewer cannot take on trust from a screenshot of the panel.
+  await shoot(page, '1b-claude-pane');
   await dismiss(page);
 
   // ── the narrowest phone, and then its keyboard ─────────────────────────────
@@ -270,4 +273,5 @@ test('a Codex composer offers Codex’s axis, and warns before it lowers the bar
   // stub's echo of it is what proves it arrived as its own line rather than
   // glued to the command.
   await expect(rows(page).getByText('echo 3')).toHaveCount(1);
+  await shoot(page, '3b-codex-pane');
 });

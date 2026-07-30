@@ -124,7 +124,14 @@ test('a failed permission-mode request never implies the mode changed', () => {
   // Whatever the server says, and whatever it does not: no sentence here may
   // claim the mode was set, because the only evidence for that is a read the
   // server did not manage.
-  for (const code of ['unreadable', 'not_confirmed', 'busy', 'session_dead', 'wrong_provider', '']) {
+  for (const code of [
+    'unreadable',
+    'not_confirmed',
+    'busy',
+    'session_dead',
+    'wrong_provider',
+    '',
+  ]) {
     const said = modeFailure(code, 'Decide for me');
     assert.doesNotMatch(said, /\bis now\b|\bset to\b|\bchanged to\b/i, code);
     assert.ok(said.length > 20, code);

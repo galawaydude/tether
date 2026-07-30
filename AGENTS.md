@@ -740,9 +740,10 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `coerceTypes` are on): `additionalProperties: false` strips instead of rejecting, and
   `{"password": 123}` arrives as `"123"`. `buildServer` turns both off. Do not remove that
   `ajv.customOptions` block, and do not assume stock Fastify behaviour when reading the tests.
-- **`e2e/` is six Playwright specs and they assert counts and geometry, not presence.**
+- **`e2e/` is seven Playwright specs and they assert counts and geometry, not presence.**
   They drive the real `tether serve` (`e2e/serve.ts` calls the CLI's own `main`) inside a
-  scratch `HOME`/state dir/tmux socket, with `e2e/stub-agent.ts` on `PATH` as `claude` — so
+  scratch `HOME`/state dir/tmux socket, with `e2e/stub-agent.ts` on `PATH` as `claude` and
+  as `codex` (the composer-option entry above says why the second shim is there) — so
   the session is created through the production path and **CI still never runs a live
   agent**. What `session.spec.ts` checks that nothing else can is the reload and
   the terminal overlay — that summoning and dismissing it keeps both scroll
@@ -764,11 +765,12 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   above the 900px breakpoint and the only test that renders the `.workspace` shape at
   all: it measures the rail's box against the session's, counts the back button at **0**
   rather than checking it is invisible (`display: none` is the point), counts exactly one
-  `<main>`, and checks the page cannot scroll sideways. Two Playwright projects carry
+  `<main>`, and checks the page cannot scroll sideways. What `options.spec.ts` checks
+  is in the composer-option entry above. Two Playwright projects carry
   that, `phone` and `desktop`, each with a `testIgnore`/`testMatch` so neither runs the
   other's spec at the wrong width — they still share the one server, so the directory
   and by-name rules below apply to it too. `e2e/ui.ts` is the harness beside
-  `serve.ts`: the summon/dismiss recipe is spelled there once rather than in four
+  `serve.ts`: the summon/dismiss recipe is spelled there once rather than in five
   specs, and evidence screenshots are namespaced by spec, because the shared
   `TETHER_E2E_SHOTS` directory plus one worker meant a number reused in a second
   spec silently overwrote the first spec's image.
