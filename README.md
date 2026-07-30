@@ -592,8 +592,8 @@ at the pane after a tap has already approved something, and asserts that
 approves nothing. It also asserts the watch rule the overlay decides: a tool
 call proposed while the terminal is summoned is **not** held — the agent's own
 prompt takes the question straight away — and the same session holds the next one
-once the terminal is put away. Both of the controls that end a hold are measured
-rather than merely found: the card's **Approve** and **Deny**, and the waiting
+once the terminal is put away. Every control that ends a hold is measured rather
+than merely found: the card's **Approve** and **Deny**, and the waiting
 banner's **Open the terminal**, are each reachable at the phone's own size and
 again with the keyboard up (360×340). The third (`composer.spec.ts`) composes a message and asserts it reaches the agent
 and appears exactly once, that Enter in the box is a line break rather than a
