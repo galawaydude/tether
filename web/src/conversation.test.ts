@@ -543,7 +543,7 @@ test('what a card says about a permission it is holding, and about how it ended'
   assert.equal(toolState(answered('deny')), 'denied');
   assert.match(toolResult(answered('deny')), /did not run it/);
   // A timeout is not an error and must not read as one: the question went back
-  // to the agent's own prompt, which the terminal tab is showing.
+  // to the agent's own prompt, which the terminal is showing.
   assert.equal(toolState(answered('timeout')), 'in terminal');
   assert.match(toolResult(answered('timeout')), /asking in the terminal/);
   assert.equal(toolState(answered('allow')), '…', 'approved, and now simply running');

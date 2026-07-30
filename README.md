@@ -21,16 +21,17 @@ file.
 > state: _working_, _idle_, or _waiting for you_. You tap **New session**, pick a
 > directory, and a Claude Code session starts. You watch it in a **conversation
 > view** — your prompts, its replies, the tools it ran and what they returned.
-> When it needs a decision, the session goes amber and you switch to the
-> **terminal view**, which is the real Claude Code TUI, live, and you answer. You
+> When it needs a decision, the session goes amber and you answer it there. For
+> anything tether has no control for, you summon the **terminal** over the
+> conversation — the real Claude Code TUI, live — and put it away again. You
 > type a message, including a multi-line one, and send it. You close the tab,
 > lose signal, get on a train, restart tether, come back an hour later — the
 > agent is still running, the conversation is intact, the terminal scrollback is
 > intact, and nothing is duplicated or missing.
 
 Concretely: authentication, session list with live status, create session,
-conversation view, terminal view, send input, detach, re-attach, and a UI that is
-genuinely usable one-handed on a phone. Claude Code is the first provider in M1;
+conversation view, the terminal as a summoned escape hatch, send input, detach,
+re-attach, and a UI that is genuinely usable one-handed on a phone. Claude Code is the first provider in M1;
 OpenAI Codex is the second, and is what turned "provider-neutral" from an
 intention into a fact.
 
@@ -46,20 +47,23 @@ session API, the terminal transport, the conversation data layer, the browser ap
 the conversation view, and the composer. Run `tether serve`, open the address it
 prints, and you can log in, see the sessions on this machine — each tagged with the
 agent it is running — start one in a directory you name under either agent, and
-follow it in two tabs: a **Conversation** — your prompts, the agent's replies,
-and a collapsed card per tool call that opens onto its input and result — and a
-live **Terminal**, with a bar for the keys a phone keyboard has not got (Esc, Tab,
-arrows, Ctrl-C). A live session shows what its agent is doing — _Working_, _Idle_
-or _Waiting for you_ — in the session list and above both views, and just **live**
+follow it. Opening a session lands you in the **conversation**: your prompts, the
+agent's replies, and a collapsed card per tool call that opens onto its input and
+result. There is no second tab to choose — **Terminal** in the header summons the
+real TUI over the conversation, with a bar for the keys a phone keyboard has not
+got (Esc, Tab, arrows, Ctrl-C), and Close puts it away with both views exactly
+where you left them. A live session shows what its agent is doing — _Working_,
+_Idle_ or _Waiting for you_ — in the session list and above both views, and just **live**
 where the provider is not saying rather than a badge that would be a guess. A
 permission prompt from either agent puts the tool call it is asking about on the
 card it is asking about — with **Approve** and **Deny** on it, so a yes/no does
 not mean switching into a terminal on a phone (see
 [the hook](#the-claude-code-hook-and-the-file-it-writes-in-your-project), and
 [Codex's](#codex-and-its-optional-hook), which you install once). The terminal is
-still an answering surface and still always correct.
+still an answering surface and still always correct — and while it is summoned
+tether holds nothing, because the question is then in front of you there.
 
-You reply in the conversation tab's **composer**: a real text box, so the message
+You reply in the conversation's **composer**: a real text box, so the message
 is composed on the phone and sent as one unit rather than a round trip per
 keystroke with autocorrect fighting a raw byte stream. **Enter inserts a line
 break** — the Send button is what sends — and a multi-line prompt arrives whole,
@@ -401,8 +405,8 @@ ignored, never thrown.
 
 **The terminal view depends on none of it.** It is the real TUI over tmux, it is
 always correct, and it is a complete fallback. If the conversation ever looks
-wrong or empty after a provider upgrade, that is the failure to expect, the
-terminal tab is the answer, and the session itself was never at risk.
+wrong or empty after a provider upgrade, that is the failure to expect, summoning
+the terminal is the answer, and the session itself was never at risk.
 
 ## Development
 
@@ -449,7 +453,9 @@ npm run test:e2e                  # the end-to-end specs
 unit tests. Four of them run at a phone viewport, which is the client tether is
 designed for. One logs in, starts a session, watches it, types at
 it, **reloads the page**, and asserts the conversation and the terminal come back
-intact and exactly once; it also opens the New session sheet at the shortest
+intact and exactly once; it also summons the terminal over the conversation and
+dismisses it, asserting both keep their scroll position and that the terminal is
+not re-attached; and it opens the New session sheet at the shortest
 phone viewports and asserts the card and its **Agent** picker stay on screen,
 since the sheet is the one screen that grows with its copy. The second acts out
 three permission prompts and answers them three ways: **Approve** on the card
@@ -458,7 +464,10 @@ than adding a second one; **Deny** blocks it and the command never runs; and one
 that nobody answers is handed back to the agent's own prompt in the terminal,
 answered there, and still reconciles to one card. It also types the reflex `yes`
 at the pane after a tap has already approved something, and asserts that
-approves nothing. The third composes a message and asserts it reaches the agent
+approves nothing. It also asserts the watch rule the overlay decides: a tool
+call proposed while the terminal is summoned is **not** held — the agent's own
+prompt takes the question straight away — and the same session holds the next one
+once the terminal is put away. The third composes a message and asserts it reaches the agent
 and appears exactly once, that Enter in the box is a line break rather than a
 send, and that the composer leaves Send on screen with the keyboard up. The
 fourth starts two sessions in **one** directory and asserts each shows its own

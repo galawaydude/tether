@@ -67,7 +67,7 @@ export function ConversationView({
   /**
    * What the agent is doing, straight off the `state` frame. Reported up rather
    * than rendered here: the *waiting for you* banner belongs above both panes,
-   * since a user staring at the terminal tab needs it just as much.
+   * since a user with the terminal summoned over it needs it just as much.
    */
   onState: (state: SessionState, detail?: string) => void;
   /** Where a composed message goes: the terminal pane's socket. */
@@ -92,9 +92,9 @@ export function ConversationView({
   status.current = onStatus;
   const reportState = useRef(onState);
   reportState.current = onState;
-  // The live socket and the tab in front, both through refs: the effect below
-  // owns the socket for the life of the session, so switching tabs must send one
-  // frame rather than tear it down and cost a replay.
+  // The live socket and whether this pane is in front, both through refs: the
+  // effect below owns the socket for the life of the session, so summoning the
+  // terminal must send one frame rather than tear it down and cost a replay.
   const live = useRef<WebSocket | null>(null);
   const inFront = useRef(watching);
   inFront.current = watching;
@@ -254,11 +254,11 @@ export function ConversationView({
       >
         {failed && (
           <p class="error" role="alert">
-            Cannot read this conversation. The terminal tab still shows everything.
+            Cannot read this conversation. The terminal still shows everything.
           </p>
         )}
         {state.rows.length === 0 && state.echoes.length === 0 && !failed && (
-          <p class="muted">Nothing yet. The terminal tab shows the session as it starts.</p>
+          <p class="muted">Nothing yet. The terminal shows the session as it starts.</p>
         )}
         {state.rows.map((row) => (
           <RowView key={row.key} row={row} provider={provider} sessionId={sessionId} />

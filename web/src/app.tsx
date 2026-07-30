@@ -119,23 +119,29 @@ export function App() {
   );
 }
 
-const TABS = [
-  { id: 'conversation', label: 'Conversation' },
-  { id: 'terminal', label: 'Terminal' },
-] as const;
-
-type Tab = (typeof TABS)[number]['id'];
+/** The two channels a session screen holds open, both for its whole life. */
+type Pane = 'conversation' | 'terminal';
 
 /**
- * The session screen: one header, two tabs, two panes.
+ * The session screen: the conversation, and a terminal summoned over it.
  *
- * Both panes stay mounted and the inactive one is hidden with
+ * There is no tab pair and no choice to make on arrival — opening a session
+ * lands on the conversation, which is the interface. The terminal is an escape
+ * hatch for what tether has no control for yet (slash commands, trust prompts,
+ * crashes, an agent's own permission dialog after a hold expires), so it is
+ * summoned from the header, covers the conversation while it is up, and is
+ * dismissed back out of the way.
+ *
+ * Both panes still stay mounted and the one behind is hidden with
  * `visibility: hidden` rather than `display: none` or an unmount. That is the
- * whole of "switching tabs preserves both scroll positions": a laid-out element
- * keeps its `scrollTop`, so neither view needs to save and restore one, and
- * xterm keeps a real size instead of being fitted to 0×0 and back on every
- * switch. Unmounting the terminal would additionally cost a full tmux replay per
- * tap, and unmounting the conversation a refetch.
+ * whole of "summoning and dismissing preserves both scroll positions": a
+ * laid-out element keeps its `scrollTop`, so neither view needs to save and
+ * restore one, and xterm keeps a real size instead of being fitted to 0×0 and
+ * back on every summon — which would resize the tmux pane and make the agent
+ * redraw its prompt into the scrollback for every other viewer too. The overlay
+ * occupies the same box open or closed for the same reason. Unmounting the
+ * terminal would additionally cost a full tmux replay per tap, and unmounting
+ * the conversation a refetch.
  *
  * The two views share nothing but this frame. They are two renderings of one
  * process from two independent sources (report §3) — there is no cursor between
@@ -150,21 +156,21 @@ function SessionScreen({
   onBack: () => void;
   onSignedOut: () => void;
 }) {
-  const [tab, setTab] = useState<Tab>('conversation');
+  const [summoned, setSummoned] = useState(false);
   // One chip, two channels: it reports on whichever pane is in front, because
   // "Reconnecting…" is only actionable about the thing being looked at. The
   // agent's own busy/idle/waiting chip sits beside it and is a different fact.
-  const [status, setStatus] = useState<Record<Tab, Status>>({
+  const [status, setStatus] = useState<Record<Pane, Status>>({
     conversation: 'connecting',
     terminal: 'connecting',
   });
-  const report = (id: Tab) => (next: Status) =>
+  const report = (id: Pane) => (next: Status) =>
     setStatus((current) => (current[id] === next ? current : { ...current, [id]: next }));
 
   // The agent's own state, from the `conv` channel's `state` frame. It sits
-  // above the tabs rather than inside the conversation pane: the terminal is
-  // where a permission prompt is answered, so the tab a user is *not* on is
-  // exactly the one they need this on.
+  // above both panes rather than inside the conversation: with the terminal
+  // summoned it is exactly the thing that says why, and the banner under it is
+  // what sends a user to the terminal in the first place.
   const [agent, setAgent] = useState<{ state: SessionState; detail?: string }>({ state: 'idle' });
 
   // The one thing the two panes do share, and only because the wire says so: a
@@ -172,6 +178,32 @@ function SessionScreen({
   // input sequencing lives. Everything they show still comes from two
   // independent sources with no cursor between them (report §3).
   const sender = useRef<((message: string) => void) | null>(null);
+
+  /** Which channel the header's chip reports on: the one that is on screen. */
+  const front: Pane = summoned ? 'terminal' : 'conversation';
+
+  // Closing from inside the sheet hides the button that was focused, and a
+  // browser drops focus to `<body>` when that happens — so a keyboard user who
+  // dismissed the terminal would be tabbing from the top of the page again. The
+  // control that summoned it is the honest place to land.
+  const hatch = useRef<HTMLButtonElement>(null);
+  const dismiss = () => {
+    setSummoned(false);
+    hatch.current?.focus();
+  };
+  // The banner's link is the mirror of that: it is the control that summons, and
+  // it is gone once the terminal is up because it would be offering what is
+  // already on screen — so it hands focus to the header control for the same
+  // reason, rather than dropping it to `<body>`.
+  const summon = () => {
+    setSummoned(true);
+    hatch.current?.focus();
+  };
+
+  // Said in two places, and it has to be the same sentence in both: the banner
+  // when the conversation is on screen, the sheet's own header row when the
+  // terminal is over it.
+  const waitingDetail = agent.detail ?? 'The agent has stopped and wants an answer.';
 
   return (
     // The `<main>` in both shapes: on a phone the list has unmounted, and in the
@@ -185,79 +217,151 @@ function SessionScreen({
           <strong>{session.title}</strong>
           <span class="path">{session.cwd}</span>
         </div>
+        {/* The escape hatch, and the only navigation left on this screen. A
+            toggle rather than an open-only button: it is the control that is on
+            screen in both states, and `aria-expanded` is then the truth about
+            the thing it summons. */}
+        <button
+          ref={hatch}
+          type="button"
+          class="ghost bar-term"
+          aria-expanded={summoned}
+          onClick={() => setSummoned((open) => !open)}
+        >
+          Terminal
+        </button>
         {/* Wrapped together so they occupy one whole row on a phone rather than
             wrapping only when their own text happens to be long — see `.bar`:
             a bar that changes height as a status word changes resizes the tmux
             pane underneath it. */}
         <div class="bar-chips">
           <span class={`chip chip-agent-${agent.state}`}>{STATE_TEXT[agent.state]}</span>
-          <span class={`chip chip-${status[tab]}`} role="status">
-            {STATUS_TEXT[status[tab]]}
+          <span class={`chip chip-${status[front]}`} role="status">
+            {STATUS_TEXT[status[front]]}
           </span>
         </div>
       </header>
 
-      {agent.state === 'waiting' && (
-        <p class="waiting" role="status">
-          <strong>Waiting for you.</strong>{' '}
-          {agent.detail ?? 'The agent has stopped and wants an answer.'}{' '}
-          {tab === 'conversation' && (
-            <button class="link" onClick={() => setTab('terminal')}>
-              Open the terminal
-            </button>
-          )}
-        </p>
-      )}
-
-      {/* Toggle buttons rather than an ARIA tablist: a tablist owes a screen
-          reader roving tabindex and arrow-key navigation, and two pressed-state
-          buttons are correct as they stand and need neither. */}
-      <nav class="tabs" aria-label="Views">
-        {TABS.map(({ id, label }) => (
-          <button
-            key={id}
-            type="button"
-            class={id === tab ? 'tab tab-on' : 'tab'}
-            aria-pressed={id === tab}
-            onClick={() => setTab(id)}
-          >
-            {label}
-          </button>
-        ))}
-      </nav>
+      {/* The one announcer of the agent's own state, and it is always in the
+          tree: a live region inserted at the same moment as its text is
+          announced unreliably, while one whose content changes is announced
+          dependably. Empty until the agent stops, so busy/idle is not narrated
+          — and separate from anything on screen, so what a blind user hears
+          does not depend on whether the terminal happens to be summoned. */}
+      <p class="sr-only" aria-live="polite" aria-atomic="true">
+        {agent.state === 'waiting' ? `Waiting for you. ${waitingDetail}` : ''}
+      </p>
 
       <div class="panes">
-        {TABS.map(({ id }) => (
-          <div key={id} class={id === tab ? 'pane' : 'pane pane-off'}>
-            {id === 'conversation' ? (
-              <ConversationView
-                sessionId={session.id}
-                provider={session.provider}
-                // Which tab is in front, not which pane is mounted: both are, so
-                // the server would otherwise hold the agent on a permission
-                // prompt while the user is answering it in the terminal.
-                watching={tab === 'conversation'}
-                onStatus={report('conversation')}
-                onState={(state, detail) =>
-                  setAgent((current) =>
-                    current.state === state && current.detail === detail
-                      ? current
-                      : { state, ...(detail === undefined ? {} : { detail }) },
-                  )
-                }
-                sender={sender}
-                terminal={status.terminal}
-              />
-            ) : (
-              <TerminalView
-                session={session}
-                onStatus={report('terminal')}
-                onSignedOut={onSignedOut}
-                sender={sender}
-              />
+        {/*
+         * `inert` while the terminal is over it, which is the platform's own
+         * word for "visible but not to be interacted with": it takes the
+         * conversation out of the tab order and the accessibility tree without
+         * touching layout, so `scrollTop` and xterm's size survive — everything
+         * `display: none` or an unmount would cost. The tab pair got this free
+         * from hiding the pane; an overlay that deliberately leaves a strip of
+         * the conversation showing has to say it. Preact removes the attribute
+         * outright for `false`, so there is no browser where this sticks on.
+         */}
+        <div class="pane" inert={summoned}>
+          <ConversationView
+            sessionId={session.id}
+            provider={session.provider}
+            /*
+             * The watch/hold decision, and it is the same one the tab pair made
+             * for the same reason: with the terminal summoned, nobody is
+             * watching the conversation.
+             *
+             * Both panes are mounted whatever is on screen, so the socket alone
+             * cannot say — and what the server does with this is hold a
+             * proposed tool call (`#holdFor` in `machine/conversations.ts`).
+             * The terminal is summoned precisely to answer the agent *there*:
+             * a slash command, a trust prompt, or the provider's own permission
+             * dialog after a hold expired. Holding while it is up would stall
+             * the agent in front of the very surface that answers it, and the
+             * conversation's own Approve/Deny is behind an overlay nobody can
+             * see. Dismissing hands watching straight back, and a hold released
+             * by summoning ends as a `timeout` — the question goes to the
+             * provider's own prompt, which is where the user already is.
+             */
+            watching={!summoned}
+            onStatus={report('conversation')}
+            onState={(state, detail) =>
+              setAgent((current) =>
+                current.state === state && current.detail === detail
+                  ? current
+                  : { state, ...(detail === undefined ? {} : { detail }) },
+              )
+            }
+            sender={sender}
+            terminal={status.terminal}
+          />
+        </div>
+        {/* Over the conversation, never beside it: a permanently visible
+            terminal would make watching permanently true and change when agents
+            are held. Labelled rather than `role="dialog"` with a focus trap —
+            the conversation behind stays live and a trap would need Escape to
+            release it, which is a key the terminal itself has to receive. */}
+        <section
+          class={summoned ? 'pane termsheet' : 'pane termsheet pane-off'}
+          aria-label="Terminal"
+        >
+          <div class="termsheet-bar">
+            <h2 class="termsheet-title">Terminal</h2>
+            <p class="termsheet-note">The escape hatch.</p>
+            <button type="button" class="ghost" onClick={dismiss}>
+              Close
+            </button>
+            {/* A user with the terminal up is exactly who needs to know the
+                agent stopped and why, and the reason is the whole point of
+                saying it — "Claude needs your permission to use Bash" clipped
+                at "permission to…" is not a reason. So it hangs below the
+                header rather than sitting in it: out of flow, free to wrap to
+                as many lines as it needs, and costing the header and therefore
+                the terminal pane no height at all. Gated on `summoned` as well
+                as on the state, exactly as `.waiting` is gated on `!summoned`:
+                out of flow it would cost nothing to leave mounted behind a
+                hidden sheet, but then it exists while nobody can see it and
+                every assertion about it passes over a closed overlay. */}
+            {agent.state === 'waiting' && summoned && (
+              <p class="termsheet-waiting">
+                <strong>Waiting for you.</strong> {waitingDetail}
+              </p>
             )}
           </div>
-        ))}
+          <TerminalView
+            session={session}
+            onStatus={report('terminal')}
+            onSignedOut={onSignedOut}
+            sender={sender}
+          />
+        </section>
+        {/*
+         * Inside `.panes` and absolutely positioned over it, never above it in
+         * the flow. The banner mounts and unmounts as the agent stops and
+         * starts, and anything that changes this container's height refits
+         * xterm, which resizes the tmux pane, which makes the agent redraw its
+         * prompt into the scrollback for *every other viewer* of the session —
+         * the same rule `.bar`'s constant height defends. Overlaying costs the
+         * conversation's topmost rows until it is scrolled, which is affordable
+         * because the conversation sticks to its end; padding the panes to make
+         * room would reintroduce exactly the resize this removes.
+         *
+         * Not rendered at all while the terminal is up: the sheet carries the
+         * fact there instead, so nothing is laid over the way out.
+         *
+         * It is also the only thing on this overlay that takes a tap. The
+         * conversation underneath stays live, because covering the top of a
+         * list is not the same as disabling it.
+         */}
+        {agent.state === 'waiting' && !summoned && (
+          <p class="waiting">
+            <strong>Waiting for you.</strong> {waitingDetail}{' '}
+            <button class="link" onClick={summon}>
+              Open the terminal
+            </button>
+          </p>
+        )}
       </div>
     </main>
   );

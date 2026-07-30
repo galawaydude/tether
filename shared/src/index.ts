@@ -176,8 +176,9 @@ export type ServerFrame =
  * the client claims here, and not whether the screen is on. The session screen
  * keeps both panes mounted, so being subscribed says nothing about it, and the
  * server holds a permission prompt only for a viewer whose front pane is the one
- * that answers it. Absent, the server assumes `true`: that is the tab the app
- * opens on.
+ * that answers it — in the browser app, `false` is exactly "the terminal is
+ * summoned over the conversation". Absent, the server assumes `true`: that is
+ * what opening a session lands on.
  */
 export type ConvClientFrame = { c: 'watch'; watching: boolean };
 

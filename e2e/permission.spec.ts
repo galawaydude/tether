@@ -37,6 +37,8 @@ import { expect, test, type Page } from '@playwright/test';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { dismiss, hatch, shots, summon } from './ui.ts';
+
 /**
  * Its own directory inside the sandbox, not `session.spec.ts`'s. The three specs
  * share one `tether serve`, and that spec asserts on counts — a second session
@@ -45,8 +47,15 @@ import { join } from 'node:path';
  */
 const project = join(process.env['TETHER_E2E_DIR'] as string, 'permission');
 
-/** Where a reviewer's copies go; set by the runner, ignored when it is not. */
-const evidence = process.env['TETHER_E2E_SHOTS'];
+/**
+ * The watch/hold spec's own directory. It is a second session because it drives
+ * the same three-way join from the other side — a call proposed while nobody is
+ * watching the conversation — and a card count in the test above must not
+ * depend on how many cards this one made.
+ */
+const unwatched = join(process.env['TETHER_E2E_DIR'] as string, 'unwatched');
+
+const shoot = shots('permission');
 
 /** The server's own hold, from the one place it is configured. */
 const HOLD_MS = Number(process.env['TETHER_E2E_HOLD_SECONDS'] ?? '15') * 1000;
@@ -55,41 +64,47 @@ const GREETING = 'stub agent ready';
 const ASK = 'ask to run something';
 const ASK_DENY = 'ask to run the other thing';
 const ASK_WAIT = 'ask and wait it out';
+const ASK_UP = 'ask with the terminal up';
+const ASK_AWAY = 'ask with the terminal away';
 const ANSWER = 'yes';
+/** What the agent's own prompt prints when tether did not answer the hook. */
+const OWN_PROMPT = 'Do you want to proceed?';
 
-async function shoot(page: Page, name: string): Promise<void> {
-  if (evidence !== undefined) await page.screenshot({ path: join(evidence, `${name}.png`) });
+/** Summon and wait for the attach too: this spec types the moment it is up. */
+async function summonLive(page: Page): Promise<void> {
+  await summon(page);
+  await expect(page.locator('header .chip[role="status"]')).toHaveText('Live');
 }
 
-/** Types at the pane, which is how a real prompt starts, then comes back. */
-async function typeAt(page: Page, text: string): Promise<void> {
-  await page.getByRole('button', { name: 'Terminal', exact: true }).click();
-  await expect(page.locator('header .chip[role="status"]')).toHaveText('Live');
+/** Types at the pane, which is how a real prompt starts. */
+async function typeAtPane(page: Page, text: string): Promise<void> {
   await page.locator('.xterm-screen').click();
   await page.keyboard.type(text);
   await page.keyboard.press('Enter');
-  await page.getByRole('button', { name: 'Conversation', exact: true }).click();
+}
+
+/** Summon, type, and put the terminal away again. */
+async function typeAt(page: Page, text: string): Promise<void> {
+  await summonLive(page);
+  await typeAtPane(page, text);
+  await dismiss(page);
 }
 
 /**
  * Ask for something, in two steps, because tether holds a proposed call only
- * while the conversation pane is the one in front — and typing needs the other
- * tab. So the typed line only **arms** the stub, and the tool call is fired from
- * here, out of band, once this pane is demonstrably back in front.
+ * while the conversation is what is on screen — and typing needs the terminal
+ * over it. So the typed line only **arms** the stub, and the tool call is fired
+ * from here, out of band, once the terminal is demonstrably put away.
  *
  * That is a construction rather than a wait: `e2e/stub-agent.ts` fires when the
  * armed ask and the trigger file are both present, in whichever order they land,
  * so there is no window where the result depends on which round-trip won. A
  * `waitForTimeout` here would only have hidden the race.
  */
-async function askAt(page: Page, text: string): Promise<void> {
+async function askAt(page: Page, text: string, dir = project): Promise<void> {
   await typeAt(page, text);
-  await expect(page.getByRole('button', { name: 'Conversation', exact: true })).toHaveAttribute(
-    'aria-pressed',
-    'true',
-  );
   await expect(page.locator('header .chip[role="status"]')).toHaveText('Live');
-  writeFileSync(join(project, '.tether-e2e-fire'), '');
+  writeFileSync(join(dir, '.tether-e2e-fire'), '');
 }
 
 test('a permission prompt is answered from the conversation view, and only once', async ({
@@ -180,12 +195,12 @@ test('a permission prompt is answered from the conversation view, and only once'
   await expect(cards).toHaveCount(3);
   const waited = cards.nth(2);
   await expect(waited.getByRole('button', { name: 'Approve' })).toHaveCount(1);
-  // Nothing is tapped, and the tab is not left either — switching away would
+  // Nothing is tapped, and the terminal is not summoned either — doing so would
   // release the hold that is being watched expire. Both panes stay mounted, so
-  // the terminal's rendered rows are readable from here: until the deadline, the
-  // pane shows no dialog at all, because the agent is blocked inside the hook
-  // rather than waiting on a keystroke.
-  await expect(page.locator('.xterm-rows')).not.toContainText('Do you want to proceed?');
+  // the terminal's rendered rows are readable from behind the closed overlay:
+  // until the deadline, the pane shows no dialog at all, because the agent is
+  // blocked inside the hook rather than waiting on a keystroke.
+  await expect(page.locator('.xterm-rows')).not.toContainText(OWN_PROMPT);
 
   await expect(waited.locator('.tool-state')).toHaveText('in terminal', {
     timeout: HOLD_MS + 10_000,
@@ -204,13 +219,112 @@ test('a permission prompt is answered from the conversation view, and only once'
   expect(openBox?.height ?? 0).toBeGreaterThanOrEqual(44);
   await shoot(page, '5-handed-back-to-the-terminal');
 
+  // And it is a way *there*, not a tab switch: it summons the overlay, which is
+  // where the agent's own dialog now is. Once it is up the link is gone, since
+  // it would be offering the thing already on screen.
+  await open.click();
+  await expect(hatch(page)).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.locator('.xterm-rows')).toContainText(OWN_PROMPT);
+  // The banner goes with it — it would be offering the thing already on screen,
+  // and it must not lie over the sheet's own way out. Its sentence moves into the
+  // sheet's header row instead, which is the surface the user is now on.
+  await expect(banner).toHaveCount(0);
+  await expect(page.locator('.termsheet-waiting')).toContainText(
+    'Claude needs your permission to use Bash',
+  );
+  // And the tap did not cost the keyboard its place: the control that was
+  // clicked has gone, so focus lands on the one that puts the terminal away
+  // again, exactly where dismissing leaves it.
+  await expect(hatch(page)).toBeFocused();
+  await shoot(page, '6-the-banner-summons-the-terminal');
+
   // Answering there reconciles to the same one card — the other direction of
   // the same join, and the reason neither surface may assume it won.
-  await typeAt(page, ANSWER);
+  await typeAtPane(page, ANSWER);
+  await dismiss(page);
   await expect(waited.locator('.tool-state')).toHaveText('✓');
   await expect(cards).toHaveCount(3);
   await expect(waited).toContainText('removed ./cache');
   await expect(banner).toHaveCount(0);
   await expect(agentChip).toHaveText('Idle');
-  await shoot(page, '6-answered-in-the-terminal');
+  await shoot(page, '7-answered-in-the-terminal');
+});
+
+/**
+ * The watch/hold decision the terminal overlay had to make, end to end.
+ *
+ * tether holds a proposed tool call only while somebody has the conversation in
+ * front of them (`#holdFor` in `server/src/machine/conversations.ts`). The tab
+ * pair made that "which tab is selected"; the overlay makes it "is the terminal
+ * summoned", and this is the test that says which — because getting it wrong is
+ * silent in both directions. Hold with the terminal up and the agent stalls in
+ * front of the surface that answers it, behind an overlay hiding tether's own
+ * Approve. Fail to hold with it away and the feature the product exists for
+ * simply does not fire.
+ *
+ * So both halves are asserted, on one session, with the same construction the
+ * spec above uses: the typed line arms the stub and a trigger file fires it,
+ * which is what removes the race rather than hiding it.
+ */
+test('the hold follows the terminal overlay: not held while it is up, held once it is away', async ({
+  page,
+}) => {
+  mkdirSync(unwatched, { recursive: true });
+
+  await page.goto('/');
+  await page.getByLabel('Password').fill(process.env['TETHER_E2E_PASSWORD'] as string);
+  await page.getByRole('button', { name: 'Sign in' }).click();
+
+  await page.getByRole('button', { name: 'New session' }).click();
+  await page.getByLabel('Working directory').fill(unwatched);
+  await page.getByRole('button', { name: 'Start' }).click();
+
+  const conversation = page.locator('.conv');
+  const rows = page.locator('.xterm-rows');
+  const cards = conversation.locator('details.tool');
+
+  await expect(conversation.getByText(GREETING, { exact: true })).toHaveCount(1);
+
+  // ── with the terminal up: not held ─────────────────────────────────────────
+  // Armed and fired without ever putting the overlay away, so the hook arrives
+  // while the client has said it is not watching.
+  await summonLive(page);
+  await typeAtPane(page, ASK_UP);
+  writeFileSync(join(unwatched, '.tether-e2e-fire'), '');
+
+  // The claim: tether did not hold. The agent's own prompt has the question
+  // straight away, which it only ever prints for a hook that decided nothing.
+  await expect(rows).toContainText(OWN_PROMPT);
+  // A card is still reported — tether reports far more proposals than it holds
+  // — but a deadline-less `pending` carries no buttons, and that is the part
+  // that would have stalled the agent. By class rather than by role: the
+  // conversation is `inert` under the overlay, so *every* role locator reads
+  // zero here and one that did would prove nothing.
+  await expect(cards.locator('.tool-answer')).toHaveCount(0);
+  await expect(cards).toHaveCount(1);
+  await shoot(page, '8-not-held-with-the-terminal-up');
+
+  // Answered at the pane, where the question actually is.
+  await typeAtPane(page, ANSWER);
+  await dismiss(page);
+  await expect(cards.locator('.tool-state')).toHaveText('✓');
+  await expect(cards).toContainText('removed ./one');
+
+  // ── and once it is away: held ──────────────────────────────────────────────
+  // The same session, the same construction, one dismissal apart.
+  await askAt(page, ASK_AWAY, unwatched);
+  await expect(cards).toHaveCount(2);
+  const held = cards.nth(1);
+  await expect(held.locator('.tool-answer')).toHaveCount(1);
+  await expect(held.getByRole('button', { name: 'Approve' })).toHaveCount(1);
+  // And it really is a hold rather than a card drawn hopefully: the agent is
+  // blocked inside the hook, so its own prompt has not been printed for this
+  // one. The pane is read through the closed overlay, which stays mounted.
+  await expect(rows).not.toContainText('rm -rf ./two');
+  await shoot(page, '9-held-once-the-terminal-is-away');
+
+  await held.getByRole('button', { name: 'Approve' }).click();
+  await expect(held.locator('.tool-state')).toHaveText('✓');
+  await expect(held).toContainText('removed ./two');
+  await expect(cards).toHaveCount(2);
 });
