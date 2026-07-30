@@ -593,12 +593,22 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   reconnect, and that is the most valuable thing a phone can do.
 - **A slash command from the composer is just text on the terminal socket; the
   whole feature is knowing where its answer will show up.** `submit` in
-  `conversation.tsx` branches on a leading `/` and nothing else, and a command
+  `conversation.tsx` branches on `planSend`, and a command
   goes out through the same `onApply` path an option's keystrokes use — **not**
   the message path, because a command writes no `user` record, so its optimistic
   echo would stand at "Sending…" forever. Both branches sit behind the same
   `sendBlocked`, which is what makes a command obey the permission rule a
-  message already obeys. `web/src/commands.ts` is the per-provider table and its
+  message already obeys. **What routes as a command is `isCommandLine`, and it
+  prefers prose**: both routes put the same bytes on the same `input` frame and
+  the CLI applies its own leading-slash rule to them, so the choice decides only
+  which feedback tether shows and there is no delivery downside to trade
+  against — a leading `/`, one line, and a name carrying **no further `/`** (no
+  command in either set has one, while `/home/me/app.ts is broken` is a sentence
+  about a path, and "tether does not know this command" over an ordinary
+  sentence is the interface being confidently wrong about what the user did).
+  `matchCommands` routes on the same rule so the list does not appear under a
+  pasted path, with a bare `/` its one exception, being the affordance the
+  placeholder points at. `web/src/commands.ts` is the per-provider table and its
   one field that matters is `answers`, established by running each command in a
   pane with tether's own input frame and reading the transcript back: Claude Code
   writes `<command-name>`/`<local-command-stdout>` for `/model x`, `/effort x`

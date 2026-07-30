@@ -147,6 +147,24 @@ test('Claude Code’s own colour codes do not reach the browser', () => {
   );
 });
 
+test('what a command printed is capped like any other provider output', () => {
+  // `/context` prints a screenful and a custom command is free to pipe a whole
+  // `git log -p` through one, so this is the same invariant `cap.ts` states for a
+  // tool result: the terminal is the full-fidelity view, and a card may not put
+  // megabytes in the replay buffer and on the wire.
+  const { events } = mapRecord({
+    type: 'user',
+    uuid: 'u',
+    message: {
+      role: 'user',
+      content: `<local-command-stdout>${'x'.repeat(MAX_OUTPUT * 2)}</local-command-stdout>`,
+    },
+  });
+  const text = events[0]?.kind === 'command' ? events[0].text : '';
+  assert.ok(text.length < MAX_OUTPUT * 1.1, `uncapped at ${text.length} characters`);
+  assert.match(text, /truncated by tether/);
+});
+
 test('a thinking block is presence, not content', () => {
   const { events } = mapLines(fixture(`thinking-${CAPTURED_VERSION}.jsonl`));
   assert.deepEqual(kinds(events), ['thinking']);

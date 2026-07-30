@@ -32,6 +32,22 @@ test('a leading slash routes as a command and ordinary text does not', () => {
   assert.equal(planSend(DEFAULT_PROVIDER, '/').plan, 'message');
 });
 
+test('an ambiguous line is prose, because only the feedback is at stake', () => {
+  // Both routes put the same bytes on the same `input` frame and the CLI applies
+  // its own leading-slash rule to them, so there is no delivery downside to trade
+  // against — and "tether does not know this command" over an ordinary sentence
+  // about a file is the interface being confidently wrong about what was typed.
+  // A command name carries no slash in either provider's set; a path does.
+  assert.equal(planSend(DEFAULT_PROVIDER, '/home/me/app.ts is broken, please fix').plan, 'message');
+  assert.equal(planSend(DEFAULT_PROVIDER, '/usr/bin/env').plan, 'message');
+  // One line, too: a slash command is a single line in both CLIs, so a multi-line
+  // paste that happens to open with one is prose by the same tie-break.
+  assert.equal(planSend(DEFAULT_PROVIDER, '/resume\nand then run the tests').plan, 'message');
+  // And the real commands are untouched, including the argument form.
+  assert.equal(planSend(DEFAULT_PROVIDER, '/resume').plan, 'command');
+  assert.equal(planSend(DEFAULT_PROVIDER, '/model opus').plan, 'command');
+});
+
 test('a command is sent verbatim — there is no protocol here', () => {
   // The whole mechanism: text on the terminal socket, exactly as the user typed
   // it. A command tether rewrote would be a command the pane did not receive.
@@ -153,6 +169,10 @@ test('the list teaches what a slash means, and only while one is being typed', (
   assert.deepEqual(matchCommands(DEFAULT_PROVIDER, '/model sonnet'), []);
   // A prefix nothing matches shows nothing rather than the whole list.
   assert.deepEqual(matchCommands(DEFAULT_PROVIDER, '/zzz'), []);
+  // And the list follows `planSend`'s own rule, so it is not there under a line
+  // that will be sent as prose: a pasted path, or anything multi-line.
+  assert.deepEqual(matchCommands(DEFAULT_PROVIDER, '/home/me/app.ts'), []);
+  assert.deepEqual(matchCommands(DEFAULT_PROVIDER, '/re\nsomething else'), []);
   // Each provider's own list, again.
   assert.deepEqual(
     matchCommands(CODEX, '/pe').map((command) => command.name),

@@ -371,17 +371,23 @@ function Composer({
    *  a second warning stacked behind the first is a warning nobody reads. */
   const [held, setHeld] = useState<{ axis: Axis; choice: Choice; note: string } | null>(null);
   /**
-   * What the last option or command actually did, and it is the only place this
-   * composer claims anything: a permission-mode request once the server has read
-   * the pane back — never what was asked for — or where a slash command's answer
-   * is going to turn up. `hatch` asks for the way into the terminal beside it,
-   * which is what a command that answers only there needs.
+   * What the permission-mode request did, once the server has read the pane back
+   * — never what was asked for. `busy` is that request being in flight, and this
+   * state is the **only** writer of it.
    */
-  const [outcome, setOutcome] = useState<{
-    busy: boolean;
-    text: string;
-    hatch?: boolean;
-  } | null>(null);
+  const [outcome, setOutcome] = useState<{ busy: boolean; text: string } | null>(null);
+  /**
+   * Where the last slash command's answer is going to turn up, and `hatch` asks
+   * for the way into the terminal beside it — which is what a command that answers
+   * only there needs.
+   *
+   * Its own state rather than the request's above, because the two settle
+   * independently and each would wreck the other: a command sharing that state
+   * would re-enable the mode control while its read-press-read is still in flight,
+   * and the request settling afterwards would replace the one hatch a user has to
+   * reach the chooser the agent is sitting on.
+   */
+  const [said, setSaid] = useState<{ text: string; hatch: boolean } | null>(null);
 
   // The message as it would be sent, so the refusal measures what the server
   // will measure rather than what is on screen.
@@ -408,8 +414,18 @@ function Composer({
     if (box.current !== null) box.current.style.height = '';
   };
 
+  /** Whatever the composer last said is about something nobody is doing now — but
+   *  a mode request still in flight is live, and clearing it would put its own
+   *  control back within reach of a second tap the server refuses. */
+  const clearNotes = () => {
+    setSaid(null);
+    setOutcome((current) => (current !== null && current.busy ? current : null));
+  };
+
   /**
-   * Send, and the only branch in it is what the text *is*.
+   * Send, and the only branch in it is what the text *is* — `planSend` decides,
+   * and it prefers prose wherever the line is ambiguous, since both routes put the
+   * same bytes on the same frame and the choice only picks the feedback.
    *
    * A slash command goes out on the same path an option's keystrokes do — the
    * terminal socket, one `input` frame, resend-until-ACKed — and deliberately
@@ -427,8 +443,8 @@ function Composer({
     event.preventDefault();
     if (message === '' || blocked !== null) return;
     const plan = planSend(provider, message);
+    clearNotes();
     if (plan.plan === 'message') {
-      setOutcome(null);
       onSend(message);
       clear();
       return;
@@ -436,11 +452,11 @@ function Composer({
     // Refused, so the text stays in the box: the note says what to change about
     // it, and clearing it would make the user type the whole command again.
     if (plan.plan === 'refuse') {
-      setOutcome({ busy: false, text: plan.note });
+      setSaid({ text: plan.note, hatch: false });
       return;
     }
     onApply([plan.send]);
-    setOutcome({ busy: false, text: plan.note, hatch: plan.hatch });
+    setSaid({ text: plan.note, hatch: plan.hatch });
     clear();
   };
 
@@ -491,10 +507,14 @@ function Composer({
   return (
     <form class="composer" onSubmit={submit}>
       {/* What `/` means, since the placeholder can only say that it means
-          something. Out of flow and drawn over the conversation — see
-          `.composer-cmds`: this appears and disappears on a keystroke, and a
-          box that took up flow would resize the terminal pane underneath it for
-          every viewer of the session on every character typed. */}
+          something. In flow — see `.composer-cmds` — and safe there because this
+          composer lives inside the conversation `.pane`, so the height it takes
+          comes out of `.scroll` beside it and never out of `.panes`, which is the
+          box xterm is fitted to: appearing and disappearing on a keystroke cannot
+          resize the tmux pane for the session's other viewers. It is the only
+          shrinkable child of this panel (`flex: 0 1 auto; min-height: 0`) and
+          `.composer-bar` is `flex: none`, which is what keeps Send in the viewport
+          at 360×340. */}
       {matches.length > 0 && (
         <ul class="composer-cmds" aria-label="Commands">
           {matches.map((command) => (
@@ -603,11 +623,18 @@ function Composer({
       {outcome !== null && (
         <p class={`composer-note ${outcome.busy ? '' : 'composer-said'}`} role="status">
           {outcome.text}
+        </p>
+      )}
+      {/* Where the last command's answer is going, in the same treatment: two
+          different claims, and neither may stand in for the other. */}
+      {said !== null && (
+        <p class="composer-note composer-said" role="status">
+          {said.text}
           {/* The way in, beside the sentence that says it is needed. A command
               whose answer is a chooser has left the agent waiting on a screen
               this pane cannot show, and "open the terminal" as prose on a phone
               is an instruction to go and find a button. */}
-          {outcome.hatch === true && (
+          {said.hatch && (
             <>
               {' '}
               {/* **Not** "Open the terminal": that is the waiting banner's link

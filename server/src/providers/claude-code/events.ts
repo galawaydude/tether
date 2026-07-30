@@ -73,7 +73,9 @@ const COMMAND_NOISE = /^<(command-name|command-message|command-args|local-comman
  * - `<local-command-stdout>` / `-stderr` — what it printed. This is what makes a
  *   command *visible*: `/model sonnet` and `/effort high` write one, and without
  *   it the composer's own option bar changes a running agent with nothing on
- *   screen to show it.
+ *   screen to show it. It is provider output like any other, so it is capped
+ *   (`cap.ts`) — `/context`'s table is a screenful and a custom command is free to
+ *   pipe a whole `git log -p` through one.
  * - `<command-message>` is the command's display name and `<local-command-caveat>`
  *   is an instruction addressed to the model. Neither is conversation.
  *
@@ -109,7 +111,7 @@ function commandEvent(text: string, id: string, at: number): ConversationEvent |
     return { kind: 'command', id, at, text: args === '' ? name : `${name} ${args}` };
   }
   const out = clean(COMMAND_OUT.exec(text)?.[1]);
-  return out === '' ? undefined : { kind: 'command', id, at, text: out, output: true };
+  return out === '' ? undefined : { kind: 'command', id, at, text: capOutput(out), output: true };
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

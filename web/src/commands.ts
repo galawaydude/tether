@@ -42,6 +42,11 @@
  * The one rule that follows is that a note may never *deny* the other case, which
  * is why none of them says "and nothing else will happen".
  *
+ * **What routes as a command at all is `isCommandLine`, and it prefers prose.**
+ * Both routes put the same bytes on the same frame, so the choice decides only
+ * which feedback tether shows; the rules and the reason they are shaped that way
+ * are on that function.
+ *
  * **The table is not a gate.** A command it has not heard of is still sent —
  * refusing one would refuse every custom command a user has, and both CLIs ship
  * weekly. What tether says about an unknown one is that it does not know it,
@@ -208,25 +213,49 @@ export type Plan =
   | { plan: 'command'; send: string; note: string; hatch: boolean }
   | { plan: 'refuse'; note: string };
 
-/** Everything up to the first space, which is how both CLIs lex a command. */
+/**
+ * Everything up to the first **whitespace**, which is how both CLIs lex a
+ * command — a line break ends a name as surely as a space does.
+ */
 function split(message: string): { name: string; args: string } {
-  const at = message.indexOf(' ');
+  const at = message.search(/\s/);
   return at === -1
     ? { name: message, args: '' }
     : { name: message.slice(0, at), args: message.slice(at + 1).trim() };
 }
 
 /**
- * A leading `/` is what routes as a command, and nothing else does — the same
- * rule both CLIs apply to their own input box, so what tether does with a line
- * is what typing it into the pane would have done.
+ * Whether a line is addressed to the CLI's own command box rather than to the
+ * agent.
  *
- * A bare `/` is a message: it is what a user has typed on the way to a command
- * and the list is showing under it, and sending it would only make the pane
- * print `Unknown command: /`.
+ * Delivery is identical either way — one `input` frame, the same bytes, and the
+ * CLI applies its own leading-slash rule to them — so this decides only which
+ * feedback tether shows, never what the agent receives. With no delivery downside
+ * to trade against, it **prefers prose wherever the line is ambiguous**: telling
+ * someone "tether does not know this command" when they typed an ordinary
+ * sentence about a file is the interface being confidently wrong about what they
+ * did, while a real command read as prose still arrives as the same bytes and the
+ * CLI still honours it.
+ *
+ * So three rules, each chosen because it cannot realistically be wrong:
+ *
+ *  - a leading `/`, the rule both CLIs' own input boxes apply;
+ *  - **a command name carries no further `/`** — no command in either provider's
+ *    set has one, while `/home/me/app.ts is broken, please fix` is a sentence
+ *    about a path. A bare `/` fails this too, being no name at all: it is what a
+ *    user has typed on the way to a command with the list showing under it, and
+ *    sending it would only make the pane print `Unknown command: /`;
+ *  - **one line.** A slash command is a single line in both CLIs, so a multi-line
+ *    paste that happens to open with one is prose by the tie-break above.
  */
+function isCommandLine(message: string): boolean {
+  if (!message.startsWith('/') || /[\r\n]/.test(message)) return false;
+  const { name } = split(message);
+  return name.length > 1 && !name.slice(1).includes('/');
+}
+
 export function planSend(provider: string, message: string): Plan {
-  if (!message.startsWith('/') || message === '/') return { plan: 'message' };
+  if (!isCommandLine(message)) return { plan: 'message' };
   const { name, args } = split(message);
   const agent = providerLabel(provider);
   const command = commandsFor(provider).find((entry) => entry.name === name);
@@ -304,10 +333,13 @@ export function whereLabel(command: Command): string {
 }
 
 export function matchCommands(provider: string, message: string): readonly Command[] {
-  if (!message.startsWith('/')) return [];
+  // The same rule `planSend` routes on, so the list never appears under a line
+  // that would be sent as prose — a pasted path included. A bare `/` is the one
+  // exception, and it is the affordance the placeholder is pointing at.
+  if (message !== '/' && !isCommandLine(message)) return [];
   const { name, args } = split(message);
   // Past the first space the user is writing an argument, not choosing a command.
-  if (args !== '' || message.endsWith(' ')) return [];
+  if (args !== '' || /\s$/.test(message)) return [];
   return commandsFor(provider)
     .filter((entry) => entry.name.startsWith(name))
     .slice(0, MATCH_LIMIT);
