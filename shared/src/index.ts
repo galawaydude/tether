@@ -63,6 +63,20 @@ export type ConversationEvent =
   | { kind: 'command'; id: string; at: Timestamp; text: string; output?: boolean }
   /** The provider compacted its own context. A divider, not a message. */
   | { kind: 'compaction'; id: string; at: Timestamp; trigger?: string }
+  /**
+   * The turn ended in a failure the provider's own CLI reported, in its own
+   * words. **Not an assistant message**, although Claude Code files it as one:
+   * the model wrote none of it, and rendering it as prose in the agent's voice
+   * is how "your login expired" reads as the agent saying something odd.
+   *
+   * `auth` is the one claim tether makes about it, and only ever from a field
+   * the provider typed itself — never from the sentence. See each provider's
+   * `events.ts` for the field and the versions it was verified against. A
+   * failure that is *not* authentication carries no flag and gets no advice:
+   * telling someone to sign in again over an unrelated failure sends them to
+   * re-authenticate for nothing, which is worse than tether saying nothing.
+   */
+  | { kind: 'error'; id: string; at: Timestamp; text: string; auth?: true }
   | { kind: 'status'; at: Timestamp; state: SessionState; detail?: string };
 
 /**

@@ -114,6 +114,12 @@ export type Row =
    */
   | { key: string; row: 'command'; text: string; output: boolean }
   | { key: string; row: 'compaction' }
+  /**
+   * A turn the provider's own CLI reported as failed, in its words. `auth` is
+   * the only thing tether adds, and only where the provider typed it; see
+   * {@link authAdvice}.
+   */
+  | { key: string; row: 'error'; text: string; auth: boolean }
   /** An event this build does not understand. Deliberately says nothing else. */
   | { key: string; row: 'note'; text: string }
   | ToolRow;
@@ -614,6 +620,8 @@ function toRow(key: string, e: ConversationEvent, byCall: Map<string, ToolRow>):
       return { key, row: 'command', text: e.text, output: e.output === true };
     case 'compaction':
       return { key, row: 'compaction' };
+    case 'error':
+      return { key, row: 'error', text: e.text, auth: e.auth === true };
     case 'tool_call': {
       // The transcript record for a call the pre-tool hook already proposed.
       // It supersedes that card in place — same `callId`, same position in the
@@ -969,6 +977,31 @@ const ADVICE: readonly { when: RegExp; advice: Advice }[] = [
 export function errorAdvice(output: string): Advice | null {
   return ADVICE.find(({ when }) => when.test(output))?.advice ?? null;
 }
+
+/**
+ * The one line tether adds to a failed turn, and only when the provider itself
+ * typed that turn's failure as an authentication one.
+ *
+ * The same {@link Advice} the tool cards carry, and deliberately the same first
+ * sentence as the `authentication_error` entry above: a user who meets this on a
+ * failed `Bash` and again on a whole turn is meeting one situation, and two
+ * wordings for it would read as two.
+ *
+ * Everything else about the failure is the provider's own sentence, which the
+ * row shows above this — Claude Code writes "Please run /login · API Error: 401
+ * OAuth token has expired…", Codex "Your access token could not be refreshed."
+ * Both already say it plainly, so what is added here is only the part they
+ * cannot say: that nothing is going to retry, and where to go.
+ *
+ * There is no matching line for a failure that is *not* authentication. The
+ * provider's own text is shown and tether claims nothing — an unrelated failure
+ * that says "sign in again" costs someone a re-authentication for no reason,
+ * which is the whole reason the flag comes from a typed field.
+ */
+export const AUTH_ADVICE: Advice = {
+  act: true,
+  text: 'The provider refused the credentials. Sign in again — nothing retries this.',
+};
 
 /**
  * The word on a collapsed card, and the sentence inside it. Here rather than in

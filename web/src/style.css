@@ -1223,6 +1223,46 @@ label {
   line-height: 1.55;
 }
 
+/* A turn the agent's own CLI reported as failed.
+ *
+ * A box, by the house rule: the machine said it, so it is an artefact and not
+ * the agent's prose. Tinted into `--wash` for the reason `.error` above gives —
+ * mixing a bright tone into the surface it sits on lifts that surface toward the
+ * text and no brighter red then wins the ratio back. Measured on the tint this
+ * lays down for itself: `--danger` 6.38:1, `--accent-ink` 8.00:1.
+ *
+ * `flex: none` for the reason every `.conv` child needs it — see `.cmd`. */
+.turn-error {
+  flex: none;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
+  background: color-mix(in srgb, var(--danger) 10%, var(--wash));
+}
+
+/* The provider's own sentence, monospace for the same reason a tool's output is:
+   the machine wrote these words and tether is quoting them. */
+.turn-error-text {
+  margin: 0;
+  font: 13.5px/1.5 var(--mono);
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+
+/* Amber, because this is the one failure that is a person's to answer, and amber
+   means a human. The same tone `.tool-advice-act` uses for the same claim. */
+.turn-error-advice {
+  margin: 8px 0 0;
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: var(--accent-ink);
+}
+
+/* The border follows the claim: only an answerable failure gets the accent. */
+.turn-error-act {
+  border-color: color-mix(in srgb, var(--accent-ink) 45%, transparent);
+}
+
 /* A slash command that ran, and what it printed.
  *
  * Monospace and containerless, which is the house rule twice over: monospace

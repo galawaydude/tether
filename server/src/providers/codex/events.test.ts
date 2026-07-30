@@ -331,3 +331,42 @@ test('nothing that arrives on the hook channel can make the mapper throw', () =>
     assert.equal(signal, undefined, JSON.stringify(payload));
   }
 });
+
+/**
+ * The same three assertions the Claude Code mapper carries, against Codex's own
+ * signal: `task_complete.error.codex_error_info`. See `events.ts`'s `AUTH_ERROR`
+ * for the vocabulary and the runs each row of it came from.
+ */
+test('a failed turn is Codex’s own words, and only an unauthorized one is flagged', () => {
+  const warnings: string[] = [];
+  const { events } = mapLines(fixture(`errors-${CAPTURED_VERSION}.jsonl`), (m) => warnings.push(m));
+  assert.deepEqual(warnings, [], 'a failed task_complete is a shape tether knows');
+
+  assert.deepEqual(
+    events.map((e) => e.kind),
+    ['error', 'error'],
+  );
+  const [expired, overloaded] = events;
+
+  // An expired ChatGPT login, and Codex's own sentence for it.
+  assert.equal(expired?.kind === 'error' ? expired.auth : undefined, true);
+  assert.equal(
+    expired?.kind === 'error' ? expired.text : '',
+    'Your access token could not be refreshed. Please log out and sign in again.',
+  );
+
+  // The false positive: a backend 500 is not a credentials problem. Its text
+  // does not name one either, which is the point — the flag comes from the
+  // typed field, so a message that *did* would still not be flagged.
+  assert.equal(overloaded?.kind === 'error' ? overloaded.auth : undefined, undefined);
+});
+
+test('a successful turn carries no error, so nothing is shown for it', () => {
+  // The real session fixture ends every turn with a `task_complete` that has no
+  // `error` key at all — which is what keeps a healthy session silent here.
+  const { events } = mapLines(SESSION);
+  assert.deepEqual(
+    events.filter((e) => e.kind === 'error'),
+    [],
+  );
+});

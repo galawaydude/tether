@@ -114,12 +114,60 @@ function commandEvent(text: string, id: string, at: number): ConversationEvent |
   return out === '' ? undefined : { kind: 'command', id, at, text: capOutput(out), output: true };
 }
 
+/**
+ * Claude Code's own name for why a turn failed, when it failed against the API.
+ *
+ * Such a turn is written as an ordinary `assistant` record with
+ * `model: "<synthetic>"` — the model wrote none of it — plus three fields of its
+ * own: `isApiErrorMessage: true`, `apiErrorStatus`, and `error`, which is the
+ * classification. Verified against 2.1.220 by pointing `ANTHROPIC_BASE_URL` at a
+ * local server that answers every request with one status (no credentials, no
+ * spend) and reading the transcript back:
+ *
+ * | status | `error`                 | text it wrote                                     |
+ * | ------ | ----------------------- | ------------------------------------------------- |
+ * | 401    | `authentication_failed` | `Please run /login · API Error: 401 OAuth token …` |
+ * | 403    | `authentication_failed` | `Please run /login · API Error: 403 Request not …` |
+ * | 429    | `rate_limit`            | `API Error: Request rejected (429) · …`           |
+ * | 500    | `server_error`          | `API Error: 500 Internal server error. …`         |
+ *
+ * That is the whole reason this is a field and not a regular expression over the
+ * sentence: `rate_limit` and `server_error` are the false positives a phrase
+ * match would produce, and the record hands tether the answer instead. The
+ * record is written **after** Claude Code has exhausted its own retries (ten of
+ * them, ~3 minutes on a 401), so its presence already means the turn is over.
+ *
+ * The sentence is Claude Code's, and it is what tether shows. One branch of
+ * 2.1.220's own classifier files a gateway 401 as `authentication_failed` while
+ * writing "This may be a temporary network issue, please try again" — so a
+ * friendlier sentence invented here would contradict the provider on the screen
+ * it is quoting. Same rule as `Notification`, below.
+ */
+const AUTH_ERROR = 'authentication_failed';
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
 function str(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
+}
+
+/**
+ * A record's `content` flattened to text, for the one caller that wants the
+ * sentence rather than the blocks. 2.1.220 writes an API error as a single
+ * `text` block, but `content` is a string on some records and this must not
+ * depend on which.
+ */
+function plainText(content: unknown): string {
+  if (typeof content === 'string') return content.trim();
+  if (!Array.isArray(content)) return '';
+  return content
+    .flatMap((block) =>
+      isObject(block) && block['type'] === 'text' ? [str(block['text']) ?? ''] : [],
+    )
+    .join('\n')
+    .trim();
 }
 
 /** Epoch ms, or 0 for a record whose timestamp is missing or unparseable. */
@@ -268,6 +316,25 @@ export function mapRecord(record: unknown, warn: Warn = () => {}): Mapped {
   const at = timestamp(record);
   const message = record['message'];
   const content = isObject(message) ? message['content'] : undefined;
+
+  // Before the assistant branch: the record is shaped like a message and is not
+  // one. See `AUTH_ERROR` for the fields and how they were established.
+  if (record['isApiErrorMessage'] === true) {
+    const text = plainText(content);
+    return mapped(
+      text === ''
+        ? []
+        : [
+            {
+              kind: 'error',
+              id: uuid,
+              at,
+              text: capOutput(text),
+              ...(record['error'] === AUTH_ERROR ? { auth: true as const } : {}),
+            },
+          ],
+    );
+  }
 
   if (typeof content === 'string') {
     if (type === 'assistant') return mapped([{ kind: 'assistant', id: uuid, at, text: content }]);

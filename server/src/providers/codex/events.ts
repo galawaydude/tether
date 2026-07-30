@@ -37,9 +37,11 @@
  * - `turn_context`, `world_state`, `thread_settings_applied`, `token_count` and
  *   `session_meta` — configuration and accounting, not conversation. The last
  *   one is still read, for `cli_version`.
- * - `task_started`, `task_complete` and `turn_aborted` — `status.ts` folds those
- *   into the session state, which is not a conversation event (it has no `id`;
- *   see the shape in `@tether/shared`).
+ * - `task_started` and `turn_aborted` — `status.ts` folds those into the session
+ *   state, which is not a conversation event (it has no `id`; see the shape in
+ *   `@tether/shared`). `task_complete` goes there too, and is *also* read here,
+ *   for the one thing it carries that a state cannot: why a failed turn failed.
+ *   See `AUTH_ERROR`.
  * - `patch_apply_end` — it duplicates the `custom_tool_call_output` for the same
  *   `call_id`, and that is where the result card comes from.
  *
@@ -78,10 +80,39 @@ const IGNORED_PAYLOADS = new Set([
   'thread_settings_applied',
   'token_count',
   'task_started',
-  'task_complete',
   'turn_aborted',
   'patch_apply_end',
 ]);
+
+/**
+ * Codex's own classification of why a turn failed.
+ *
+ * `task_complete` is how every turn ends, successful or not, and `status.ts`
+ * folds it into the session state either way. A **failed** one additionally
+ * carries `error: { message, codex_error_info }`, and that second field is a
+ * closed vocabulary — 0.145.0's binary carries all sixteen names, of which
+ * `unauthorized` is documented as "Codex attempted a backend request and
+ * received `401 Unauthorized`". A successful turn has no `error` key at all,
+ * which is what keeps a healthy session showing nothing here.
+ *
+ * Verified against codex-cli 0.145.0 under a scratch `CODEX_HOME` (no
+ * credentials, no spend):
+ *
+ * | what happened                       | `codex_error_info`      | `message`                                                |
+ * | ----------------------------------- | ----------------------- | -------------------------------------------------------- |
+ * | expired ChatGPT login               | `unauthorized`          | `Your access token could not be refreshed. Please log …` |
+ * | backend 500                         | `internal_server_error` | `We're currently experiencing high demand, …`            |
+ * | connection refused                  | `other`                 | `stream disconnected before completion: …`               |
+ * | 401 from a **custom** model provider| `other`                 | `unexpected status 401 Unauthorized: …`                  |
+ *
+ * That last row is why only the typed field is read and the message is never
+ * pattern-matched: a 401 reaches this in two classifications, and the one Codex
+ * does not type is a bring-your-own-key setup whose credentials are not the
+ * login tether would be telling anyone to renew. Under-claiming there costs a
+ * sentence; over-claiming sends a user to re-authenticate something that is not
+ * broken.
+ */
+const AUTH_ERROR = 'unauthorized';
 
 /**
  * The one place the two vocabularies disagree on a name. The hooks report
@@ -234,6 +265,25 @@ export function mapRecord(record: unknown, index = 0, warn: Warn = () => {}): Ma
             at,
             text,
             ...(phase === 'commentary' || phase === 'final_answer' ? { phase } : {}),
+          },
+        ],
+      };
+    }
+    case 'task_complete': {
+      // Every turn ends with one of these; only a failed turn carries `error`.
+      const error = payload['error'];
+      const text = isObject(error) ? (str(error['message']) ?? '') : '';
+      if (text.trim() === '') return NONE;
+      return {
+        events: [
+          {
+            kind: 'error',
+            id,
+            at,
+            text: capOutput(text),
+            ...(isObject(error) && error['codex_error_info'] === AUTH_ERROR
+              ? { auth: true as const }
+              : {}),
           },
         ],
       };
