@@ -527,9 +527,9 @@ export class Conversations {
     }
 
     live.subscribers.add(send);
-    // Watching until told otherwise: the conversation is the tab the app opens
-    // on, so the common case costs no frame, and a client too old to say is
-    // treated as the observer it was before this.
+    // Watching until told otherwise: the conversation is what opening a session
+    // lands on, so the common case costs no frame, and a client too old to say
+    // is treated as the observer it was before this.
     live.watching.add(send);
     let released = false;
     return () => {
@@ -544,12 +544,13 @@ export class Conversations {
   }
 
   /**
-   * The client saying which view is in front. `false` is the terminal tab, where
-   * the provider's own prompt is already the answering surface.
+   * The client saying which view is in front. `false` is the terminal summoned
+   * over the conversation, where the provider's own prompt is already the
+   * answering surface.
    *
-   * Switching away mid-hold releases rather than denies, exactly as the last
+   * Summoning it mid-hold releases rather than denies, exactly as the last
    * viewer leaving does: the question goes back to the provider's own rules, and
-   * the terminal the user just switched to is where it will be asked.
+   * the terminal the user just summoned is where it will be asked.
    */
   watch(sessionId: string, send: Send, watching: boolean): void {
     const live = this.#live.get(sessionId);

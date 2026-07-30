@@ -26,8 +26,8 @@ const MAX_KEYS = 64;
 /**
  * The same range `resizeWindow` enforces, applied here so an out-of-range frame
  * is one dropped frame rather than a thrown command that tears the socket down:
- * xterm.js legitimately reports 0x0 before it has been laid out, and a hidden
- * tab losing its terminal view over that would be a real bug. `resizeWindow`
+ * xterm.js legitimately reports 0x0 before it has been laid out, and a viewer
+ * losing its terminal over that would be a real bug. `resizeWindow`
  * keeps its own check — this one is about which failure the client sees.
  */
 const MIN_DIMENSION = 1;
