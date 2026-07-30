@@ -9,15 +9,19 @@
  * of it. A control that looks live and reaches nothing is the exact failure
  * this feature is not allowed to be, so the assertion is the pane's own text.
  *
- * Two claims live only here:
+ * Three claims live only here:
  *
  *  - **The two providers offer different controls.** Counted, not sampled: a
- *    Claude Code composer has Model and Effort and no Permissions, and a Codex
- *    composer has the reverse. A shared set would pass any presence check.
+ *    Claude Code composer has Model, Effort and Permission mode, and a Codex
+ *    composer has none of those and a Permissions picker instead. A shared set
+ *    would pass any presence check.
  *  - **A value that lowers the permission bar sends nothing until it is
  *    acknowledged.** The strong half is the negative one — the pane is read
  *    *while the warning is up* and must still be clean — because a gate that
  *    warns after sending is worse than no gate at all.
+ *  - **A permission mode the server could not confirm is never claimed.** The
+ *    assertion that matters is the absence of "is now": a note saying something
+ *    went wrong and a note saying the mode changed are both "a note".
  *
  * Its own directories, like every other spec here: the suite shares one `tether
  * serve` and one session list, and two sessions in one directory would share a
@@ -73,11 +77,13 @@ test('each provider offers its own controls, and they reach the pane', async ({ 
   await signIn(page);
   await start(page, join(dir, 'options-claude'), 'claude-code');
 
-  // Claude Code takes its model and effort as slash-command arguments, so both
-  // are offered. Its permission mode is not: the only mid-session mechanism is
-  // a blind Shift+Tab cycle whose current position tether cannot read.
+  // Claude Code takes its model and effort as slash-command arguments, and its
+  // permission mode by a cycle whose position the server can read off the pane.
+  // Codex's own permissions picker is a different axis with a different name, so
+  // neither label can match the other's control.
   await expect(page.getByLabel('Model')).toHaveCount(1);
   await expect(page.getByLabel('Effort')).toHaveCount(1);
+  await expect(page.getByLabel('Permission mode')).toHaveCount(1);
   await expect(page.getByLabel('Permissions')).toHaveCount(0);
   await shoot(page, '1-claude-composer');
 
@@ -93,22 +99,97 @@ test('each provider offers its own controls, and they reach the pane', async ({ 
   await expect(rows(page).getByText('/model sonnet')).toHaveCount(0);
   await dismiss(page);
 
-  // ── the narrowest phone ────────────────────────────────────────────────────
-  // Two claims that only a real layout can make, both about not spending the
-  // conversation's height on chrome. The controls and Send stay on **one** row
-  // — a second is 52px, which at 360×340 (this phone with its keyboard up) is
-  // most of what is left — and the placeholder fits the one row a textarea has
-  // before it is typed in, so its second half is not simply cut off.
+  // ── the narrowest phone, and then its keyboard ─────────────────────────────
+  // Three controls plus Send do not fit one line at 360px, so the row wraps —
+  // and what has to hold is that wrapping never costs the two things a phone
+  // cannot do without.
   await page.setViewportSize({ width: 360, height: 640 });
-  const bar = page.locator('.composer-bar');
-  const one = await page.locator('.composer button.primary').boundingBox();
-  expect((await bar.boundingBox())?.height).toBeCloseTo(one?.height as number, 0);
+  // The placeholder fits the single row a textarea has before it is typed in,
+  // so its second half is not simply cut off.
   expect(
     await page
       .locator('.composer-text')
       .evaluate((el) => el.scrollHeight - (el as HTMLElement).clientHeight),
   ).toBeLessThanOrEqual(0);
-  await shoot(page, '4-claude-360');
+  // Every control is reachable: nothing is clipped out of the panel sideways,
+  // and each is a real 44px target.
+  const controls = page.locator('.composer-opt, .composer button.primary');
+  await expect(controls).toHaveCount(4);
+  const panel = (await page.locator('.composer').boundingBox()) as { x: number; width: number };
+  for (const box of await controls.evaluateAll((els) =>
+    els
+      .map((el) => el.getBoundingClientRect())
+      .map((r) => ({ x: r.x, right: r.right, h: r.height })),
+  )) {
+    expect(box.h).toBeGreaterThanOrEqual(44);
+    expect(box.x).toBeGreaterThanOrEqual(panel.x);
+    expect(box.right).toBeLessThanOrEqual(panel.x + panel.width + 0.5);
+  }
+  await shoot(page, '5-claude-360');
+
+  // 360×340 is this phone with its keyboard up, and it is the size that finds a
+  // composer able to eat the conversation it belongs to. The wrapped row costs
+  // 52px there, which is why the message box gives height back below 420px —
+  // Send must still be on screen, which is the failure PR #16 shipped once.
+  await page.setViewportSize({ width: 360, height: 340 });
+  await page.locator('.composer-text').fill('one\ntwo\nthree\nfour\nfive\nsix\nseven\neight');
+  const send = await page.locator('.composer button.primary').boundingBox();
+  if (send === null) throw new Error('Send is not laid out at all at 360×340');
+  expect(send.y + send.height).toBeLessThanOrEqual(340);
+  await shoot(page, '6-claude-360x340');
+});
+
+/**
+ * The permission-mode axis, which is the one that cannot be answered by reading
+ * the pane for a keystroke: it is a request, and what the browser is allowed to
+ * say is bounded by what the server *confirmed by reading the pane back*.
+ *
+ * The stub is not Claude Code and paints no status footer, so the server cannot
+ * read a mode from it — which makes this the unreadable case, and the unreadable
+ * case is the one worth driving through a browser. Reaching every mode from
+ * every mode is `permission-mode.test.ts`'s job, against real tmux and a pane
+ * that does cycle.
+ */
+test('an unreadable pane is reported, never dressed up as a mode that was set', async ({
+  page,
+}) => {
+  await signIn(page);
+  await start(page, join(dir, 'options-mode'), 'claude-code');
+
+  // `plan` lowers nothing, so it applies without a gate — and still must not
+  // claim to have worked when the server could not read the pane.
+  await page.getByLabel('Permission mode').selectOption('plan');
+  const note = page.locator('.composer-note');
+  await expect(note).toContainText(/could not read the current permission mode/i);
+  await expect(note).toContainText(/nothing was changed/i);
+  // The sentence that would be the lie. Checked explicitly because "shows a
+  // note" passes just as happily on a note claiming success.
+  await expect(note).not.toContainText(/is now/i);
+  await shoot(page, '4-mode-unreadable');
+});
+
+test('a mode that lowers the permission bar is held until it is acknowledged', async ({ page }) => {
+  await signIn(page);
+  await start(page, join(dir, 'options-mode-warn'), 'claude-code');
+
+  // `acceptEdits` stops Claude Code asking before it writes to files, so it gets
+  // the same treatment as Codex's presets rather than being a quiet list entry.
+  await page.getByLabel('Permission mode').selectOption('acceptEdits');
+  const confirm = page.getByRole('button', { name: 'Set permission mode to Accept edits' });
+  await expect(confirm).toHaveCount(1);
+  // Nothing has been attempted yet: no outcome line at all, which is what makes
+  // this a gate rather than a warning shown alongside the thing it warns about.
+  await expect(page.locator('.composer-note')).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Cancel' }).click();
+  await expect(confirm).toHaveCount(0);
+  await expect(page.locator('.composer-note')).toHaveCount(0);
+
+  // And through the gate the request really is made — the honest failure from
+  // the stub's unreadable pane is the proof it went.
+  await page.getByLabel('Permission mode').selectOption('acceptEdits');
+  await page.getByRole('button', { name: 'Set permission mode to Accept edits' }).click();
+  await expect(page.locator('.composer-note')).toContainText(/could not read/i);
 });
 
 test('a Codex composer offers Codex’s axis, and warns before it lowers the bar', async ({
@@ -123,6 +204,7 @@ test('a Codex composer offers Codex’s axis, and warns before it lowers the bar
   await expect(page.getByLabel('Permissions')).toHaveCount(1);
   await expect(page.getByLabel('Model')).toHaveCount(0);
   await expect(page.getByLabel('Effort')).toHaveCount(0);
+  await expect(page.getByLabel('Permission mode')).toHaveCount(0);
   await shoot(page, '2-codex-composer');
 
   // The value that asks for everything applies straight away: there is nothing

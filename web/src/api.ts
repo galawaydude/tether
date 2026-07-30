@@ -153,6 +153,21 @@ export function answerPermission(
   return request(`/api/sessions/${id}/permission`, json('POST', { callId, decision }));
 }
 
+/**
+ * Set a Claude Code pane's permission mode, and return the mode the **server
+ * confirmed by reading the pane back**.
+ *
+ * The one option control that is a request rather than a keystroke, because it
+ * is the one that needs a read: Shift+Tab cycles, so only the side that can see
+ * the screen can know where the pane started and where it ended up. A rejection
+ * is an {@link ApiError} like any other and its `code` says which — `unreadable`
+ * (the screen never said, so nothing was pressed) or `not_confirmed` (keys were
+ * pressed and it did not arrive).
+ */
+export function setPermissionMode(id: string, mode: string): Promise<{ mode: string }> {
+  return request(`/api/machines/${MACHINE}/sessions/${id}/permission-mode`, json('POST', { mode }));
+}
+
 export type ConversationHistory = {
   seq: number;
   events: SeqEvent[];

@@ -43,8 +43,9 @@ export type Choice = {
   readonly value: string;
   /** What the menu shows. */
   readonly label: string;
-  /** The `input` frames, in order. */
-  readonly keys: readonly string[];
+  /** The `input` frames, in order. Only on a `keys` axis; on a
+   *  `permission-mode` axis {@link Choice.value} is the mode itself. */
+  readonly keys?: readonly string[];
   /**
    * Present when picking this lets the agent act with less asking than before.
    * The sentence is shown, and acknowledged, *before* the keys are sent.
@@ -52,40 +53,90 @@ export type Choice = {
   readonly lowers?: string;
 };
 
+/**
+ * How an axis is applied.
+ *
+ * `keys` is the ordinary case: type at the pane and let the agent's own answer
+ * in the conversation be the confirmation. `permission-mode` is the exception
+ * and exists because that axis has no slash command at all — it is reached by
+ * cycling, which is only safe if the mode can be read back, and only the server
+ * can see the screen. So it is a request whose **response is the confirmation**.
+ *
+ * Two mechanisms, not a plugin system: a third would want a third branch in
+ * `conversation.tsx`, and at that point the question is whether the axis is
+ * really settable rather than how to abstract over it.
+ */
+export type Via = 'keys' | 'permission-mode';
+
 export type Axis = {
   readonly id: string;
   /** The control's accessible name. Never contains "Message" or "Agent" —
    *  Playwright's `getByLabel` matches on a substring and both of those name
    *  something else on this screen already. */
   readonly label: string;
+  readonly via: Via;
   readonly choices: readonly Choice[];
 };
 
 /**
- * Claude Code's two axes that a running pane really accepts.
+ * Claude Code's three axes that a running pane really accepts.
  *
- * Both are slash commands that take their value as an **argument**, so one
- * keystroke frame applies them and the pane says so — `Set model to Sonnet 5`,
- * `Set effort level to medium` — which also lands in the transcript as a
- * `<local-command-stdout>` record, so the conversation is the confirmation.
+ * Model and effort are slash commands that take their value as an **argument**,
+ * so one keystroke frame applies them and the pane says so — `Set model to
+ * Sonnet 5`, `Set effort level to medium` — which also lands in the transcript
+ * as a `<local-command-stdout>` record, so the conversation is the confirmation.
  *
- * Two axes the reference shows are deliberately **absent**:
+ * **Permission mode has no slash command and is offered anyway**, because "no
+ * slash command" is not the same as "not settable". Its only mid-session
+ * mechanism is Shift+Tab, which *cycles* — and a cycle is a blind toggle only
+ * if the mode cannot be read back. It can:
+ * `server/src/providers/claude-code/permission-mode.ts` reads it off the pane's
+ * own status footer, steps one key at a time, and confirms by reading again, so
+ * what reaches this control is a mode that was **observed**, never one that was
+ * asked for. The three sources that make that possible, and the reason the
+ * footer is the one used, are documented there.
  *
- *  - **Permission mode.** `--permission-mode` exists at spawn, but the only
- *    mid-session mechanism is Shift+Tab, which *cycles* — manual → acceptEdits
- *    → plan → auto → manual, and `dontAsk`/`bypassPermissions` are not in the
- *    cycle at all. Landing on a chosen mode needs to know the current one, and
- *    tether cannot: it is not in `~/.claude/sessions/<pid>.json`, and the
- *    transcript's own `permission-mode` record does not follow the cycle
- *    (verified — it still read `default` with the pane in plan mode). A
- *    dropdown over a blind cycle would silently land on the wrong mode, and on
- *    a *permission* axis the wrong mode is an agent that stops asking.
- *  - **Fast mode.** There is no slash command for it in 2.1.220.
+ * `dontAsk` and `bypassPermissions` are real `--permission-mode` values that
+ * the cycle never passes through, so they are not offered — `bypassPermissions`
+ * additionally needs a spawn flag. Offering a mode the cycle cannot reach would
+ * be a control that spins the pane and gives up.
+ *
+ * One axis the reference shows is still **absent**: **fast mode**, which has no
+ * slash command in 2.1.220 and no other mid-session mechanism found.
  */
 const CLAUDE_AXES: readonly Axis[] = [
   {
+    id: 'permission-mode',
+    label: 'Permission mode',
+    via: 'permission-mode',
+    // `value` is the mode itself — Claude Code's own `--permission-mode`
+    // vocabulary, which is what the server's enum takes. Note the pane's footer
+    // says "manual" for what everything else calls `default`.
+    choices: [
+      { value: 'default', label: 'Ask for approval' },
+      {
+        value: 'acceptEdits',
+        label: 'Accept edits',
+        lowers:
+          'Claude Code stops asking before it writes to files. It still asks before ' +
+          'running commands, so the Approve and Deny buttons here keep appearing for ' +
+          'those — but not for edits.',
+      },
+      { value: 'plan', label: 'Plan only' },
+      {
+        value: 'auto',
+        label: 'Decide for me',
+        lowers:
+          'A model decides which of Claude Code’s permission prompts to approve, ' +
+          'including commands. Most of what would have reached you as an Approve or ' +
+          'Deny here is answered without you.',
+      },
+    ],
+  },
+  {
     id: 'model',
     label: 'Model',
+    via: 'keys',
     choices: [
       { value: 'opus', label: 'Opus 5', keys: ['/model opus'] },
       { value: 'sonnet', label: 'Sonnet 5', keys: ['/model sonnet'] },
@@ -95,6 +146,7 @@ const CLAUDE_AXES: readonly Axis[] = [
   {
     id: 'effort',
     label: 'Effort',
+    via: 'keys',
     choices: [
       { value: 'low', label: 'Low', keys: ['/effort low'] },
       { value: 'medium', label: 'Medium', keys: ['/effort medium'] },
@@ -129,6 +181,7 @@ const CODEX_AXES: readonly Axis[] = [
   {
     id: 'permissions',
     label: 'Permissions',
+    via: 'keys',
     choices: [
       { value: 'ask', label: 'Ask for approval', keys: ['/permissions', '1'] },
       {
@@ -183,6 +236,30 @@ export function choiceIn(axis: Axis, value: string): Choice | undefined {
  */
 export function lowersBar(choice: Choice): string | null {
   return choice.lowers ?? null;
+}
+
+/**
+ * What to say when setting the permission mode did not land.
+ *
+ * The whole value of this axis is that the server confirms by reading the pane
+ * back, so a failure has to be **stated**, and stated as what it is: the two
+ * ways it fails are genuinely different and only one of them touched the pane.
+ * Nothing here may imply the mode changed, and nothing may name a mode tether
+ * did not observe — `code` is the server's, and an unrecognised one falls
+ * through to the neutral sentence rather than a guess.
+ *
+ * The terminal is the fallback for all of them, which is why every sentence
+ * points at it: Shift+Tab in the pane always works, whatever tether can see.
+ */
+export function modeFailure(code: string, wanted: string): string {
+  if (code === 'unreadable') {
+    return `Could not read the current permission mode, so nothing was changed. Set it with Shift+Tab in the terminal.`;
+  }
+  if (code === 'not_confirmed') {
+    return `Could not confirm the mode reached ${wanted}. Check the terminal — it shows the mode tether could not.`;
+  }
+  if (code === 'session_dead') return 'This session has ended. Nothing can reach it now.';
+  return `Could not set the permission mode to ${wanted}. The terminal still shows what it is.`;
 }
 
 /**

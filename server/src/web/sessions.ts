@@ -14,7 +14,13 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { Session, SessionState } from '@tether/shared';
 
 import { LOCAL_MACHINE, getSession, listSessions, reconcileWithTmux } from '../machine/registry.ts';
+import {
+  MODES,
+  setPermissionMode,
+  type PermissionMode,
+} from '../providers/claude-code/permission-mode.ts';
 import { readSessionStatus } from '../providers/claude-code/status.ts';
+import { DEFAULT_PROVIDER } from '../machine/registry.ts';
 import {
   NoProviderSessionError,
   PROVIDER_COMMANDS,
@@ -76,9 +82,20 @@ const CREATE_BODY = {
   },
 } as const;
 
+/** The four modes the pane's Shift+Tab cycle passes through. `dontAsk` and
+ *  `bypassPermissions` are `--permission-mode` values the cycle never reaches,
+ *  so they are not offered — the enum is what the cycle can actually deliver. */
+const MODE_BODY = {
+  type: 'object',
+  required: ['mode'],
+  additionalProperties: false,
+  properties: { mode: { type: 'string', enum: [...MODES] } },
+} as const;
+
 type MachineParams = { machineId: string };
 type SessionParams = MachineParams & { id: string };
 type CreateBody = { cwd: string; title?: string; provider?: string };
+type ModeBody = { mode: PermissionMode };
 
 /**
  * `busy` / `idle` / `waiting` per live session, from the provider's own session
@@ -193,6 +210,42 @@ export function registerSessionRoutes(app: FastifyInstance, options: SessionRout
         }
         throw error;
       }
+    },
+  );
+
+  /**
+   * Set the permission mode of a running Claude Code pane, and answer with what
+   * was **confirmed by reading the pane back** — never with what was asked for.
+   *
+   * It is a route rather than a keystroke frame like the composer's other option
+   * controls because it is the one axis that needs a *read*: Shift+Tab cycles,
+   * so reaching a chosen mode means knowing where the pane is now and checking
+   * where it ended up, and only this side can see the screen. The browser
+   * therefore learns the outcome from the response and has nothing to poll.
+   *
+   * 409 rather than 500 for both failures: the request was well formed and the
+   * caller could not have known. `unreadable` means nothing was pressed at all.
+   */
+  app.post<{ Params: SessionParams; Body: ModeBody }>(
+    '/api/machines/:machineId/sessions/:id/permission-mode',
+    { schema: { params: SESSION_PARAMS, body: MODE_BODY } },
+    async (request, reply) => {
+      const session = getSession(db, request.params.id);
+      if (session === undefined) return reply.code(404).send({ error: 'no_such_session' });
+      // Codex has its own permission vocabulary and its own picker; pressing
+      // Shift+Tab at it would do something unrelated, so this is a 400 rather
+      // than an attempt.
+      if (session.provider !== DEFAULT_PROVIDER) {
+        return reply.code(400).send({ error: 'wrong_provider' });
+      }
+      if (session.deadAt !== null) return reply.code(409).send({ error: 'session_dead' });
+
+      const result = await setPermissionMode(socket, session.tmuxName, request.body.mode);
+      if (result.ok) return reply.send({ mode: result.mode, changed: result.changed });
+      // Where it actually ended up, when the screen still says — the browser
+      // reports that rather than the mode nobody reached.
+      const landed = result.reason === 'not_confirmed' ? (result.mode ?? null) : null;
+      return reply.code(409).send({ error: result.reason, mode: landed });
     },
   );
 

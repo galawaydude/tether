@@ -565,29 +565,41 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   the other direction. `busy` and `retrying` are **not** refused: both
   providers queue a message mid-turn, the unacked set carries one across a
   reconnect, and that is the most valuable thing a phone can do.
-- **A composer option is a keystroke sequence, and an axis earns a control only
-  by being _verified_ to change a running pane.** `web/src/options.ts` is the
-  whole feature: a per-provider table whose values are `input` frames sent on
-  that same terminal socket (so no new plumbing, and the resend-until-ACKed set
-  finishes a two-frame picker sequence across a reconnect). The reference client
-  the captain supplied owns its agent and can offer every axis it has; tether
-  owns a TUI in a pane and can only type at it, so **the CLI's flag list is not
-  the table** — `--permission-mode` and `--model` both exist on Claude Code and
-  only the second is offered. What each provider does and does not get, and the
-  live evidence for every entry _and every omission_, is in that file's own
-  comments; the short version is that Claude Code's `/model` and `/effort` take
-  their value as an argument, Codex's slash commands take none at all
-  (`/model gpt-5.6-terra` is sent to the model as a **prompt**), and an axis
-  tether cannot both set and read is left out rather than shown dead. Two rules
-  not to undo: a control is a **menu, not a display** — it resets to the axis
-  name after applying, because tether cannot keep a value true against a user
-  typing in the pane, and the agent's own answer in the conversation is the
-  confirmation — and a value that lowers the permission bar is **held** behind
-  its sentence (`lowersBar`), which `e2e/options.spec.ts` checks by reading the
-  pane _while the warning is up_. `e2e/serve.ts` shims the stub as `codex` as
-  well as `claude` for that spec; the stub writes a Claude-shaped transcript
-  either way, so a Codex session there has no conversation and the spec asserts
-  on keystrokes rather than rows.
+- **A composer option earns its control by being _verified_ to change a running
+  pane — and "no slash command" is not the same as "not settable".**
+  `web/src/options.ts` is the per-provider table and `Axis.via` is the seam: two
+  mechanisms, deliberately not a plugin system. **`keys`** sends `input` frames
+  on the terminal socket a composed message already uses (no new plumbing, and
+  the resend-until-ACKed set finishes a two-frame picker across a reconnect);
+  the agent's own answer in the conversation is the confirmation, so those
+  controls are a **menu, not a display** — they reset to the axis name, because
+  tether cannot keep a value true against a user typing in the pane.
+  **`permission-mode`** is a route instead, because that axis is reached only by
+  cycling Shift+Tab and a cycle is safe only if the mode can be read back;
+  `server/src/providers/claude-code/permission-mode.ts` reads the pane's own
+  status footer, steps **one** key at a time waiting for the footer to move, and
+  confirms by reading again — so it never assumes the cycle order or length, and
+  what the browser reports is what was **observed**, never what was asked for.
+  The reference client owns its agent and can offer every axis it has; tether
+  owns a TUI and can only type at it, so **the CLI's flag list is not the
+  table** — the live evidence for every entry _and every omission_ is in those
+  two files' comments. Four traps worth not rediscovering: it is **`BTab`, not
+  `S-Tab`** (tmux resolves `S-Tab` against extended keys the application
+  negotiated, and otherwise sends a plain tab); a dead pane makes `capture-pane`
+  throw and must degrade to `unreadable` rather than a 500 carrying tether's own
+  argv; the footer says **"manual"** for what the CLI, the hook payload and the
+  transcript all call `default`; and `permission_mode` rides on the `PreToolUse`
+  payload tether already receives, which is the better _record_ but says nothing
+  about right now, which is why the footer is what the setter uses. A value that
+  lowers the permission bar is **held** behind its sentence (`lowersBar`) on both
+  providers, and `e2e/options.spec.ts` checks that by reading the pane _while the
+  warning is up_ and by asserting a failed mode change never says "is now".
+  `e2e/serve.ts` shims the stub as `codex` as well as `claude` for that spec; the
+  stub writes a Claude-shaped transcript either way, so a Codex session there has
+  no conversation and the spec asserts on keystrokes rather than rows — and the
+  stub paints no footer, so the browser-side permission-mode tests are the
+  unreadable case by construction. Reaching every mode from every mode is
+  `permission-mode.test.ts`, against real tmux.
 - **The conversation is the interface and the terminal is summoned over it.**
   There is no tab pair: opening a session lands on the conversation, and
   `.termsheet` (`app.tsx`, `style.css`) is an overlay a header control raises and

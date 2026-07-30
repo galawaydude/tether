@@ -17,7 +17,13 @@
 import type { ServerFrame, SessionState } from '@tether/shared';
 import { useEffect, useRef, useState } from 'preact/hooks';
 
-import { answerPermission, ApiError, convSocketUrl, fetchConversation } from './api.ts';
+import {
+  answerPermission,
+  ApiError,
+  convSocketUrl,
+  fetchConversation,
+  setPermissionMode,
+} from './api.ts';
 import {
   addAnswer,
   addEcho,
@@ -37,7 +43,15 @@ import {
   type ToolRow,
 } from './conversation.ts';
 import { markdown, type Block, type Span } from './markdown.ts';
-import { axesFor, choiceIn, composerHint, lowersBar, type Axis, type Choice } from './options.ts';
+import {
+  axesFor,
+  choiceIn,
+  composerHint,
+  lowersBar,
+  modeFailure,
+  type Axis,
+  type Choice,
+} from './options.ts';
 import { copyLabel, providerLabel, whoLabel } from './providers.ts';
 import type { Send, Status } from './terminal.tsx';
 
@@ -302,6 +316,7 @@ export function ConversationView({
         onApply={(keys) => {
           for (const key of keys) sender.current?.(key);
         }}
+        sessionId={sessionId}
       />
     </>
   );
@@ -328,18 +343,23 @@ function Composer({
   terminal,
   onSend,
   onApply,
+  sessionId,
 }: {
   agent: SessionState;
   provider: string;
   terminal: Status;
   onSend: (text: string) => void;
   onApply: (keys: readonly string[]) => void;
+  sessionId: string;
 }) {
   const [text, setText] = useState('');
   const box = useRef<HTMLTextAreaElement>(null);
   /** A choice held back until its warning has been read. Never more than one:
    *  a second warning stacked behind the first is a warning nobody reads. */
   const [held, setHeld] = useState<{ axis: Axis; choice: Choice; note: string } | null>(null);
+  /** What the last permission-mode request actually did, once the server has
+   *  read the pane back. Never what was asked for. */
+  const [outcome, setOutcome] = useState<{ busy: boolean; text: string } | null>(null);
 
   // The message as it would be sent, so the refusal measures what the server
   // will measure rather than what is on screen.
@@ -360,14 +380,40 @@ function Composer({
     if (box.current !== null) box.current.style.height = '';
   };
 
+  /**
+   * Apply a choice. Keystroke axes are fire-and-forget — the agent's own answer
+   * lands in the conversation above. The permission-mode axis is a request, and
+   * its **response is the only thing allowed to be reported**: the server sends
+   * back the mode it confirmed by reading the pane, so a failure says so rather
+   * than leaving a control that looks like it worked.
+   */
+  const apply = (choice: Choice, axis: Axis) => {
+    if (axis.via === 'keys') {
+      onApply(choice.keys ?? []);
+      return;
+    }
+    setOutcome({ busy: true, text: `Setting permission mode to ${choice.label}…` });
+    setPermissionMode(sessionId, choice.value)
+      .then(() => setOutcome({ busy: false, text: `Permission mode is now ${choice.label}.` }))
+      .catch((error: unknown) => {
+        // The server's own code, so the sentence can distinguish "nothing was
+        // pressed" from "keys were pressed and it did not arrive". Anything else
+        // falls through to the neutral wording.
+        const code = error instanceof ApiError ? error.code : '';
+        setOutcome({ busy: false, text: modeFailure(code, choice.label) });
+      });
+  };
+
   const pick = (axis: Axis, value: string) => {
     const choice = choiceIn(axis, value);
     if (choice === undefined) return;
+    // Whatever the last request said is about a choice nobody is making now.
+    setOutcome(null);
     const note = lowersBar(choice);
     // Held, not applied: a value that stops the agent asking before it acts has
     // to say so first, in the same spirit as the Codex hook's own consent.
     if (note !== null) setHeld({ axis, choice, note });
-    else onApply(choice.keys);
+    else apply(choice, axis);
   };
 
   return (
@@ -406,7 +452,7 @@ function Composer({
               type="button"
               class="primary"
               onClick={() => {
-                onApply(held.choice.keys);
+                apply(held.choice, held.axis);
                 setHeld(null);
               }}
             >
@@ -447,6 +493,13 @@ function Composer({
           Send
         </button>
       </div>
+      {/* What the permission-mode request *did*, which is the only thing this
+          axis is allowed to claim — the server read the pane back to say it. */}
+      {outcome !== null && (
+        <p class={`composer-note ${outcome.busy ? '' : 'composer-said'}`} role="status">
+          {outcome.text}
+        </p>
+      )}
       {blocked !== null && (
         <p class="composer-note" id="composer-blocked" role="status">
           {blocked}

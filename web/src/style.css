@@ -1585,22 +1585,28 @@ label {
   border-top: 1px solid var(--line);
 }
 
-/* The controls row: every option control, then Send, on **one** line at every
-   width tether supports.
+/* The controls row: the agent's option controls, then Send.
  *
- * That is the whole of the phone decision, and it is enforced by making the
- * options share what Send does not take rather than by hoping they fit. The
- * reference is a desktop app with room for five controls; at 360px two of them
- * at their natural width plus Send already overflow, and a wrapped row is not a
- * free fallback here — a second row is 52px, which at 360×340 (this phone with
- * its keyboard up) is most of what is left of the conversation. So the options
- * flex from a zero basis and Send keeps its own width, and the row is 44px for
- * one control or four. */
+ * The reference is a desktop app with room for five controls in a line. At
+ * 360px three of them plus Send do not fit at any readable label width, so the
+ * row **wraps** — chosen over the alternatives deliberately: a horizontal
+ * scroller hides controls behind an edge a thumb cannot find, and squeezing
+ * them onto one line clips "Permission mode" to something unreadable on the one
+ * control where guessing is dangerous.
+ *
+ * Wrapping costs a second 52px row, which is affordable everywhere except the
+ * keyboard-open case — so that case is paid for by the height query below
+ * rather than by making this row lie. Send is last and pushed to the end, so it
+ * is on the final row wherever the options break. */
 .composer-bar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+}
+
+.composer-send {
+  margin-left: auto;
 }
 
 /* Deliberately the *native* control. A `<select>` is the platform's own menu:
@@ -1620,7 +1626,7 @@ label {
  * these set machine state. Sans rather than mono for the same reason: what the
  * control shows is tether's own word for the axis, not the machine's. */
 .composer-opt {
-  flex: 1 1 0;
+  flex: 1 1 auto;
   width: auto;
   min-width: 0;
   max-width: 200px;
@@ -1689,6 +1695,18 @@ label {
   color: var(--dim);
 }
 
+/* The keyboard-open case, and the only place the controls row's second line has
+   to be paid for. At 360×340 the pane is ~213px: the message box at 30dvh plus
+   two rows of controls overflows it and takes Send off screen, which is the
+   failure this composer has had once already. The box gives up the height,
+   because that is the case where the controls are what is being reached for —
+   a message being typed at 340px tall was never going to show ten lines. */
+@media (max-height: 420px) {
+  .composer-text {
+    max-height: 15dvh;
+  }
+}
+
 /* The whole width when it appears, below both controls: it explains why Send is
    disabled, and a reason squeezed between them is a reason nobody reads. */
 .composer-note {
@@ -1696,6 +1714,13 @@ label {
   margin: 0;
   font-size: 13px;
   color: var(--muted);
+}
+
+/* A settled permission-mode result — the server read the pane back to say it,
+   so it is the one line here that reports a fact rather than a refusal, and it
+   gets the ordinary foreground rather than the muted one. */
+.composer-said {
+  color: var(--fg);
 }
 
 /* ── terminal ───────────────────────────────────────────────────────────── */
