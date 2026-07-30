@@ -196,6 +196,12 @@ test('a permission prompt is answered from the conversation view, and only once'
   // panes that says so.
   await expect(banner).toContainText('Claude needs your permission to use Bash');
   await expect(agentChip).toHaveText('Waiting for you');
+  // The one control a user taps one-handed while an agent is blocked on them,
+  // so it is measured rather than merely found: styling `.link` down to its own
+  // text height once dropped it to 16.5px, which a presence check passes.
+  const open = banner.getByRole('button', { name: 'Open the terminal' });
+  const openBox = await open.boundingBox();
+  expect(openBox?.height ?? 0).toBeGreaterThanOrEqual(44);
   await shoot(page, '5-handed-back-to-the-terminal');
 
   // Answering there reconciles to the same one card — the other direction of
