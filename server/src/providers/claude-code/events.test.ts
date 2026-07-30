@@ -34,8 +34,17 @@ test('a real session maps to the conversation the user had', () => {
   assert.equal(version, CAPTURED_VERSION, 'the fixture describes the version it came from');
   assert.deepEqual(warnings, [], 'nothing in a real session is unrecognised');
 
-  // The prompt, the Read it caused, its result, the answer, then the compaction.
-  assert.deepEqual(kinds(events), ['user', 'tool_call', 'tool_result', 'assistant', 'compaction']);
+  // The prompt, the Read it caused, its result, the answer, the compaction, and
+  // then the `/compact` that caused it: the command and the line it printed.
+  assert.deepEqual(kinds(events), [
+    'user',
+    'tool_call',
+    'tool_result',
+    'assistant',
+    'compaction',
+    'command',
+    'command',
+  ]);
 
   const [user, call, result, answer, compaction] = events;
   assert.equal(
@@ -61,14 +70,99 @@ test('a real session maps to the conversation the user had', () => {
 });
 
 test('the noise Claude Code writes for itself is not conversation', () => {
-  // The fixture holds attachments (skill listings, hook output, a file), the
-  // compaction summary that is fed back to the model, and the `/compact` command
-  // bookkeeping. None of it is something the user said or was told.
+  // The fixture holds attachments (skill listings, hook output, a file) and the
+  // compaction summary that is fed back to the model. None of it is something the
+  // user said or was told.
   const texts = mapLines(SESSION)
     .events.filter((e) => e.kind === 'user')
     .map((e) => e.text);
   assert.equal(texts.length, 1);
   assert.ok(!texts.some((t) => t.includes('<command-name>') || t.includes('local-command')));
+});
+
+test('a slash command is what it ran and what it printed, and nothing else', () => {
+  // The composer can send a slash command, so this record is the *only* evidence
+  // outside the pane that one landed — which is why it stopped being dropped.
+  // `<command-message>` is the command's display name and `<local-command-caveat>`
+  // is addressed to the model: neither is conversation, and neither survives.
+  const commands = mapLines(SESSION).events.filter((e) => e.kind === 'command');
+  assert.deepEqual(
+    commands.map((e) => [e.text, e.output === true]),
+    [
+      ['/compact', false],
+      ['Compacted (ctrl+o to see full summary)', true],
+    ],
+  );
+  for (const command of commands) {
+    assert.ok(!command.text.includes('<'), `a tag survived into ${command.text}`);
+  }
+});
+
+test('a command’s argument is part of the command, whichever order the tags come in', () => {
+  // Verified on 2.1.220 by running both: `/model` writes `<command-name>` then
+  // `<command-message>` then `<command-args>`, and `/init` writes
+  // `<command-message>` *first*. Matching each tag on its own rather than by
+  // position is what makes one code path cover both.
+  const args = (content: string): string =>
+    mapRecord({ type: 'user', uuid: 'u', message: { role: 'user', content } })
+      .events.map((e) => (e.kind === 'command' ? e.text : ''))
+      .join('');
+
+  assert.equal(
+    args(
+      '<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args>sonnet</command-args>',
+    ),
+    '/model sonnet',
+  );
+  assert.equal(
+    args('<command-message>init</command-message>\n<command-name>/init</command-name>'),
+    '/init',
+  );
+  // An empty `<command-args>` is how a no-argument command is recorded.
+  assert.equal(
+    args('<command-name>/compact</command-name>\n<command-args></command-args>'),
+    '/compact',
+  );
+  // Bookkeeping on its own is still dropped.
+  assert.equal(args('<command-message>init</command-message>'), '');
+  assert.equal(args('<local-command-caveat>Caveat: …</local-command-caveat>'), '');
+  assert.equal(args('<local-command-stdout></local-command-stdout>'), '');
+});
+
+test('Claude Code’s own colour codes do not reach the browser', () => {
+  // `/model sonnet` really writes `Set model to \x1b[1mSonnet 5\x1b[22m …` — the
+  // name is bold on the way to a terminal. The browser is not one, so an SGR
+  // sequence left in would show up as a literal `[1m` in the page.
+  const { events } = mapRecord({
+    type: 'user',
+    uuid: 'u',
+    message: {
+      role: 'user',
+      content: '<local-command-stdout>Set model to \x1b[1mSonnet 5\x1b[22m</local-command-stdout>',
+    },
+  });
+  assert.deepEqual(
+    events.map((e) => (e.kind === 'command' ? e.text : e.kind)),
+    ['Set model to Sonnet 5'],
+  );
+});
+
+test('what a command printed is capped like any other provider output', () => {
+  // `/context` prints a screenful and a custom command is free to pipe a whole
+  // `git log -p` through one, so this is the same invariant `cap.ts` states for a
+  // tool result: the terminal is the full-fidelity view, and a card may not put
+  // megabytes in the replay buffer and on the wire.
+  const { events } = mapRecord({
+    type: 'user',
+    uuid: 'u',
+    message: {
+      role: 'user',
+      content: `<local-command-stdout>${'x'.repeat(MAX_OUTPUT * 2)}</local-command-stdout>`,
+    },
+  });
+  const text = events[0]?.kind === 'command' ? events[0].text : '';
+  assert.ok(text.length < MAX_OUTPUT * 1.1, `uncapped at ${text.length} characters`);
+  assert.match(text, /truncated by tether/);
 });
 
 test('a thinking block is presence, not content', () => {

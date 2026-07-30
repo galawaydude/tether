@@ -1223,6 +1223,38 @@ label {
   line-height: 1.55;
 }
 
+/* A slash command that ran, and what it printed.
+ *
+ * Monospace and containerless, which is the house rule twice over: monospace
+ * because the machine said it, and no box because a box means an artefact — a
+ * command is a line typed at the agent's CLI, and `Set model to Sonnet 5` in a
+ * card would read as an artefact the size of a sentence. The rule it does bend
+ * is the accent one: this is the only evidence a command tether sent actually
+ * ran, so it needs to be findable in a long list, and a left rule in the cool
+ * machine colour is what does that without spending amber on it.
+ *
+ * `flex: none` for the reason every `.conv` child needs it: a column flex
+ * container shrinks its items to fit, and one line of text does not hold itself
+ * open. */
+.cmd {
+  flex: none;
+  margin: 0;
+  padding: 2px 0 2px 10px;
+  border-left: 2px solid var(--line-lit);
+  font: 13px/1.5 var(--mono);
+  color: var(--fg);
+  /* A command's own output arrives verbatim and can be a table (`/context`) or
+     wider than the pane. It wraps rather than widening the page. */
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/* What it printed, one step quieter than the command itself: the line above is
+   what the user recognises, this is the answer to it. */
+.cmd-out {
+  color: var(--muted);
+}
+
 /* ── tool cards ─────────────────────────────────────────────────────────── */
 
 .tool {
@@ -1654,6 +1686,11 @@ label {
  * rather than by making this row lie. Send is last and pushed to the end, so it
  * is on the final row wherever the options break. */
 .composer-bar {
+  /* Never shrinks. It is a column flex item like everything else in this panel,
+     and a default `flex-shrink: 1` lets it give up height when the command list
+     is up on a short screen — which means Send at less than its own tap size, on
+     the row that has to stay reachable. The list gives way instead. */
+  flex: none;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -1760,6 +1797,81 @@ label {
   .composer-text {
     max-height: 15dvh;
   }
+}
+
+/* What `/` means. It appears and disappears on a keystroke, which is why the two
+   things it must not do are worth stating:
+ *
+ *  - **It must not push Send off the screen.** This panel is `overflow-y: auto`
+ *    for the bar-lowering warning's sake, so a list taller than the pane would
+ *    scroll Send out of reach rather than clipping visibly. It caps its own
+ *    height and scrolls inside itself instead — `e2e/options.spec.ts`'s 360×340
+ *    measurement is what holds that.
+ *  - **It must not resize the terminal.** It cannot: this panel is inside the
+ *    conversation `.pane`, so the height it takes comes out of `.scroll` beside
+ *    it and never out of `.panes`, which is the box xterm is fitted to. A
+ *    version of this list stacked above the panes would have needed to be out of
+ *    flow like `.waiting` is.
+ *
+ * A plain list of buttons rather than a combobox: the platform has no native
+ * control for this, and an ARIA combobox is a keyboard interaction model to
+ * reimplement for something the textarea beside it already accepts by typing. */
+.composer-cmds {
+  /* The one child of this panel that gives way, and it is deliberately the only
+     one: shrinkable with `min-height: 0` so the pane's own limit is what bounds
+     it, which is what keeps Send in the viewport at 360×340 without the panel
+     having to scroll to reach it. `.composer-bar` is `flex: none` for the other
+     half of that. */
+  flex: 0 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 26dvh;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--wash);
+}
+
+.composer-cmds > li + li {
+  border-top: 1px solid var(--line);
+}
+
+.composer-cmds button {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  width: 100%;
+  min-height: var(--tap);
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  text-align: left;
+}
+
+/* Mono, because the machine's own vocabulary is what is being offered. */
+.cmd-name {
+  font: 600 13.5px/1.4 var(--mono);
+  color: var(--fg);
+}
+
+/* Pushed to the far edge and only present on the commands that answer somewhere
+   this pane cannot show — see `whereLabel`. A badge on every row would make the
+   two that matter invisible. */
+.cmd-where {
+  margin-left: auto;
+  font: 11.5px/1.4 var(--mono);
+  color: var(--dim);
+}
+
+.cmd-summary {
+  flex-basis: 100%;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--muted);
 }
 
 /* The whole width when it appears, below both controls: it explains why Send is

@@ -101,11 +101,27 @@ tether cannot keep a value true against you typing in the terminal, and the
 agent's own answer above the composer is the confirmation. Permission mode is the
 one exception — tether reads it off the pane's own status footer, so what it
 reports is the mode it **observed**, and it says so plainly when it could not
-confirm one. Anything no control covers is still reachable by typing the agent's
-own slash command into the box. And a choice that lets the agent act with less
+confirm one. And a choice that lets the agent act with less
 asking — Claude Code's _Accept edits_ and _Decide for me_, Codex's _Approve for
 me_ and _Full access_ — states what it means and takes effect only once you have
 confirmed it.
+
+Anything no control covers is reachable by typing the agent's own **slash
+command** into the same box. Type `/` and the ones tether knows for that agent
+appear above it, one line each; a command is text addressed to the CLI rather than a
+prompt, so it gets no message bubble, and it is refused for the same reasons a
+message is — while the agent is waiting on a permission prompt above all. What
+the composer adds is the one thing sending text cannot tell you: **where the
+answer will turn up**. `/model sonnet`, `/effort high` and `/compact` are
+recorded by Claude Code, so they land in the conversation as their own line —
+which is also what makes the option controls above visible rather than silent.
+`/cost` and `/status` answer in the terminal only. A chooser like `/resume`
+leaves the agent waiting for a selection tether cannot draw, so the note that
+says so carries **Show the terminal** beside it. A command tether has not heard
+of is still sent, since refusing one would refuse every custom command you have
+— it just says it cannot vouch for what happened. The single outright refusal is
+a Codex command given an argument, because Codex sends that to the model as a
+paid prompt instead of running the command.
 
 The phone is still the primary target and gets one screen at a time — the list,
 then the session you opened. A laptop gets a different shape rather than a
@@ -490,7 +506,12 @@ leave one lying: permission mode is reported only as the mode that was read back
 and every other control claims nothing at all, so the agent's own reply above the
 composer is what says the change landed. Every axis in the table was established
 against Claude Code 2.1.220 and codex-cli 0.145.0; setting any of them by hand in
-the terminal always works.
+the terminal always works. So is the slash-command list beside them, and what it
+says about where a command's answer turns up is a **prediction rather than a
+promise**: an agent is free to stop and ask something the table could not foresee
+— `/model opus` opens a _Switch model?_ confirmation on a session with a cached
+conversation — which is why no note ever claims nothing else will happen, and why
+the waiting banner is the correction.
 
 **Folder trust is the same bet, and the one place tether takes it while
 _writing_.** Where each agent records a trusted directory is its own business, and
@@ -569,7 +590,11 @@ call proposed while the terminal is summoned is **not** held — the agent's own
 prompt takes the question straight away — and the same session holds the next one
 once the terminal is put away. The third composes a message and asserts it reaches the agent
 and appears exactly once, that Enter in the box is a line break rather than a
-send, and that the composer leaves Send on screen with the keyboard up. The
+send, and that the composer leaves Send on screen with the keyboard up. It also
+sends **slash commands** from that box: that one is not drawn as a message, that a
+recorded one really arrives in the conversation, that a chooser's reaches the pane
+and is reported rather than claimed, and that the command list gives way rather
+than pushing Send off a 360×340 screen. The
 fourth starts two sessions in **one** directory and asserts each shows its own
 conversation and neither shows the other's, then acts out a `/resume` at one of
 their panes and asserts that view follows the agent to the conversation it
@@ -592,7 +617,9 @@ button is **gone** rather than merely invisible, that the page has exactly one
 `<main>`, and that nothing makes it scroll sideways. All seven run against
 `e2e/stub-agent.ts` — a script that prints, echoes
 what you type at it, writes a Claude-Code-shaped transcript, publishes its own
-status file, moves to a new session id and a new transcript on a `/resume`,
+status file, acts out a slash command the three ways the real one does — applied
+and recorded, a chooser in the pane and nothing on disk, or refused locally —
+moves to a new session id and a new transcript on a `/resume`,
 fires whatever hook the project's settings register **and honours the decision
 that hook writes back**, exactly as Claude Code does — put on `PATH` as both
 `claude` and `codex`, so a session under either agent is created through the real

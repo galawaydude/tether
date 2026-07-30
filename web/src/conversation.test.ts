@@ -515,6 +515,34 @@ test('a replayed record cannot retire a second echo', () => {
   assert.equal(state.rows.length, 1);
 });
 
+test('a slash command is a row of its own, and it is not a message', () => {
+  // The composer can send a slash command and it is the only evidence outside the
+  // pane that one landed. It is not a message either way: it is addressed to the
+  // agent's CLI, so it gets no box and no "You" over it — see `.cmd` in
+  // `style.css` for why that is the house rule and not a preference.
+  const rows = toRows(
+    stream(
+      { kind: 'command', id: 'c1', at: AT, text: '/model sonnet' },
+      { kind: 'command', id: 'c2', at: AT, text: 'Set model to Sonnet 5', output: true },
+    ),
+  );
+  assert.deepEqual(rows, [
+    { key: '1', row: 'command', text: '/model sonnet', output: false },
+    { key: '2', row: 'command', text: 'Set model to Sonnet 5', output: true },
+  ]);
+});
+
+test('a slash command does not retire a composed message', () => {
+  // `/resume` typed into the composer sends no echo, so nothing is outstanding
+  // for a command record to retire — and a message that *is* outstanding must
+  // survive a command record landing in between, since only the user's own
+  // transcript record supersedes their own echo.
+  const state = addEvents(addEcho(noRows(), 'hello'), [
+    { seq: 1, e: { kind: 'command', id: 'c1', at: AT, text: '/compact' } },
+  ]);
+  assert.deepEqual(texts(state), ['hello']);
+});
+
 test('an assistant message does not retire an echo', () => {
   // Only the user’s own record supersedes the user’s own echo.
   const state = addEvents(addEcho(noRows(), 'hello'), [

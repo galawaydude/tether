@@ -24,6 +24,7 @@ import {
   fetchConversation,
   setPermissionMode,
 } from './api.ts';
+import { matchCommands, planSend, whereLabel } from './commands.ts';
 import {
   addAnswer,
   addEcho,
@@ -71,6 +72,7 @@ export function ConversationView({
   onState,
   sender,
   terminal,
+  onSummon,
 }: {
   sessionId: string;
   /** Whose name goes over an assistant message. Nothing else here reads it. */
@@ -98,6 +100,13 @@ export function ConversationView({
    * would sit under "Sending…" forever with nothing to say why.
    */
   terminal: Status;
+  /**
+   * Raise the terminal. The composer needs it for the slash commands that answer
+   * only there — a chooser like `/resume` leaves the agent waiting for a
+   * selection on a screen the conversation cannot show, so the note that says so
+   * has to carry the way in rather than telling a phone user to go and find it.
+   */
+  onSummon: () => void;
 }) {
   const [state, setState] = useState<Rows>(noRows);
   const [failed, setFailed] = useState(false);
@@ -317,6 +326,7 @@ export function ConversationView({
         onApply={(keys) => {
           for (const key of keys) sender.current?.(key);
         }}
+        onSummon={onSummon}
         sessionId={sessionId}
       />
     </>
@@ -344,6 +354,7 @@ function Composer({
   terminal,
   onSend,
   onApply,
+  onSummon,
   sessionId,
 }: {
   agent: SessionState;
@@ -351,6 +362,7 @@ function Composer({
   terminal: Status;
   onSend: (text: string) => void;
   onApply: (keys: readonly string[]) => void;
+  onSummon: () => void;
   sessionId: string;
 }) {
   const [text, setText] = useState('');
@@ -358,9 +370,30 @@ function Composer({
   /** A choice held back until its warning has been read. Never more than one:
    *  a second warning stacked behind the first is a warning nobody reads. */
   const [held, setHeld] = useState<{ axis: Axis; choice: Choice; note: string } | null>(null);
-  /** What the last permission-mode request actually did, once the server has
-   *  read the pane back. Never what was asked for. */
-  const [outcome, setOutcome] = useState<{ busy: boolean; text: string } | null>(null);
+  /**
+   * A permission-mode request being in flight, and it is a **lock rather than a
+   * note**: `apply` sets it and only the request settling clears it, so nothing
+   * that clears what the composer *says* can unlock the control. Derived state
+   * would put that invariant back in the hands of every future caller — the two
+   * below are cleared by whoever last made a claim stale, which is exactly the
+   * wrong owner for it.
+   */
+  const [modeBusy, setModeBusy] = useState(false);
+  /**
+   * What the permission-mode request did, once the server has read the pane back
+   * — never what was asked for.
+   */
+  const [outcome, setOutcome] = useState<string | null>(null);
+  /**
+   * Where the last slash command's answer is going to turn up, and `hatch` asks
+   * for the way into the terminal beside it — which is what a command that answers
+   * only there needs.
+   *
+   * Its own state rather than the request's above, because the two settle
+   * independently: a mode result landing must not replace the one hatch a user has
+   * to reach the chooser the agent is sitting on.
+   */
+  const [said, setSaid] = useState<{ text: string; hatch: boolean } | null>(null);
 
   // The message as it would be sent, so the refusal measures what the server
   // will measure rather than what is on screen.
@@ -371,19 +404,61 @@ function Composer({
   // the prompt in the terminal first" can stop them — the second because a
   // slash command pasted at a permission dialog answers the dialog.
   const optionsBlocked = sendBlocked(agent, '', terminal) !== null;
-  // A permission-mode request is a read-press-read on a pane nobody else may be
-  // pressing at, so a second one while the first is in flight is refused by the
-  // server and would only ever report a mode it did not aim at. The control says
-  // so rather than taking a tap that cannot land.
-  const modeInFlight = outcome !== null && outcome.busy;
   const axes = axesFor(provider);
 
+  /** The commands worth showing under a half-typed one. Empty for ordinary text,
+   *  which is the whole of when this list is not there. */
+  const matches = matchCommands(provider, text);
+
+  const clear = () => {
+    setText('');
+    if (box.current !== null) box.current.style.height = '';
+  };
+
+  /** Whatever the composer last said is about something nobody is doing now.
+   *  Notes only: a request in flight keeps its own control disabled through
+   *  `modeBusy`, which is not this to clear. */
+  const clearNotes = () => {
+    setSaid(null);
+    setOutcome(null);
+  };
+
+  /**
+   * Send, and the only branch in it is what the text *is* — `planSend` decides,
+   * and it prefers prose wherever the line is ambiguous, since both routes put the
+   * same bytes on the same frame and the choice only picks the feedback.
+   *
+   * A slash command goes out on the same path an option's keystrokes do — the
+   * terminal socket, one `input` frame, resend-until-ACKed — and deliberately
+   * **not** the message path: a command is addressed to the agent's CLI, so an
+   * optimistic "You" bubble would be attributing it to the conversation, and the
+   * echo behind it retires on a `user` transcript record that a command never
+   * writes. So it would stand at "Sending…" for the life of the session.
+   *
+   * Both branches are behind the same `blocked` check, which is what makes a
+   * command obey the permission rule a message already obeys: text pasted at a
+   * provider's own permission dialog answers the dialog, and a slash command is
+   * no less dangerous there than a prompt.
+   */
   const submit = (event: Event) => {
     event.preventDefault();
     if (message === '' || blocked !== null) return;
-    onSend(message);
-    setText('');
-    if (box.current !== null) box.current.style.height = '';
+    const plan = planSend(provider, message);
+    clearNotes();
+    if (plan.plan === 'message') {
+      onSend(message);
+      clear();
+      return;
+    }
+    // Refused, so the text stays in the box: the note says what to change about
+    // it, and clearing it would make the user type the whole command again.
+    if (plan.plan === 'refuse') {
+      setSaid({ text: plan.note, hatch: false });
+      return;
+    }
+    onApply([plan.send]);
+    setSaid({ text: plan.note, hatch: plan.hatch });
+    clear();
   };
 
   /**
@@ -404,9 +479,15 @@ function Composer({
       onApply(choice.keys ?? []);
       return;
     }
-    setOutcome({ busy: true, text: `Setting permission mode to ${choice.label}…` });
+    // Locked here and unlocked only where the request settles, which is what keeps
+    // the control shut for the whole of the server's read-press-read:
+    // `permission-mode.ts` serialises per pane, so a second concurrent request
+    // presses between the first one's read and its read-back and both then confirm
+    // a mode neither tap aimed at.
+    setModeBusy(true);
+    setOutcome(`Setting permission mode to ${choice.label}…`);
     setPermissionMode(sessionId, choice.value)
-      .then(() => setOutcome({ busy: false, text: `Permission mode is now ${choice.label}.` }))
+      .then(() => setOutcome(`Permission mode is now ${choice.label}.`))
       .catch((error: unknown) => {
         // The server's own code, so the sentence can distinguish "nothing was
         // pressed" from "keys were pressed and it did not arrive", and its body,
@@ -414,8 +495,9 @@ function Composer({
         // through to the neutral wording.
         const code = error instanceof ApiError ? error.code : '';
         const body = error instanceof ApiError ? error.body : null;
-        setOutcome({ busy: false, text: modeFailure(code, choice.label, body) });
-      });
+        setOutcome(modeFailure(code, choice.label, body));
+      })
+      .finally(() => setModeBusy(false));
   };
 
   const pick = (axis: Axis, value: string) => {
@@ -432,6 +514,38 @@ function Composer({
 
   return (
     <form class="composer" onSubmit={submit}>
+      {/* What `/` means, since the placeholder can only say that it means
+          something. In flow — see `.composer-cmds` — and safe there because this
+          composer lives inside the conversation `.pane`, so the height it takes
+          comes out of `.scroll` beside it and never out of `.panes`, which is the
+          box xterm is fitted to: appearing and disappearing on a keystroke cannot
+          resize the tmux pane for the session's other viewers. It is the only
+          shrinkable child of this panel (`flex: 0 1 auto; min-height: 0`) and
+          `.composer-bar` is `flex: none`, which is what keeps Send in the viewport
+          at 360×340. */}
+      {matches.length > 0 && (
+        <ul class="composer-cmds" aria-label="Commands">
+          {matches.map((command) => (
+            <li key={command.name}>
+              {/* Fills the box rather than sending: a command may still want an
+                  argument, and a list that sent on a tap would make a mis-tap
+                  irreversible on the one surface where `/clear` is in reach. */}
+              <button
+                type="button"
+                class="ghost"
+                onClick={() => {
+                  setText(command.name);
+                  box.current?.focus();
+                }}
+              >
+                <span class="cmd-name">{command.name}</span>
+                <span class="cmd-summary">{command.summary}</span>
+                <span class="cmd-where">{whereLabel(command)}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
       <label class="sr-only" for="composer-text">
         Message
       </label>
@@ -465,7 +579,7 @@ function Composer({
             <button
               type="button"
               class="primary"
-              disabled={optionsBlocked || (held.axis.via === 'permission-mode' && modeInFlight)}
+              disabled={optionsBlocked || (held.axis.via === 'permission-mode' && modeBusy)}
               onClick={() => {
                 apply(held.choice, held.axis);
                 setHeld(null);
@@ -487,7 +601,7 @@ function Composer({
             key={axis.id}
             class="composer-opt"
             aria-label={axis.label}
-            disabled={optionsBlocked || (axis.via === 'permission-mode' && modeInFlight)}
+            disabled={optionsBlocked || (axis.via === 'permission-mode' && modeBusy)}
             value=""
             onChange={(event) => {
               const element = event.currentTarget;
@@ -515,8 +629,33 @@ function Composer({
       {/* What the permission-mode request *did*, which is the only thing this
           axis is allowed to claim — the server read the pane back to say it. */}
       {outcome !== null && (
-        <p class={`composer-note ${outcome.busy ? '' : 'composer-said'}`} role="status">
-          {outcome.text}
+        <p class={`composer-note ${modeBusy ? '' : 'composer-said'}`} role="status">
+          {outcome}
+        </p>
+      )}
+      {/* Where the last command's answer is going, in the same treatment: two
+          different claims, and neither may stand in for the other. */}
+      {said !== null && (
+        <p class="composer-note composer-said" role="status">
+          {said.text}
+          {/* The way in, beside the sentence that says it is needed. A command
+              whose answer is a chooser has left the agent waiting on a screen
+              this pane cannot show, and "open the terminal" as prose on a phone
+              is an instruction to go and find a button. */}
+          {said.hatch && (
+            <>
+              {' '}
+              {/* **Not** "Open the terminal": that is the waiting banner's link
+                  in `app.tsx`, and the two appear together routinely — sending
+                  `/resume` puts Claude Code into `waiting` within a second, so
+                  both are on screen at once. Two controls with one accessible
+                  name is an ambiguity for a screen reader and for
+                  `getByRole({ name })`, which matches on a substring. */}
+              <button type="button" class="link" onClick={onSummon}>
+                Show the terminal
+              </button>
+            </>
+          )}
         </p>
       )}
       {blocked !== null && (
@@ -720,6 +859,11 @@ function RowView({ row, provider, sessionId }: { row: Row; provider: string; ses
           <span aria-hidden="true">✳</span> Thinking…
         </p>
       );
+    case 'command':
+      // Monospace and no box: the machine said it, and a command is not a
+      // message. Its own line rather than a card — a card the size of
+      // `Set model to Sonnet 5` is furniture.
+      return <p class={row.output ? 'cmd cmd-out' : 'cmd'}>{row.text}</p>;
     case 'compaction':
       return <p class="divider">context compacted</p>;
     case 'note':

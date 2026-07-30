@@ -266,10 +266,81 @@ setInterval(() => {
   process.stdout.write(`\n${TOOL} command\n  ${ask.command}\n\nDo you want to proceed? (y/n)\n`);
 }, POLL_MS);
 
+/**
+ * A slash command, acted out the way 2.1.220 really does it — which is three
+ * different ways, and the difference is the whole reason `web/src/commands.ts`
+ * exists. Verified by running each in a pane and reading the transcript back:
+ *
+ *  - **A command with an argument applies and prints**, writing `<command-name>`
+ *    with `<command-args>` beside it and then `<local-command-stdout>`. Those two
+ *    records are the only evidence outside the pane that a command landed, so
+ *    they are what the conversation shows.
+ *  - **A bare command opens a chooser** and writes *nothing at all*. That is the
+ *    `/resume` the captain used, and the case tether can only report rather than
+ *    show.
+ *  - **An unknown command is refused locally**, in the pane, for free — no turn,
+ *    no prompt, nothing in the transcript.
+ *
+ * Copied from the real thing rather than imported from `server/`, by the same
+ * rule as every other shape in this file: a stub that shared tether's idea of it
+ * would agree with a wrong one. Notably it does **not** write a `user` record,
+ * which is what makes "a command is not a prompt" a claim the spec can check.
+ */
+
+/**
+ * What `/model x` and `/effort x` print, in the real thing's own words — these
+ * are the two the composer's option bar sends (`web/src/options.ts`), so the
+ * strings a spec asserts on are theirs and not this file's invention.
+ */
+const APPLIED: Record<string, (args: string) => string> = {
+  '/model': (args) =>
+    `Set model to \x1b[1m${args}\x1b[22m and saved as your default for new sessions`,
+  '/effort': (args) => `Set effort level to ${args}`,
+};
+
+function command(text: string): void {
+  const at = text.indexOf(' ');
+  const name = at === -1 ? text : text.slice(0, at);
+  const args = at === -1 ? '' : text.slice(at + 1).trim();
+
+  const applied = APPLIED[name];
+  if (applied !== undefined && args !== '') {
+    const said = applied(args);
+    write('user', [
+      {
+        type: 'text',
+        text: `<command-name>${name}</command-name>\n<command-message>${name.slice(1)}</command-message>\n<command-args>${args}</command-args>`,
+      },
+    ]);
+    // With the colour codes the real one writes: `/model` puts the model name in
+    // bold on the way to a terminal, and a browser is not one.
+    write('user', [{ type: 'text', text: `<local-command-stdout>${said}</local-command-stdout>` }]);
+    // Stripped for the pane too, so a spec reading `.xterm-rows` matches the
+    // words rather than an SGR sequence xterm has already consumed.
+    // eslint-disable-next-line no-control-regex -- an SGR sequence is one
+    process.stdout.write(`${said.replace(/\x1b\[[0-9;]*m/g, '')}\n`);
+    return;
+  }
+  if (name === '/resume') {
+    // The chooser, and nothing in the transcript — so the only place this exists
+    // is the pane, which is exactly what tether has to say about it.
+    process.stdout.write('Resume session\n  Search...\n  No conversations found\n');
+    return;
+  }
+  process.stdout.write(`Unknown command: ${name}\n`);
+}
+
 const rl = createInterface({ input: process.stdin, output: process.stdout });
 rl.on('line', (line) => {
   const text = line.trim();
   if (text === '') return;
+
+  // Before the `user` record, because a command is not a prompt: the real thing
+  // writes command bookkeeping instead, or nothing at all.
+  if (text.startsWith('/')) {
+    command(text);
+    return;
+  }
   record('user', text);
 
   const ask = ASKS[text as keyof typeof ASKS];
