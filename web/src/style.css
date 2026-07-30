@@ -986,9 +986,147 @@ label {
   /* Room to breathe: the agent's reply is the longest prose on the screen and
      the one thing here that is genuinely read rather than scanned. */
   line-height: 1.65;
-  /* The agent's own line breaks are meaningful; a long unbroken token wraps
-     rather than pushing the card wider. */
-  white-space: pre-wrap;
+  /* A long unbroken token — a path, a hash, a minified line — wraps rather than
+     pushing the message wider. Line breaks are the renderer's job now: a
+     paragraph is a `<p>`, so `pre-wrap` here would double every blank line. */
+  overflow-wrap: anywhere;
+}
+
+/* ── rendered markdown ───────────────────────────────────────────────────────
+ *
+ * Agents write markdown, so the conversation renders it — and rule 4 at the top
+ * of this file still holds: **the agent's prose gets no container.** Nothing
+ * below adds a border, a fill or an indent to running text. What does get a box
+ * is what is genuinely an artefact inside the prose: a fenced block, which is
+ * code, and a quote, which is something being cited rather than said.
+ *
+ * Rule 3 decides the type: anything the machine said is mono. Everything here
+ * is one of those two rules applied; there is no new colour and no new accent.
+ */
+.md > :first-child {
+  margin-top: 0;
+}
+
+.md > :last-child {
+  margin-bottom: 0;
+}
+
+.md-p {
+  margin: 0 0 10px;
+}
+
+/* Headings are a size and a weight, not a rule and a colour: a message is a few
+   hundred words and a heading in it is a signpost, not a page title. The steps
+   are small on purpose — an `h1` in an agent's reply must not shout down the
+   session title above it. */
+.md-h {
+  margin: 16px 0 6px;
+  line-height: 1.3;
+  letter-spacing: 0.01em;
+}
+
+.md-h1 {
+  font-size: 18px;
+}
+
+.md-h2 {
+  font-size: 16.5px;
+}
+
+.md-h3,
+.md-h4,
+.md-h5,
+.md-h6 {
+  font-size: 15px;
+  color: var(--muted);
+}
+
+.md-list {
+  margin: 0 0 10px;
+  /* Enough for the marker and no more: at 360px every indent is spent twice,
+     once here and again on any nested item. */
+  padding-left: 22px;
+}
+
+.md-item {
+  margin: 3px 0;
+}
+
+/* Nesting, clamped to two steps by the parser. A flat list with a padding is
+   what a phone can spend; a real tree of `<ul>`s inside `<li>`s buys nothing at
+   this width. */
+.md-depth1 {
+  margin-left: 14px;
+}
+
+.md-depth2 {
+  margin-left: 28px;
+}
+
+/* Cited, not said: the one piece of prose that gets an edge, and it is a spine
+   rather than a box — the same graphic idea as everything else here, in a
+   neutral tone because nothing about a quote needs a human. */
+.md-quote {
+  margin: 0 0 10px;
+  padding: 2px 0 2px 12px;
+  border-left: 3px solid var(--line-lit);
+  color: var(--muted);
+}
+
+/* Rule 3: the machine said it. A tint rather than a surface, so a couple of
+   words of code in a sentence do not become a row of buttons. Mixed into
+   `--wash` for the reason `.chip` is: 7.9:1 wherever it lands. */
+.md-inline-code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--fg) 8%, var(--wash));
+  font: 0.88em var(--mono);
+  overflow-wrap: anywhere;
+}
+
+/* The fenced block, and the single biggest reason this file changed: most of
+   what an agent writes back is code, and code that is not in a box is not code.
+ *
+ * It scrolls **inside itself**, in one axis, and that is the whole rule — the
+ * page may never scroll sideways at any width, and a wrapped line of code is
+ * harder to read than a scrolled one. `--wash` is darker than the surface it
+ * sits on, so the block reads as inset the way the terminal does. */
+.md-code {
+  margin: 0 0 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--wash);
+}
+
+/* What the fence said it was. A label, not a promise of highlighting.
+ *
+ * Its own strip rather than a badge floating in the corner: at 360px a first
+ * line reaches the right edge routinely, and a label over it hides exactly the
+ * characters a reader is trying to read. Height it costs: one 20px row, once
+ * per block. */
+.md-lang {
+  display: block;
+  padding: 4px 11px;
+  border-bottom: 1px solid var(--line);
+  font: 600 10.5px/1.4 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.md-code > pre {
+  margin: 0;
+  padding: 11px 13px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  font: 12.5px/1.55 var(--mono);
+  tab-size: 2;
+}
+
+.md-link {
+  color: var(--work);
+  text-decoration: underline;
+  text-underline-offset: 2px;
   overflow-wrap: anywhere;
 }
 
@@ -1163,8 +1301,12 @@ label {
   color: var(--danger);
 }
 
+/* Rule 1: amber is a human being needed. A failure that says "needs you" is
+   exactly that, so it takes the accent from the danger red a failure otherwise
+   gets — the rate-limited card next to it stays red and says "retrying". */
 .tool-pending .tool-state,
-.tool-answerable .tool-state {
+.tool-answerable .tool-state,
+.tool-act .tool-state {
   color: var(--accent-ink);
 }
 
@@ -1220,11 +1362,161 @@ label {
 }
 
 .tool-label {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
   margin: 10px 12px 5px;
   font: 600 11.5px/1 var(--mono);
   color: var(--dim);
   text-transform: uppercase;
   letter-spacing: 0.09em;
+}
+
+/* ── a change, drawn as one ──────────────────────────────────────────────────
+ *
+ * An Edit's own result is a sentence about a change plus a `cat -n` excerpt,
+ * which at 360px is a paragraph nobody reads. This is the same fact as two
+ * columns of coloured lines, and it is the highest-value legibility win the ACP
+ * study found. Green adds and red removes are the convention every developer
+ * already reads — and they are *never the only signal*: the `+`/`−` in the
+ * gutter carries it for anyone who cannot separate those two hues, which is a
+ * large minority of the people this card asks to approve a file change.
+ */
+.diff-count {
+  margin-left: auto;
+  letter-spacing: 0.04em;
+}
+
+.diff-added {
+  color: var(--ok);
+}
+
+.diff-removed {
+  color: var(--danger);
+}
+
+/* Which file. It wraps rather than clipping: which file is being changed is the
+   one thing on this card that may not be guessed at, and a path is the shape
+   CSS clips worst — the news is at the end of it. */
+.diff-path {
+  margin: 0 12px 6px;
+  font: 12px/1.4 var(--mono);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* `.tool-body` gives it the box, the cap and the scroll. This adds the rows. */
+.diff {
+  padding: 6px 0;
+  /* Rows are as wide as the widest line, so a tinted row runs the full scroll
+     width rather than stopping at the box's edge. */
+  display: table;
+  min-width: 100%;
+}
+
+.diff-line {
+  display: table-row;
+}
+
+/* The row's own two cells, and only those: `> *` rather than a descendant
+   selector, so the gutter's inner spans stay inline inside it. */
+.diff-line > * {
+  display: table-cell;
+  white-space: pre;
+}
+
+/* The gutter: fixed width, its own tone, and the thing that makes the colour
+   redundant rather than load-bearing. */
+.diff-mark {
+  position: sticky;
+  left: 0;
+  width: 1.6em;
+  padding: 0 4px;
+  text-align: center;
+  color: var(--dim);
+}
+
+.diff-text {
+  padding-right: 11px;
+}
+
+/* Tinted into `--wash`, by the same rule as `.chip` and `.error`: the tint is
+   mixed into a value darker than any surface, so the row lifts away from the
+   text rather than towards it. Both measured on the `--bg` box `.tool-body`
+   lays down. */
+.diff-add > * {
+  background: color-mix(in srgb, var(--ok) 13%, var(--wash));
+}
+
+.diff-add > .diff-mark {
+  color: var(--ok);
+}
+
+.diff-del > * {
+  background: color-mix(in srgb, var(--danger) 13%, var(--wash));
+}
+
+.diff-del > .diff-mark {
+  color: var(--danger);
+}
+
+.diff-meta > * {
+  color: var(--dim);
+}
+
+/* The one card that wraps rather than scrolling sideways wraps its diff too: a
+   removed line running off the right edge of a card the agent is *blocked on*
+   is the same "approving blind" a clipped command is. `table-cell` cannot wrap
+   usefully at a fixed width, so the rows go back to flex here. */
+.tool-answerable .diff {
+  display: block;
+}
+
+.tool-answerable .diff-line {
+  display: flex;
+}
+
+.tool-answerable .diff-line > * {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.tool-answerable .diff-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.tool-answerable .diff-mark {
+  flex: none;
+  position: static;
+}
+
+/* Whether a failure is fixing itself or waiting for a human. Amber is rule 1 —
+   *a human is needed* — and the retrying case is deliberately not amber, which
+   is the whole distinction this line exists to draw. */
+.tool-advice {
+  margin: 0 12px 8px;
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: var(--work);
+}
+
+.tool-advice-act {
+  color: var(--accent-ink);
+}
+
+/* The turn stopwatch, inside the state chip. It appears only past the threshold
+   (`elapsedLabel`), so it is never furniture — and the seconds are padded, so it
+   does not jitter a character wider and narrower every second. Its width still
+   grows once, at 10m; what the bar may not change is its *height*, and this chip
+   is `nowrap` on a row that is sized by the row rather than by this string. */
+.chip-elapsed {
+  margin-left: 6px;
+  font-variant-numeric: tabular-nums;
+  /* No opacity, though a quieter number would read better: 85% of the chip's
+     own tone over the tint that chip lays down measures 5.32:1, under this
+     file's floor. The chip's colour is the only colour it gets. */
 }
 
 /* Long output scrolls inside its own box, in both directions: code is wrapped at

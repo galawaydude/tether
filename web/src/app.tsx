@@ -16,6 +16,7 @@ import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 
 import * as api from './api.ts';
 import { ApiError } from './api.ts';
+import { elapsedLabel } from './conversation.ts';
 import { ConversationView } from './conversation.tsx';
 import { CODEX, DEFAULT_PROVIDER, PROVIDERS, providerLabel, unresumableNote } from './providers.ts';
 import { crumbs, groupSessions } from './sessions.ts';
@@ -46,6 +47,39 @@ function useWide(): boolean {
     return () => query.removeEventListener('change', update);
   }, []);
   return wide;
+}
+
+/**
+ * How long the current turn has been running, once that is news — `null` the
+ * rest of the time, which is nearly all of it. The clock starts when the turn
+ * does and stops when it ends, so a session sitting idle costs no timer at all.
+ *
+ * The tick is 1s and unconditional while a turn runs, so **this is a leaf of its
+ * own** rather than a hook on the session screen. A re-render is a re-render of
+ * the component holding the state and everything under it: from the screen, one
+ * tick would re-diff the whole conversation — every card, every markdown tree,
+ * every diff row, thousands of nodes on a session with a few `Edit`s — once a
+ * second, precisely while the agent is working. From here it re-renders one
+ * `<span>`. The alternative to ticking unconditionally is a timer that only
+ * starts at the threshold, which needs a second timer to arm it.
+ */
+function ElapsedChip({ running }: { running: boolean }) {
+  const [now, setNow] = useState(() => Date.now());
+  const startedAt = useRef<number | null>(null);
+  if (running && startedAt.current === null) startedAt.current = Date.now();
+  if (!running) startedAt.current = null;
+
+  useEffect(() => {
+    if (!running) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [running]);
+
+  const elapsed = running ? elapsedLabel(startedAt.current, now) : null;
+  // Mono, because it is the machine reporting. Nothing at all until the turn is
+  // long enough to be worth saying — see `elapsedLabel`.
+  return elapsed === null ? null : <span class="chip-elapsed">{elapsed}</span>;
 }
 
 /**
@@ -236,7 +270,12 @@ function SessionScreen({
             a bar that changes height as a status word changes resizes the tmux
             pane underneath it. */}
         <div class="bar-chips">
-          <span class={`chip chip-agent-${agent.state}`}>{STATE_TEXT[agent.state]}</span>
+          <span class={`chip chip-agent-${agent.state}`}>
+            {STATE_TEXT[agent.state]}
+            {/* Its own component, so the 1s tick re-renders this span and not
+                the conversation under it — see `ElapsedChip`. */}
+            <ElapsedChip running={agent.state === 'busy'} />
+          </span>
           <span class={`chip chip-${status[front]}`} role="status">
             {STATUS_TEXT[status[front]]}
           </span>

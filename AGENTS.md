@@ -475,6 +475,58 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   contain the word "message"**, because the composer's own label is that word
   and Playwright's `getByLabel` matches on a substring, so one that does makes
   `getByLabel('Message')` ambiguous and takes two e2e specs down at once.
+- **Agent text is rendered as markdown, and the safety of that is structural
+  rather than a filter.** `web/src/markdown.ts` parses a **bounded** subset —
+  headings, `*`-only emphasis, lists, links, inline code, block quotes, fenced
+  code — into a tree of blocks and spans, and `conversation.tsx` picks an element
+  per node and passes every string through as a **child**, so agent text becomes
+  a text node. There is no `innerHTML` and no HTML string anywhere in the path,
+  which is why a `<script>` in a fenced block needs no escaping to be harmless;
+  keep it that way rather than adding a sanitiser. The one value that becomes
+  live browser behaviour is a link's `href`, gated by `safeHref` — an allow-list
+  of `http`/`https`/`mailto`, never a `javascript:` blocklist, because
+  `java\nscript:` is a URL a blocklist misses and a browser honours. Three
+  parser rules that look arbitrary and are not: `_` is **not** an emphasis
+  marker (`old_string` is one identifier, not two words around an italic); a
+  bare `**` matches and emits nothing, which is a lookbehind written as an
+  alternative because a real `(?<!\*)` is a _parse-time_ SyntaxError on iOS
+  Safari before 16.4 and would take the bundle down on exactly the phones this
+  is for; and plain text emits a **bare string** rather than a `<span>`, because
+  the e2e specs count `getByText(exact)` matches. No new dependency for any of
+  it, and none is wanted.
+- **An Edit is a diff, not a paragraph about one.** `toDiff` in
+  `conversation.ts` reads the tool call's **input** — `old_string`/`new_string`,
+  `Write`'s `content`, or Codex's `apply_patch` patch text, which is believed
+  rather than recomputed — and the row carries the result, computed once where
+  it is built. Codex hands that patch over in **two** shapes and both are read
+  here: the rollout record's `input` is the patch string, the hook that proposes
+  the same call wraps it as `{ command: … }`, and whichever arrives first builds
+  the card (`toRow` only flips `pending` on the other), so a card built from the
+  hook has to be right the first time. Each branch reports the input keys it
+  consumed as `Diff.covers`, which is what `diffExtras` subtracts: on an
+  **answerable** card anything the diff does not speak for is shown beside it —
+  `replace_all` rewrites every match where the diff draws one — and that is a
+  general rule rather than a list of known fields, precisely so the field nobody
+  thought of is covered too. Nothing is drawn when the set is empty. It is not
+  an LCS: the identical head and tail are trimmed and
+  everything between is called changed, which is exactly what an `Edit` is, and
+  where it is not it over-reports rather than mis-attributing a line. Two things
+  the view must keep: the rows are a CSS table so a tinted row runs the full
+  scroll width, so **every row has exactly two cells** (a third puts its text in
+  a column of its own and shoves it off the right edge — hence the spoken
+  "added"/"removed" living inside the gutter cell); and on an **answerable**
+  card the diff wraps instead of scrolling, by the same rule as the command,
+  since a removed line running past the right edge of a card the agent is
+  blocked on is the same "approving blind". The `+`/`−` gutter is not
+  decoration: red/green alone is the one distinction a large minority of people
+  cannot make.
+- **A failed card says whether to act, and that is the whole of the typed-error
+  feature.** `errorAdvice` maps an output to _retrying itself_ or _needs you_,
+  and `toolState` puts that word on the collapsed row, which is what a glance
+  gets. Cases are added **one at a time as they are met**, each anchored to the
+  start of the output — tool output is arbitrary text, and a `grep` that finds
+  "rate limit" in a log must not be reported as the provider rate-limiting.
+  `null` — no claim at all — is the right answer for anything not recognised.
 - **The composer's message leaves on the _terminal_ pane's socket, and that is
   the only thing the two panes share.** A composed message is an `input` frame,
   and input sequencing — the per-client `seq`, the server's highest-applied map,
@@ -638,7 +690,7 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `coerceTypes` are on): `additionalProperties: false` strips instead of rejecting, and
   `{"password": 123}` arrives as `"123"`. `buildServer` turns both off. Do not remove that
   `ajv.customOptions` block, and do not assume stock Fastify behaviour when reading the tests.
-- **`e2e/` is five Playwright specs and they assert counts and geometry, not presence.**
+- **`e2e/` is six Playwright specs and they assert counts and geometry, not presence.**
   They drive the real `tether serve` (`e2e/serve.ts` calls the CLI's own `main`) inside a
   scratch `HOME`/state dir/tmux socket, with `e2e/stub-agent.ts` on `PATH` as `claude` — so
   the session is created through the production path and **CI still never runs a live
@@ -652,7 +704,13 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   each session shows _its own_ conversation and keeps it — two sessions in one directory,
   then a `/resume` typed at one pane (which the stub acts out by moving to a new session
   id and a new transcript, announcing it only through its registry file). That last claim
-  is the one found in live use rather than by a test. `desktop.spec.ts` is the only spec
+  is the one found in live use rather than by a test. What `render.spec.ts` checks is the
+  one claim the markdown entry above cannot make from a unit test — that the tree becomes
+  _elements_ and nothing else, so a `<script>` an agent wrote is text in the page rather
+  than a node in it — plus the answerable `Edit`, the combination the diff and permission
+  entries create together and neither covers alone; it appends its records to the
+  transcript the stub already opened rather than teaching the stub a new behaviour.
+  `desktop.spec.ts` is the only spec
   above the 900px breakpoint and the only test that renders the `.workspace` shape at
   all: it measures the rail's box against the session's, counts the back button at **0**
   rather than checking it is invisible (`display: none` is the point), counts exactly one
