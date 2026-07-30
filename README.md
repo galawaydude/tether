@@ -579,9 +579,10 @@ dismisses it, asserting both keep their scroll position and that the terminal is
 not re-attached; it measures at 360×640 that nothing tether draws — the waiting
 banner included — changes the terminal's box or its row count, since a change
 there resizes the tmux pane for every other viewer; and it opens the New session
-sheet at the shortest
-phone viewports and asserts the card and its **Agent** picker stay on screen,
-since the sheet is the one screen that grows with its copy. The second (`permission.spec.ts`) drives the hook chain end to end: it acts out
+sheet at the shortest full-height phones **and at a phone with its keyboard up**
+(360×340) and asserts that both ends of its card — the **Agent** picker and
+**Start** — stay reachable, since the sheet is the one screen that grows with its
+copy. The second (`permission.spec.ts`) drives the hook chain end to end: it acts out
 three permission prompts and answers them three ways: **Approve** on the card
 runs the command and the transcript's own record then replaces that card rather
 than adding a second one; **Deny** blocks it and the command never runs; and one
@@ -591,7 +592,10 @@ at the pane after a tap has already approved something, and asserts that
 approves nothing. It also asserts the watch rule the overlay decides: a tool
 call proposed while the terminal is summoned is **not** held — the agent's own
 prompt takes the question straight away — and the same session holds the next one
-once the terminal is put away. The third (`composer.spec.ts`) composes a message and asserts it reaches the agent
+once the terminal is put away. Both of the controls that end a hold are measured
+rather than merely found: the card's **Approve** and **Deny**, and the waiting
+banner's **Open the terminal**, are each reachable at the phone's own size and
+again with the keyboard up (360×340). The third (`composer.spec.ts`) composes a message and asserts it reaches the agent
 and appears exactly once, that Enter in the box is a line break rather than a
 send, and that the composer leaves Send on screen with the keyboard up. It also
 sends **slash commands** from that box: that one is not drawn as a message, that a

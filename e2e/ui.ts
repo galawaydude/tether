@@ -55,8 +55,10 @@ export async function dismiss(page: Page): Promise<void> {
  *  - it is a real 44px tap target;
  *  - nothing is lying on top of it, hit-tested at its centre rather than
  *    inferred, which is the only form that catches an overlay;
- *  - and the *document* does not scroll, because a header and a conversation
- *    scrolling away is not a fix for a panel that outgrew the screen.
+ *  - and the *document* does not scroll, in **either** axis, because a header and
+ *    a conversation scrolling away is not a fix for a panel that outgrew the
+ *    screen — and a panel that pushed the page sideways instead is the same
+ *    failure turned ninety degrees.
  *
  * Every failure names the control and the viewport it failed at, so the next
  * person reads the message instead of bisecting a layout. Playwright's own
@@ -96,7 +98,8 @@ export async function reachable(page: Page, control: Locator, name: string): Pro
       // `contains` rather than identity: a button's label is its own node and is
       // what a hit test lands on. Anything outside the control is on top of it.
       covered: top !== null && element.contains(top) ? null : named,
-      overflow: document.documentElement.scrollHeight - window.innerHeight,
+      taller: document.documentElement.scrollHeight - window.innerHeight,
+      wider: document.documentElement.scrollWidth - window.innerWidth,
     };
   });
 
@@ -113,8 +116,11 @@ export async function reachable(page: Page, control: Locator, name: string): Pro
     faults.push(`its right edge is ${px(seen.right - view.width)} off the screen`);
   }
   if (seen.covered !== null) faults.push(`${seen.covered} is lying on top of it`);
-  if (seen.overflow > 0.5) {
-    faults.push(`the page itself is ${px(seen.overflow)} taller than the screen`);
+  if (seen.taller > 0.5) {
+    faults.push(`the page itself is ${px(seen.taller)} taller than the screen`);
+  }
+  if (seen.wider > 0.5) {
+    faults.push(`the page itself is ${px(seen.wider)} wider than the screen`);
   }
 
   if (faults.length > 0) throw new Error(`${at} is unreachable: ${faults.join('; ')}`);

@@ -39,7 +39,7 @@ import { expect, test } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { dismiss, shots, summon } from './ui.ts';
+import { dismiss, KEYBOARD_UP, reachable, shots, summon } from './ui.ts';
 
 /**
  * Its own directory, like `permission.spec.ts`'s: the three specs share one
@@ -127,14 +127,12 @@ test('a composed message reaches the agent and appears exactly once', async ({ p
   await expect(conversation.locator('.msg-sending')).toHaveCount(0);
 
   // ── the keyboard-open case ─────────────────────────────────────────────────
-  // 360×340 is this phone with its keyboard up, and it is the viewport that
+  // `KEYBOARD_UP` is this phone with its keyboard up, and it is the viewport that
   // finds a composer able to eat the conversation it belongs to. A tall message
-  // must leave Send on screen and must not push its own pane sideways.
-  await page.setViewportSize({ width: 360, height: 340 });
+  // must leave Send reachable and must not push its own pane sideways.
+  await page.setViewportSize(KEYBOARD_UP);
   await box.fill('one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten');
-  const button = await send.boundingBox();
-  if (button === null) throw new Error('Send is not laid out at all at 360×340');
-  expect(button.y + button.height).toBeLessThanOrEqual(340);
+  await reachable(page, send, 'Send');
   // Measured on the conversation pane rather than the document: the terminal
   // pane stays mounted and absolutely positioned, and xterm does not re-fit a
   // pane it cannot measure, so a document-wide check reports the *other* pane's
@@ -232,13 +230,11 @@ test('a slash command goes to the agent as a command, not as a prompt', async ({
   // ── the list may not push Send off a phone with its keyboard up ────────────
   // This panel is `overflow-y: auto` for the bar-lowering warning's sake, so a
   // list taller than the pane scrolls Send out of reach rather than clipping
-  // visibly. 360×340 is the viewport that finds it.
-  await page.setViewportSize({ width: 360, height: 340 });
+  // visibly. `KEYBOARD_UP` is the viewport that finds it.
+  await page.setViewportSize(KEYBOARD_UP);
   await box.fill('/');
   await expect(page.locator('.composer-cmds button')).toHaveCount(6);
-  const button = await send.boundingBox();
-  if (button === null) throw new Error('Send is not laid out at all at 360×340');
-  expect(button.y + button.height).toBeLessThanOrEqual(340);
+  await reachable(page, send, 'Send');
   expect(await conversation.evaluate((el) => el.scrollWidth - el.clientWidth)).toEqual(0);
   await shoot(page, '9-list-keyboard-open');
 });

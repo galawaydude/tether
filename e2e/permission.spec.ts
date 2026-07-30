@@ -149,6 +149,10 @@ test('a permission prompt is answered from the conversation view, and only once'
   // size two of this product's four clipped panels needed to fail. `reachable`
   // in `e2e/ui.ts` says what that means; here it is asserted twice, because the
   // card is drawn under a composer whose own height is what changes between them.
+  // Every viewport change here refits xterm and so resizes the tmux pane: no
+  // `.xterm-rows` claim about a line printed before one of these loops may be
+  // asserted after it, which is why the only text this spec reads out of the pane
+  // is printed later and read before the loop that follows it.
   const phone = page.viewportSize() as { width: number; height: number };
   for (const size of [phone, KEYBOARD_UP]) {
     await page.setViewportSize(size);
@@ -218,6 +222,12 @@ test('a permission prompt is answered from the conversation view, and only once'
   // panes that says so.
   await expect(banner).toContainText('Claude needs your permission to use Bash');
   await expect(agentChip).toHaveText('Waiting for you');
+  // Read the pane *before* the viewport moves. Resizing refits xterm, which
+  // resizes the tmux pane, which can push a line the agent has already printed
+  // into the scrollback — and `.xterm-rows` is the rendered screen, not the
+  // history. Asserting here rather than only after the summon below keeps the
+  // measurements that follow from deciding whether this claim holds.
+  await expect(page.locator('.xterm-rows')).toContainText(OWN_PROMPT);
   // The one control a user taps one-handed while an agent is blocked on them,
   // so it is measured rather than merely found: styling `.link` down to its own
   // text height once dropped it to 16.5px, which a presence check passes. With

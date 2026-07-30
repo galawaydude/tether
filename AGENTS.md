@@ -909,10 +909,14 @@ CI runs exactly those (`.github/workflows/ci.yml`).
     because four panels in this product outgrew a small phone and a reviewer — never a
     test — caught every one: a control is reachable when, _after being scrolled to
     through its own container_, its box is wholly in the viewport, is 44px tall, has
-    nothing hit-testing on top of it, and the **document** does not scroll. Every failure
+    nothing hit-testing on top of it, and the **document** does not scroll in either
+    axis — which folds in the sideways check two other specs hand-roll. Every failure
     names the control and the viewport, and `KEYBOARD_UP` (360×340) is where two of the
     four only failed, so the sheet, the permission card, the composer and the waiting
-    banner are each asserted there. It found a live one on its first run: `.sr-only` was
+    banner are each asserted there. Resizing to it refits xterm and so resizes the tmux
+    pane, so a spec that measures at `KEYBOARD_UP` may not then read `.xterm-rows` for a
+    line printed before the resize — that line is in the scrollback now, and `retries: 0`
+    makes the miss a hard failure. Read the pane first, measure after. It found a live one on its first run: `.sr-only` was
     `position: absolute` with no offsets, so the diff gutter's "added"/"removed" sat at a
     static position partway down a scrolled conversation and grew the document by 348px.
   - `retries: 0` is deliberate. `npm ci` does not fetch the browser (npm 12 blocks
