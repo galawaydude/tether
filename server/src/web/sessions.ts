@@ -24,11 +24,13 @@ import { DEFAULT_PROVIDER } from '../machine/registry.ts';
 import {
   NoProviderSessionError,
   PROVIDER_COMMANDS,
+  folderTrust,
   resumeSession,
   startSession,
   stopSession,
 } from '../machine/sessions.ts';
-import { DEFAULT_SOCKET, InvalidCwdError, listPanes } from '../machine/tmux.ts';
+import { FolderTrustError, type TrustLocations } from '../providers/trust.ts';
+import { DEFAULT_SOCKET, InvalidCwdError, listPanes, resolveCwd } from '../machine/tmux.ts';
 
 export type SessionRoutesOptions = {
   /** The registry database, schema already applied. */
@@ -37,6 +39,12 @@ export type SessionRoutesOptions = {
   socket?: string | undefined;
   /** Directories a session may be started in; defaults to `allowedRoots()`. */
   allowedRoots?: readonly string[] | undefined;
+  /**
+   * Where the providers keep folder trust; defaults to their real locations.
+   * Tests point this at scratch homes — nothing here may read or write the
+   * developer's own `.claude.json` or `config.toml`.
+   */
+  trustIn?: TrustLocations | undefined;
 };
 
 /**
@@ -79,6 +87,30 @@ const CREATE_BODY = {
     cwd: { type: 'string', minLength: 1, maxLength: 4096 },
     title: { type: 'string', minLength: 1, maxLength: 200 },
     provider: { type: 'string', enum: [...PROVIDER_COMMANDS.keys()] },
+    /**
+     * The user's answer to tether's folder-trust question, and the only way trust
+     * is ever recorded. It has to ride on the create request rather than have a
+     * route of its own: "trust this directory" is not a thing to offer on its
+     * own, and tying it to the spawn means an answer is recorded only when the
+     * session it was given for actually starts. Absent is the same as `false`.
+     */
+    trustFolder: { type: 'boolean' },
+  },
+} as const;
+
+/**
+ * The folder-trust question, asked before anything is started. A read, so it is a
+ * `GET` with the directory in the query — and it goes through `resolveCwd` like
+ * every other path, so the answer is about the directory the agent would really
+ * run in and a directory that would be refused a session is refused here too.
+ */
+const TRUST_QUERY = {
+  type: 'object',
+  required: ['cwd'],
+  additionalProperties: false,
+  properties: {
+    cwd: { type: 'string', minLength: 1, maxLength: 4096 },
+    provider: { type: 'string', enum: [...PROVIDER_COMMANDS.keys()] },
   },
 } as const;
 
@@ -94,7 +126,8 @@ const MODE_BODY = {
 
 type MachineParams = { machineId: string };
 type SessionParams = MachineParams & { id: string };
-type CreateBody = { cwd: string; title?: string; provider?: string };
+type CreateBody = { cwd: string; title?: string; provider?: string; trustFolder?: boolean };
+type TrustQuery = { cwd: string; provider?: string };
 type ModeBody = { mode: PermissionMode };
 
 /**
@@ -138,6 +171,7 @@ export function registerSessionRoutes(app: FastifyInstance, options: SessionRout
   const { db } = options;
   const socket = options.socket ?? DEFAULT_SOCKET;
   const roots = options.allowedRoots;
+  const trustIn = options.trustIn ?? {};
 
   app.get<{ Params: MachineParams }>(
     '/api/machines/:machineId/sessions',
@@ -162,6 +196,34 @@ export function registerSessionRoutes(app: FastifyInstance, options: SessionRout
     },
   );
 
+  /**
+   * Whether the selected agent already trusts a directory — asked by the New
+   * session sheet before anything is spawned, so the explanation and the choice
+   * land in tether's own UI instead of the agent's prompt in the terminal.
+   *
+   * Read-only. Nothing here writes, and no answer here trusts anything: recording
+   * is `trustFolder` on the create request below, which is the user's own tap.
+   */
+  app.get<{ Params: MachineParams; Querystring: TrustQuery }>(
+    '/api/machines/:machineId/folder-trust',
+    { schema: { params: MACHINE_PARAMS, querystring: TRUST_QUERY } },
+    async (request, reply) => {
+      try {
+        const cwd = await resolveCwd(request.query.cwd, roots);
+        const provider = request.query.provider ?? DEFAULT_PROVIDER;
+        return reply.send(await folderTrust(provider, cwd, trustIn));
+      } catch (error) {
+        // Ordinary while a directory is being typed, so the same 400 and the same
+        // sentence as the create route: the caller shows the refusal it would
+        // have got from Start rather than a claim about trust it cannot make.
+        if (error instanceof InvalidCwdError) {
+          return reply.code(400).send({ error: 'invalid_cwd', message: error.message });
+        }
+        throw error;
+      }
+    },
+  );
+
   app.post<{ Params: MachineParams; Body: CreateBody }>(
     '/api/machines/:machineId/sessions',
     { schema: { params: MACHINE_PARAMS, body: CREATE_BODY } },
@@ -171,10 +233,20 @@ export function registerSessionRoutes(app: FastifyInstance, options: SessionRout
           cwd: request.body.cwd,
           title: request.body.title,
           provider: request.body.provider,
+          trustFolder: request.body.trustFolder,
+          trustIn,
           roots,
         });
         return reply.code(201).send({ session });
       } catch (error) {
+        // 409, not 500: the request was well formed and the caller could not have
+        // known that the agent's own configuration file cannot be merged into.
+        // Nothing was started, so the message says what happened and the sheet
+        // can offer the same Start without the trust box ticked — which is the
+        // state the user was already in, and still a working session.
+        if (error instanceof FolderTrustError) {
+          return reply.code(409).send({ error: 'trust_not_recorded', message: error.message });
+        }
         // A refused directory is the caller's mistake, not a server fault. The
         // message names the roots: the account behind this request already has a
         // shell, so there is nothing to withhold and a mystery 400 helps nobody.

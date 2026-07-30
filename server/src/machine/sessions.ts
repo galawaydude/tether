@@ -12,9 +12,19 @@ import { randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 
+import type { FolderTrust, TrustReport } from '@tether/shared';
+
 import { stateDir } from '../db.ts';
 import { installHook } from '../providers/claude-code/hooks.ts';
+import * as claudeTrust from '../providers/claude-code/trust.ts';
 import { CODEX, CODEX_COMMAND, codexResume } from '../providers/codex/spawn.ts';
+import * as codexTrust from '../providers/codex/trust.ts';
+import {
+  FolderTrustError,
+  type TrustLocations,
+  type TrustWrite,
+  repoRoot,
+} from '../providers/trust.ts';
 import {
   DEFAULT_PROVIDER,
   type Session,
@@ -52,6 +62,68 @@ export const PROVIDER_RESUME = new Map<string, (providerSessionId: string) => re
   [DEFAULT_PROVIDER, (id) => ['claude', '--resume', id]],
   [CODEX, codexResume],
 ]);
+
+/**
+ * Where each provider keeps folder trust, and what it keys it by. The third seam
+ * of the same shape as the two above — the mechanisms have nothing in common
+ * beyond the question they answer, which is why `providers/trust.ts` holds the
+ * tri-state and the git resolution and nothing else.
+ *
+ * `key` is the directory the provider's answer is *about*: Codex reads only the
+ * main repository root, so a session in `repo/sub` is a question about `repo`,
+ * and the sheet is told which path it is agreeing to. Claude Code walks
+ * ancestors, so the cwd is both what it reads and the smallest thing worth
+ * writing.
+ */
+const PROVIDER_TRUST = new Map<
+  string,
+  {
+    key: (cwd: string, repoRoot: string | undefined) => string;
+    read: (
+      cwd: string,
+      repoRoot: string | undefined,
+      where: TrustLocations,
+    ) => Promise<FolderTrust>;
+    write: (key: string, where: TrustLocations) => Promise<TrustWrite>;
+  }
+>([
+  [
+    DEFAULT_PROVIDER,
+    {
+      key: (cwd) => cwd,
+      read: (cwd, repoRoot, where) => claudeTrust.readTrust(cwd, repoRoot, where.claudeConfigPath),
+      write: (key, where) => claudeTrust.writeTrust(key, where),
+    },
+  ],
+  [
+    CODEX,
+    {
+      key: (cwd, repoRoot) => repoRoot ?? cwd,
+      read: (cwd, repoRoot, where) => codexTrust.readTrust(repoRoot ?? cwd, where.codexHome),
+      write: (key, where) => codexTrust.writeTrust(key, where),
+    },
+  ],
+]);
+
+/**
+ * Does this provider already trust this directory, and which directory is the
+ * answer about?
+ *
+ * `cwd` must already have been through `resolveCwd` — the answer is about the
+ * directory the agent will really run in. A provider this build has not met
+ * answers `unknown`, which is the honest one: the sheet then says tether cannot
+ * tell rather than offering to write into a file it has never seen.
+ */
+export async function folderTrust(
+  provider: string,
+  cwd: string,
+  where: TrustLocations = {},
+): Promise<TrustReport> {
+  const how = PROVIDER_TRUST.get(provider);
+  if (how === undefined) return { trust: 'unknown', path: cwd };
+  const root = await repoRoot(cwd);
+  return { trust: await how.read(cwd, root, where), path: how.key(cwd, root) };
+}
 
 /**
  * Put tether's hook in the project before the agent reads its settings.
@@ -142,6 +214,16 @@ export async function startSession(
     provider?: string | undefined;
     command?: readonly string[] | undefined;
     roots?: readonly string[] | undefined;
+    /**
+     * The user's own answer to tether's folder-trust question, and the only thing
+     * that causes trust to be recorded anywhere. Absent and `false` are the same
+     * answer and write nothing at all: a folder is trusted because somebody said
+     * so, and pre-trusting one to smooth this flow would be worse than leaving
+     * the prompt in the terminal.
+     */
+    trustFolder?: boolean | undefined;
+    /** Where the providers keep their trust. Tests pass their own. */
+    trustIn?: TrustLocations | undefined;
   },
 ): Promise<Session> {
   const provider = opts.provider ?? DEFAULT_PROVIDER;
@@ -157,8 +239,21 @@ export async function startSession(
   const id = randomUUID();
   const tmuxName = `tether-${id.slice(0, 8)}`;
 
-  // Before the pane exists: Claude Code reads `.claude/settings.local.json` at
-  // startup, so a hook installed afterwards would miss this session entirely.
+  // Before the pane exists, and before the hook, for the same reason and one
+  // more: both agents read their trust configuration at startup, and unlike the
+  // hook this is **not** best-effort. A hook that fails to install costs a badge;
+  // a trust write that failed silently would drop the user into the very terminal
+  // prompt they had just answered to avoid, with nothing left to tell them with.
+  // So a refusal aborts the create, having started nothing.
+  if (opts.trustFolder === true) {
+    const how = PROVIDER_TRUST.get(provider);
+    if (how === undefined) {
+      throw new FolderTrustError(
+        `tether does not know where ${provider} records folder trust, so it cannot record it`,
+      );
+    }
+    await how.write(how.key(cwd, await repoRoot(cwd)), opts.trustIn ?? {});
+  }
   await installProviderHook(provider, cwd);
   await newSession(socket, { name: tmuxName, cwd, command, roots: opts.roots });
   try {

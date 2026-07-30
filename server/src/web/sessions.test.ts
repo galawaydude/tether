@@ -11,11 +11,13 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, delimiter, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
+import { promisify } from 'node:util';
 
 import {
   applyRegistrySchema,
@@ -28,6 +30,8 @@ import { killServer, listSessions as listTmuxSessions } from '../machine/tmux.ts
 import { createAuthStore } from './auth.ts';
 import { defaultAllowedHosts } from './guards.ts';
 import { SESSION_COOKIE, buildServer } from './server.ts';
+
+const execFileAsync = promisify(execFile);
 
 const PASSWORD = 'correct horse battery staple';
 const HOST = 'localhost:8787';
@@ -69,6 +73,20 @@ async function harness(t: TestContext) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'tether-api-')));
   t.after(() => rm(root, { recursive: true, force: true }));
 
+  /**
+   * Scratch homes for the folder-trust routes. Not optional: the real ones are
+   * the developer's own `~/.claude.json` and `~/.codex/config.toml`, and a test
+   * suite that reads — let alone writes — either of those is a test suite that
+   * changes what the machine running it trusts.
+   */
+  const trustDir = await realpath(await mkdtemp(join(tmpdir(), 'tether-trust-api-')));
+  t.after(() => rm(trustDir, { recursive: true, force: true }));
+  const trustIn = {
+    claudeConfigPath: join(trustDir, '.claude.json'),
+    codexHome: join(trustDir, 'codex'),
+    stateDir: join(trustDir, 'state'),
+  };
+
   const app = buildServer({
     auth,
     db,
@@ -79,6 +97,7 @@ async function harness(t: TestContext) {
     loginDelayMs: 0,
     socket,
     allowedRoots: [root],
+    trustIn,
   });
   t.after(() => app.close());
 
@@ -91,7 +110,7 @@ async function harness(t: TestContext) {
   const token = login.cookies[0]?.value;
   assert.ok(token, 'logged in');
 
-  return { app, db, socket, root, token };
+  return { app, db, socket, root, token, trustIn };
 }
 
 /** An authenticated request, with the header guards satisfied. */
@@ -430,4 +449,118 @@ test('the provider is the caller\u2019s to choose, and claude-code when it is no
   // from the schema, before a handler or a pane exists.
   const unknown = await create(h, h.root, { provider: 'some-future-agent' });
   assert.equal(unknown.statusCode, 400);
+});
+
+// ── folder trust: asked before the agent starts, recorded only when told to ──
+
+const TRUST = '/api/machines/local/folder-trust';
+
+function trustQuery(h: Harness, cwd: string, provider?: string) {
+  const query = new URLSearchParams({ cwd, ...(provider === undefined ? {} : { provider }) });
+  return call(h, 'GET', `${TRUST}?${query.toString()}`);
+}
+
+test('the folder-trust route needs the same cookie and the same roots as everything else', async (t) => {
+  const h = await harness(t);
+
+  const open = await h.app.inject({
+    method: 'GET',
+    url: `${TRUST}?cwd=${encodeURIComponent(h.root)}`,
+    headers: { host: HOST, origin: `http://${HOST}` },
+  });
+  assert.equal(open.statusCode, 401, 'a read of the agent’s configuration is not public');
+
+  const outside = await mkdtemp(join(tmpdir(), 'tether-outside-trust-'));
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  const refused = await trustQuery(h, outside);
+  assert.equal(refused.statusCode, 400, 'the same confinement as create');
+  assert.equal(refused.json().error, 'invalid_cwd');
+});
+
+test('an untrusted directory says so, and an already-trusted one has nothing to ask', async (t) => {
+  const h = await harness(t);
+
+  const untrusted = await trustQuery(h, h.root, 'claude-code');
+  assert.equal(untrusted.statusCode, 200);
+  assert.deepEqual(untrusted.json(), { trust: 'untrusted', path: h.root });
+
+  await writeFile(
+    h.trustIn.claudeConfigPath,
+    JSON.stringify({ projects: { [h.root]: { hasTrustDialogAccepted: true } } }),
+  );
+  assert.deepEqual(await trustQuery(h, h.root, 'claude-code').then((r) => r.json()), {
+    trust: 'trusted',
+    path: h.root,
+  });
+});
+
+test('a configuration tether cannot read is reported as undeterminable', async (t) => {
+  const h = await harness(t);
+  await writeFile(h.trustIn.claudeConfigPath, 'not json');
+  assert.equal((await trustQuery(h, h.root, 'claude-code')).json().trust, 'unknown');
+});
+
+test('accepting records trust where the agent reads it, before the pane exists', async (t) => {
+  const h = await harness(t);
+
+  const res = await create(h, h.root, { provider: 'claude-code', trustFolder: true });
+  assert.equal(res.statusCode, 201);
+  // The check the whole feature exists for: the agent would find this trusted.
+  assert.equal((await trustQuery(h, h.root, 'claude-code')).json().trust, 'trusted');
+  const config = JSON.parse(await readFile(h.trustIn.claudeConfigPath, 'utf8')) as {
+    projects: Record<string, Record<string, unknown>>;
+  };
+  assert.deepEqual(config.projects[h.root], { hasTrustDialogAccepted: true });
+});
+
+test('declining is not an error: the session starts and nothing is written', async (t) => {
+  const h = await harness(t);
+
+  // Both spellings of "no". Declining is a supported answer — the agent asks in
+  // the terminal, exactly as it did before any of this existed — so it must be a
+  // 201 and not a refusal, and it must leave the agent's configuration alone.
+  for (const body of [{}, { trustFolder: false }]) {
+    const res = await create(h, h.root, { provider: 'claude-code', ...body });
+    assert.equal(res.statusCode, 201, JSON.stringify(body));
+    assert.equal(res.json().session.deadAt, null);
+  }
+  await assert.rejects(readFile(h.trustIn.claudeConfigPath, 'utf8'), /ENOENT/);
+  assert.equal((await trustQuery(h, h.root, 'claude-code')).json().trust, 'untrusted');
+  assert.equal(listSessions(h.db).length, 2, 'both sessions are real');
+});
+
+test('Codex is asked about its repository, and answered there', async (t) => {
+  const h = await harness(t);
+
+  // A repository inside the root, so the answer is about the root of it rather
+  // than the directory the session runs in.
+  const repo = join(h.root, 'repo');
+  const sub = join(repo, 'sub');
+  await mkdir(sub, { recursive: true });
+  await execFileAsync('git', ['-C', repo, 'init', '-q']);
+
+  const asked = await trustQuery(h, sub, 'codex');
+  assert.deepEqual(asked.json(), { trust: 'untrusted', path: repo }, 'keyed by repository');
+
+  assert.equal((await create(h, sub, { provider: 'codex', trustFolder: true })).statusCode, 201);
+  const config = await readFile(join(h.trustIn.codexHome, 'config.toml'), 'utf8');
+  assert.match(config, /\[projects\."[^"]*\/repo"\]\ntrust_level = "trusted"/);
+  // And the whole repository now reads trusted, which is what Codex itself does.
+  assert.equal((await trustQuery(h, sub, 'codex')).json().trust, 'trusted');
+  assert.equal((await trustQuery(h, repo, 'codex')).json().trust, 'trusted');
+});
+
+test('a configuration tether will not rewrite fails the create, having started nothing', async (t) => {
+  const h = await harness(t);
+  await writeFile(h.trustIn.claudeConfigPath, '{ broken');
+
+  const res = await create(h, h.root, { provider: 'claude-code', trustFolder: true });
+  assert.equal(res.statusCode, 409);
+  assert.equal(res.json().error, 'trust_not_recorded');
+  assert.match(res.json().message, /will not rewrite/);
+  // Nothing half-done: no row, no pane. The same Start without the box ticked is
+  // still a working session, which is what the sheet falls back to.
+  assert.deepEqual(listSessions(h.db), []);
+  assert.deepEqual(await listTmuxSessions(h.socket), []);
+  assert.equal(await readFile(h.trustIn.claudeConfigPath, 'utf8'), '{ broken');
 });

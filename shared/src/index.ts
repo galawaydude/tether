@@ -73,6 +73,29 @@ export type PermissionDecision = 'allow' | 'deny';
 export type PermissionOutcome = PermissionDecision | 'timeout';
 
 /**
+ * Whether the selected agent already trusts a directory, read from that agent's
+ * own configuration before a session is started.
+ *
+ * `unknown` is "tether cannot tell" and never a guess — a configuration file that
+ * exists and cannot be understood. An **absent** one is `untrusted`: nothing is
+ * trusted, which is perfectly determinable. The two providers store this
+ * differently and neither is parsed from the terminal; see
+ * `server/src/providers/trust.ts`.
+ */
+export type FolderTrust = 'trusted' | 'untrusted' | 'unknown';
+
+/** The folder-trust answer, and which directory it is about. */
+export type TrustReport = {
+  trust: FolderTrust;
+  /**
+   * Not always the directory that was asked about: Codex keys trust by
+   * repository, so a session in `repo/sub` is a question about `repo`. Whatever
+   * asks the user has to name this path rather than "this folder".
+   */
+  path: string;
+};
+
+/**
  * A session as the registry holds it and as the HTTP API returns it. The row and
  * the payload are the same shape on purpose — the routes send it out unchanged —
  * so it lives here, where a change to it is a compile error on both sides.

@@ -1851,6 +1851,38 @@ label {
   overflow-y: auto;
 }
 
+/* The folder-trust ask. `.note` already carries the frame; the only additions
+   are the spacing between its paragraphs and a tap target for the one control
+   in the sheet that decides something on the user's machine. Amber, because
+   rule 1 is that amber means a human acted, and this is the most literal case
+   of it in the product. It grows the card, which is why the card scrolls. */
+/* The sentences name a directory, and a directory can be one long unbreakable
+   token — a deep path, or a single name nobody expected. Without this the note
+   sets the card's width and the sheet scrolls sideways. */
+.trust p {
+  overflow-wrap: anywhere;
+}
+
+.trust p + p {
+  margin-top: 8px;
+}
+
+.trust-accept {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  margin-top: 4px;
+  color: var(--text);
+}
+
+.trust-accept input {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  accent-color: var(--accent);
+}
+
 @media (min-width: 600px) {
   /* One row, and it may not wrap: see `.bar`. There is room here for the title
      to keep its line even beside the longest pair of chips. */

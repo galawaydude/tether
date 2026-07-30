@@ -10,7 +10,7 @@
  * mount a component. Everything else about the two shapes is CSS.
  */
 
-import type { Session, SessionState } from '@tether/shared';
+import type { Session, SessionState, TrustReport } from '@tether/shared';
 import { Fragment } from 'preact';
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 
@@ -18,7 +18,14 @@ import * as api from './api.ts';
 import { ApiError } from './api.ts';
 import { elapsedLabel } from './conversation.ts';
 import { ConversationView } from './conversation.tsx';
-import { CODEX, DEFAULT_PROVIDER, PROVIDERS, providerLabel, unresumableNote } from './providers.ts';
+import {
+  CODEX,
+  DEFAULT_PROVIDER,
+  PROVIDERS,
+  providerLabel,
+  trustAsk,
+  unresumableNote,
+} from './providers.ts';
 import { crumbs, groupSessions } from './sessions.ts';
 import { STATUS_TEXT, TerminalView, type Status } from './terminal.tsx';
 
@@ -736,13 +743,52 @@ function NewSession({
   const [provider, setProvider] = useState<string>(DEFAULT_PROVIDER);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [trust, setTrust] = useState<TrustReport | null>(null);
+  const [accepted, setAccepted] = useState(false);
+
+  /**
+   * Ask whether the agent already trusts this directory, so the question can be
+   * answered here instead of in the agent's own prompt in the terminal.
+   *
+   * Both the answer and the tick are cleared the moment either input changes, and
+   * that reset is the load-bearing line: a box ticked for one directory must
+   * never still be ticked for the next one typed, or tether would trust a folder
+   * nobody agreed to. Debounced because this runs per keystroke, and every
+   * failure — an offline server, a directory that does not exist yet, one outside
+   * the allowed roots — leaves the sheet saying nothing at all. Start still
+   * reports a refused directory in the server's own words.
+   */
+  useEffect(() => {
+    setTrust(null);
+    setAccepted(false);
+    const dir = cwd.trim();
+    if (dir === '') return;
+    let live = true;
+    const timer = setTimeout(() => {
+      api
+        .folderTrust(dir, provider)
+        .then((report) => {
+          if (live) setTrust(report);
+        })
+        .catch(() => {});
+    }, 400);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [cwd, provider]);
+
+  const ask = trust === null ? null : trustAsk(provider, trust.trust, trust.path, cwd.trim());
 
   const submit = async (event: Event) => {
     event.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      onCreated(await api.createSession(cwd.trim(), title.trim(), provider));
+      // `accepted` alone is not enough: it survives no input change, but a tick
+      // on an ask that has since become `unknown` (or trusted) must not travel.
+      const trustFolder = accepted && ask?.accept !== undefined;
+      onCreated(await api.createSession(cwd.trim(), title.trim(), provider, trustFolder));
     } catch (failure) {
       // `invalid_cwd` arrives with the server's own sentence, which names the
       // allowed roots. Showing it verbatim is the point: the server enforces the
@@ -792,6 +838,27 @@ function NewSession({
             <option key={dir} value={dir} />
           ))}
         </datalist>
+
+        {/* Beside the directory it is about, and nowhere else in the product: a
+            folder tether asked about once is not something to keep mentioning.
+            Every word of it comes from `trustAsk`. */}
+        {ask !== null && (
+          <div class="note trust">
+            {ask.lines.map((line) => (
+              <p key={line}>{line}</p>
+            ))}
+            {ask.accept !== undefined && (
+              <label class="trust-accept">
+                <input
+                  type="checkbox"
+                  checked={accepted}
+                  onChange={(event) => setAccepted((event.target as HTMLInputElement).checked)}
+                />
+                {ask.accept}
+              </label>
+            )}
+          </div>
+        )}
 
         <label for="title">Title (optional)</label>
         <input
