@@ -47,7 +47,11 @@ session API, the terminal transport, the conversation data layer, the browser ap
 the conversation view, and the composer. Run `tether serve`, open the address it
 prints, and you can log in, see the sessions on this machine — each tagged with the
 agent it is running — start one in a directory you name under either agent, and
-follow it. The list groups sessions under the day each was last worked on, with a
+follow it. If that agent does not already trust the directory, the New session
+sheet asks you before it starts rather than leaving the question to the agent's
+own prompt in the terminal (see
+[Trusting a folder](#trusting-a-folder-before-the-agent-asks)). The list groups
+sessions under the day each was last worked on, with a
 search box over it that filters on title and directory, so finding one on a
 machine that has been running a while is a scan rather than a scroll. Opening a
 session lands you in the **conversation**: your prompts, the
@@ -113,7 +117,12 @@ This milestone is being built one focused PR at a time.
 
 ```
 GET    /api/machines/local/sessions            every session, live and dead, with each live one's state
-POST   /api/machines/local/sessions            {"cwd": "…", "title"?: "…", "provider"?: "…"}
+GET    /api/machines/local/folder-trust?cwd=…&provider=…
+                                               whether that agent already trusts that directory,
+                                               and which directory the answer is about
+POST   /api/machines/local/sessions            {"cwd": "…", "title"?: "…", "provider"?: "…",
+                                                "trustFolder"?: true} — the last one is the only
+                                                thing that ever records a folder as trusted
 GET    /api/machines/local/sessions/:id
 POST   /api/machines/local/sessions/:id/resume restarts a dead session's conversation
 DELETE /api/machines/local/sessions/:id        kills the tmux session and marks the row dead
@@ -304,8 +313,9 @@ _waiting for you_ badge and the Approve/Deny buttons for Codex sessions — the
 prompt is still there in the terminal, where it has always been — and nothing
 else changes. tether will neither nag you nor retry. Codex also needs `hooks = true` under `[features]` in
 `~/.codex/config.toml` before it runs any hook at all; tether tells you so and
-leaves that file to you, since it is also where Codex records what you have
-trusted.
+changes no setting in that file, since it is also where Codex records which hooks
+you have trusted. The one thing it ever writes there is a folder you chose to
+trust — see [Trusting a folder](#trusting-a-folder-before-the-agent-asks).
 
 ## Trusting a folder, before the agent asks
 
@@ -482,6 +492,17 @@ composer is what says the change landed. Every axis in the table was established
 against Claude Code 2.1.220 and codex-cli 0.145.0; setting any of them by hand in
 the terminal always works.
 
+**Folder trust is the same bet, and the one place tether takes it while
+_writing_.** Where each agent records a trusted directory is its own business, and
+`~/.claude.json` and `~/.codex/config.toml` can change shape in any release. Both
+were established against Claude Code 2.1.220 and codex-cli 0.145.0. The
+consequences are bounded on purpose: a file tether cannot make sense of gets no
+checkbox and no write, a write it will not make refuses the session outright
+rather than starting one on a promise it did not keep, and an existing file is
+copied into tether's state directory before it is touched. What a stale reader
+costs you is the question moving back into the terminal, where it has always been
+answerable.
+
 **The terminal view depends on none of it.** It is the real TUI over tmux, it is
 always correct, and it is a complete fallback. If the conversation ever looks
 wrong or empty after a provider upgrade, that is the failure to expect, summoning
@@ -600,12 +621,13 @@ one rule is what makes the eventual remote-agent split a split rather than a
 rewrite.
 
 `providers/` holds one directory per provider — `claude-code/` and `codex/` —
-plus the three files they genuinely share (`tail.ts`, which follows an
-append-only file, `cap.ts`, which bounds what a card may carry, and
+plus the four files they genuinely share (`tail.ts`, which follows an
+append-only file, `cap.ts`, which bounds what a card may carry,
 `permission.ts`, which is the one place the permission timeouts, the hook secret
-and the signals both hooks speak are decided). There is no `Provider`
-interface, registry or plugin loader: adding the second provider cost two
-directories and one `switch`, which is smaller than the abstraction that would
+and the signals both hooks speak are decided, and `trust.ts`, which holds the
+folder-trust tri-state and nothing about either agent's own file). There is no
+`Provider` interface, registry or plugin loader: adding the second provider cost
+two directories and one `switch`, which is smaller than the abstraction that would
 have been designed to avoid it and cannot be wrong about a provider nobody has
 built yet.
 

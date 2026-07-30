@@ -148,7 +148,9 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `0600` in a `0700` directory (`$XDG_STATE_HOME`, or `$TETHER_STATE_DIR`, which tests
   and any manual run must set rather than touch the real one). The rest is the Codex
   hook's shim and its per-session logs in that same directory, owned by
-  `providers/codex/hooks.ts`. Never write runtime state into the repo; a
+  `providers/codex/hooks.ts`, and the backups tether takes before it writes a
+  folder-trust entry into an agent's own config — in there too, never beside the
+  original. Never write runtime state into the repo; a
   path that is not in the repo cannot be committed by accident. `db.ts` owns the path
   and the mode bits — `machine/registry.ts` only adds its schema on top, applied on
   every open (`CREATE TABLE IF NOT EXISTS`). There is no migration framework, so a
@@ -208,8 +210,9 @@ CI runs exactly those (`.github/workflows/ci.yml`).
 
 - **Two providers, one `switch`, and no `Provider` interface.** `providers/` has
   one directory each (`claude-code/`, `codex/`) plus what they genuinely share —
-  `tail.ts`, `cap.ts` and `permission.ts` (the permission policy entry below).
-  `machine/sessions.ts` holds the argv per provider and `machine/conversations.ts`
+  `tail.ts`, `cap.ts`, `permission.ts` (the permission policy entry below) and
+  `trust.ts` (the folder-trust entry below). `machine/sessions.ts` holds the argv,
+  the resume and the trust locations per provider and `machine/conversations.ts`
   picks the mapper; that is the whole seam, and report
   §4 chose it over an abstraction on purpose. Adding a third provider is a third
   directory, not a refactor. Codex specifics worth not rediscovering: it writes
