@@ -194,7 +194,9 @@ to know what tether will do:
   says so on the card, and the agent asks you in the terminal exactly as it would
   have. `TETHER_PERMISSION_TIMEOUT` is that number in seconds; `0` turns holding
   off entirely and leaves tether reporting prompts without answering them, which
-  is a supported way to run it.
+  is a supported way to run it. A Codex hold is capped just under five minutes
+  however high you set it, because the timeout in its hooks file is a fixed one —
+  changing that value would put its trust prompt in front of you again.
 - **If tether cannot be reached, nothing is decided for you.** The hook says
   nothing and the agent's own permission rules apply — never an automatic
   _allow_, because a server that is down must not be able to approve anything,
@@ -239,6 +241,13 @@ JSON line per event to a log under that same directory, and on the one event tha
 has an answer to return it asks tether over loopback whether you have answered
 yet — the same secret-in-a-`0600`-file arrangement described above, and the same
 fallback if tether is not running. It talks to nothing else.
+
+Run `install` again after upgrading tether: it corrects its own entry if an older
+tether wrote a different one, and Codex then asks you to review that entry once
+more — a one-off, because the values tether writes are fixed rather than
+following a setting. `npx tether codex-hook` is what tells you an installation
+has gone stale; a stale one still reports _waiting for you_, but gets no Approve
+and Deny, and its prompts are answered in the terminal as before.
 
 The New session sheet says the same thing, next to the moment you pick Codex, so
 the browser is not the one place you would meet the trust prompt unprepared. It
@@ -488,8 +497,10 @@ one rule is what makes the eventual remote-agent split a split rather than a
 rewrite.
 
 `providers/` holds one directory per provider — `claude-code/` and `codex/` —
-plus the two files they genuinely share (`tail.ts`, which follows an append-only
-file, and `cap.ts`, which bounds what a card may carry). There is no `Provider`
+plus the three files they genuinely share (`tail.ts`, which follows an
+append-only file, `cap.ts`, which bounds what a card may carry, and
+`permission.ts`, which is the one place the permission timeouts, the hook secret
+and the signals both hooks speak are decided). There is no `Provider`
 interface, registry or plugin loader: adding the second provider cost two
 directories and one `switch`, which is smaller than the abstraction that would
 have been designed to avoid it and cannot be wrong about a provider nobody has

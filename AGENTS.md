@@ -204,8 +204,9 @@ CI runs exactly those (`.github/workflows/ci.yml`).
 
 - **Two providers, one `switch`, and no `Provider` interface.** `providers/` has
   one directory each (`claude-code/`, `codex/`) plus what they genuinely share —
-  `tail.ts` and `cap.ts`. `machine/sessions.ts` holds the argv per provider and
-  `machine/conversations.ts` picks the mapper; that is the whole seam, and report
+  `tail.ts`, `cap.ts` and `permission.ts` (the permission policy entry below).
+  `machine/sessions.ts` holds the argv per provider and `machine/conversations.ts`
+  picks the mapper; that is the whole seam, and report
   §4 chose it over an abstraction on purpose. Adding a third provider is a third
   directory, not a refactor. Codex specifics worth not rediscovering: it writes
   **nothing at all** until the first user message (hence the nullable
@@ -363,8 +364,10 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   (stated in `providers/permission.ts`) is that **tether must never show an
   answerable card for a decision that cannot land** — a provider timeout tether
   never enumerated, a Ctrl-C'd pane, a killed agent, a provider tether has not
-  met. `web/hooks.ts` watches `request.raw` for `close`, guarded by a flag
-  because `close` follows every ordinary reply too, and `Conversations.hook`
+  met. `web/hooks.ts` watches **`reply.raw`** for `close` — never `request.raw`,
+  which Fastify has already destroyed by the time the handler runs, so a listener
+  there never fires — and tells an abandoned request from an ordinary reply by
+  `writableFinished`, because `close` follows both. `Conversations.hook` then
   settles the hold as `timeout` on the `AbortSignal` it is handed. Shared by both
   providers on purpose: a false _approved_ is the worst thing this surface can
   say on either.
