@@ -55,7 +55,14 @@ import {
   type Axis,
   type Choice,
 } from './options.ts';
-import { AUTH_TERMINAL_LABEL, copyLabel, providerLabel, whoLabel } from './providers.ts';
+import {
+  AUTH_TERMINAL_LABEL,
+  COMMAND_TERMINAL_LABEL,
+  copyLabel,
+  providerLabel,
+  turnErrorLabel,
+  whoLabel,
+} from './providers.ts';
 import type { Send, Status } from './terminal.tsx';
 
 /** Same shape of backoff as the terminal channel, and for the same phone. */
@@ -653,13 +660,13 @@ function Composer({
             <>
               {' '}
               {/* This name is one of three that must not contain one another —
-                  the rule and its guard live with `AUTH_TERMINAL_LABEL` in
+                  the rule, the guard and the strings themselves live in
                   `providers.ts`. The part that is local to here: this one and
                   the waiting banner's appear together routinely, because
                   sending `/resume` puts Claude Code into `waiting` within a
                   second, so both are on screen at once. */}
               <button type="button" class="link" onClick={onSummon}>
-                Show the terminal
+                {COMMAND_TERMINAL_LABEL}
               </button>
             </>
           )}
@@ -894,6 +901,10 @@ function RowView({
         // unnamed `complementary` landmark — one per failed turn, in the same
         // landmark list as the rail's named one.
         <div class={`turn-error${row.auth ? ' turn-error-act' : ''}`}>
+          {/* The box says whose words these are to anyone who can see it; this
+              is the same attribution for anyone who cannot, and the counterpart
+              of the `msg-who` heading a message carries. */}
+          <h3 class="sr-only">{turnErrorLabel(provider)}</h3>
           <p class="turn-error-text">{row.text}</p>
           {row.auth && (
             <p class="turn-error-advice">

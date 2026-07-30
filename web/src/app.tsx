@@ -25,6 +25,7 @@ import {
   providerLabel,
   trustAsk,
   unresumableNote,
+  WAITING_TERMINAL_LABEL,
 } from './providers.ts';
 import { crumbs, groupSessions } from './sessions.ts';
 import { STATUS_TEXT, TerminalView, type Status } from './terminal.tsx';
@@ -441,7 +442,7 @@ function SessionScreen({
           <p class="waiting">
             <strong>Waiting for you.</strong> {waitingDetail}{' '}
             <button class="link" onClick={summon}>
-              Open the terminal
+              {WAITING_TERMINAL_LABEL}
             </button>
           </p>
         )}

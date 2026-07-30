@@ -56,17 +56,38 @@ export function copyLabel(who: 'user' | 'assistant', provider: string): string {
 }
 
 /**
- * The accessible name of the way into the terminal from a failed turn's row.
+ * The accessible names of the three controls that summon the terminal: a failed
+ * turn's row, the composer's command note, and the waiting banner.
  *
- * Here for the same reason `copyLabel` is: it is the wording of a control's
- * accessible name, and it is load-bearing against the other two controls that
- * offer the same escape hatch — the composer's command note says "Show the
- * terminal" and the waiting banner says "Open the terminal". All three can be on
- * screen together, and `getByRole({ name })` matches on a case-insensitive
- * substring, so one name containing another is an ambiguity for a screen reader
- * and for the specs that locate the other two. `providers.test.ts` is the guard.
+ * Here for the same reason `copyLabel` is — it is the wording of a control's
+ * accessible name — and all three rather than one, because the rule is about
+ * them as a set. Any two can be on screen together, and `getByRole({ name })`
+ * matches on a case-insensitive substring, so one name containing another is an
+ * ambiguity for a screen reader and for the specs that locate the others. The
+ * guard in `providers.test.ts` is only a guard if it compares the strings the
+ * buttons actually render, so the buttons take their names from here.
  */
 export const AUTH_TERMINAL_LABEL = 'Go to the terminal';
+
+export const COMMAND_TERMINAL_LABEL = 'Show the terminal';
+
+export const WAITING_TERMINAL_LABEL = 'Open the terminal';
+
+/**
+ * What a screen reader hears before a failed turn's row.
+ *
+ * Sighted users get the attribution from the house rule that a box means an
+ * artefact and prose means the agent; without a heading, the CLI's own words are
+ * read out in the model's voice, straight after an assistant message. It names
+ * the provider through `providerLabel` rather than an agent, because the same
+ * row renders for both.
+ *
+ * Like `copyLabel` it must not contain the word "message": the composer's own
+ * label is exactly that word and `getByLabel` matches on a substring.
+ */
+export function turnErrorLabel(provider: string): string {
+  return `${providerLabel(provider)} reported a failed turn`;
+}
 
 /**
  * What the New session sheet says about folder trust, before the agent starts.

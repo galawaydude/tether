@@ -142,6 +142,18 @@ function commandEvent(text: string, id: string, at: number): ConversationEvent |
  * writing "This may be a temporary network issue, please try again" — so a
  * friendlier sentence invented here would contradict the provider on the screen
  * it is quoting. Same rule as `Notification`, below.
+ *
+ * `apiErrorIsTransient` rides on the same record and is **deliberately not
+ * read**, so nobody has to investigate it twice. In the 2.1.220 bundle it is set
+ * on the `rate_limit` branch only and never on either `authentication_failed`
+ * branch, and the CLI's own classifier computes transience as
+ * `apiErrorIsTransient === true || error === 'overloaded' || error ===
+ * 'server_error'` — so the flag cannot reach the auth row this feature exists to
+ * surface. Empirically the record is written only once the retries are spent:
+ * the captured 429 run reached attempt 10/10 and then wrote a single record
+ * carrying `apiErrorIsTransient: false`, with nothing written mid-retry. So a
+ * row here is a turn that is over either way, and gating on the flag would only
+ * hide failures.
  */
 const AUTH_ERROR = 'authentication_failed';
 
@@ -151,23 +163,6 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 function str(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
-}
-
-/**
- * A record's `content` flattened to text, for the one caller that wants the
- * sentence rather than the blocks. 2.1.220 writes an API error as a single
- * `text` block, but `content` is a string on some records and this must not
- * depend on which.
- */
-function plainText(content: unknown): string {
-  if (typeof content === 'string') return content.trim();
-  if (!Array.isArray(content)) return '';
-  return content
-    .flatMap((block) =>
-      isObject(block) && block['type'] === 'text' ? [str(block['text']) ?? ''] : [],
-    )
-    .join('\n')
-    .trim();
 }
 
 /** Epoch ms, or 0 for a record whose timestamp is missing or unparseable. */
@@ -320,7 +315,12 @@ export function mapRecord(record: unknown, warn: Warn = () => {}): Mapped {
   // Before the assistant branch: the record is shaped like a message and is not
   // one. See `AUTH_ERROR` for the fields and how they were established.
   if (record['isApiErrorMessage'] === true) {
-    const text = plainText(content);
+    // `capOutput` already flattens both shapes `content` arrives in — a string
+    // on some records, blocks on others — so there is no second flattener here.
+    // Anything else is a record with nothing to say rather than a sentence:
+    // `capOutput` would stringify it, and `JSON.stringify` of nothing is "null".
+    const text =
+      typeof content === 'string' || Array.isArray(content) ? capOutput(content).trim() : '';
     return mapped(
       text === ''
         ? []
@@ -329,7 +329,7 @@ export function mapRecord(record: unknown, warn: Warn = () => {}): Mapped {
               kind: 'error',
               id: uuid,
               at,
-              text: capOutput(text),
+              text,
               ...(record['error'] === AUTH_ERROR ? { auth: true as const } : {}),
             },
           ],

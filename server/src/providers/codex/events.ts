@@ -273,7 +273,13 @@ export function mapRecord(record: unknown, index = 0, warn: Warn = () => {}): Ma
       // Every turn ends with one of these; only a failed turn carries `error`.
       const error = payload['error'];
       if (!isObject(error)) return NONE;
-      const text = str(error['message']) ?? '';
+      const info = str(error['codex_error_info']) ?? '';
+      // Codex's own sentence when there is one, its classification when there is
+      // not: the typed field is the signal this reads, so a failed turn must not
+      // vanish because the prose happened to be blank. Only an error object with
+      // neither has nothing at all to show.
+      const message = str(error['message']) ?? '';
+      const text = message.trim() === '' ? info : message;
       if (text.trim() === '') return NONE;
       return {
         events: [
@@ -282,7 +288,7 @@ export function mapRecord(record: unknown, index = 0, warn: Warn = () => {}): Ma
             id,
             at,
             text: capOutput(text),
-            ...(error['codex_error_info'] === AUTH_ERROR ? { auth: true as const } : {}),
+            ...(info === AUTH_ERROR ? { auth: true as const } : {}),
           },
         ],
       };

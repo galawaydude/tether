@@ -361,6 +361,35 @@ test('a failed turn is Codex’s own words, and only an unauthorized one is flag
   assert.equal(overloaded?.kind === 'error' ? overloaded.auth : undefined, undefined);
 });
 
+test('a failed turn with no sentence still shows, because the typed field is the signal', () => {
+  // The prose is Codex's to write and tether does not control it. The flag is
+  // read from `codex_error_info`, so a blank `message` must cost the sentence
+  // and not the row: falling back to the classification keeps an expired login
+  // on screen instead of silently dropping the one event this feature is for.
+  const { events } = mapRecord({
+    type: 'event_msg',
+    timestamp: '2026-07-29T06:30:31.281Z',
+    payload: {
+      type: 'task_complete',
+      error: { message: '   ', codex_error_info: 'unauthorized' },
+    },
+  });
+  const [failed] = events;
+  assert.equal(failed?.kind, 'error');
+  assert.equal(failed?.kind === 'error' ? failed.auth : undefined, true);
+  assert.equal(failed?.kind === 'error' ? failed.text : '', 'unauthorized');
+
+  // And an error object carrying neither has nothing to show at all.
+  assert.deepEqual(
+    mapRecord({
+      type: 'event_msg',
+      timestamp: '2026-07-29T06:30:31.281Z',
+      payload: { type: 'task_complete', error: {} },
+    }).events,
+    [],
+  );
+});
+
 test('a successful turn carries no error, so nothing is shown for it', () => {
   // The real session fixture ends every turn with a `task_complete` that has no
   // `error` key at all — which is what keeps a healthy session silent here.
