@@ -35,6 +35,7 @@ import {
   noRows,
   rebuild,
   sendBlocked,
+  suspectWarning,
   toolResult,
   toolState,
   type Diff,
@@ -746,6 +747,8 @@ function ToolCard({ row, sessionId }: { row: ToolRow; sessionId: string }) {
   // What the diff does not itself say, on a card that is being approved.
   // `null` — which is nearly always — draws nothing at all, not an empty box.
   const extras = diffExtras(row);
+  // Characters that make the command or the path read as something it is not.
+  const warning = suspectWarning(row.suspects);
   return (
     <details
       class={`tool${row.failed ? ' tool-failed' : ''}${row.pending ? ' tool-pending' : ''}${
@@ -781,8 +784,16 @@ function ToolCard({ row, sessionId }: { row: ToolRow; sessionId: string }) {
         <p class={`tool-advice${advice.act ? ' tool-advice-act' : ''}`}>{advice.text}</p>
       )}
       <pre class="tool-body">{toolResult(row)}</pre>
+      {/* On a card nobody is deciding on the same finding is a note and gates
+          nothing: the call has run, and there is no answer to hold back. */}
+      {answerable === null && warning !== null && <p class="tool-warn">{warning}</p>}
       {answerable !== null && (
-        <Answer sessionId={sessionId} callId={answerable.callId} deadline={answerable.deadline} />
+        <Answer
+          sessionId={sessionId}
+          callId={answerable.callId}
+          deadline={answerable.deadline}
+          warning={warning}
+        />
       )}
     </details>
   );
@@ -853,19 +864,31 @@ function DiffView({ diff }: { diff: Diff }) {
  * anyway (one hold, one settle), but a button that still looks tappable after it
  * has been tapped is how a user ends up believing they denied something they
  * approved.
+ *
+ * A `warning` names characters that make what is on the card read as something
+ * it is not, and it holds **Approve** back until it has been acknowledged.
+ * **Deny stays live throughout**, and that asymmetry is the whole point: someone
+ * reading this warning most likely wants to refuse, and being made to
+ * acknowledge a warning in order to refuse is a surface arguing for the
+ * dangerous answer. The acknowledgement is one tap in the place Approve will be,
+ * so the panel does not grow taller than the buttons it replaces.
  */
 function Answer({
   sessionId,
   callId,
   deadline,
+  warning,
 }: {
   sessionId: string;
   callId: string;
   deadline: number;
+  warning: string | null;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [left, setLeft] = useState(() => remaining(deadline));
+  const [acked, setAcked] = useState(false);
+  const held = warning !== null && !acked;
 
   useEffect(() => {
     const timer = setInterval(() => setLeft(remaining(deadline)), 1000);
@@ -892,11 +915,30 @@ function Answer({
           {error}
         </p>
       )}
+      {warning !== null && (
+        <p class="tool-warn" id={`warn-${callId}`} role="alert">
+          {warning}
+        </p>
+      )}
+      {/* Its own row, above, rather than in Approve's place: sharing that place
+          would make a double-tap on the same pixels acknowledge and then approve,
+          which is the blind approval the warning exists to prevent. */}
+      {held && (
+        <button type="button" class="tool-ack" onClick={() => setAcked(true)}>
+          I have read this
+        </button>
+      )}
       <div class="tool-answer-buttons">
         <button type="button" class="ghost danger" disabled={busy} onClick={() => answer('deny')}>
           Deny
         </button>
-        <button type="button" class="primary" disabled={busy} onClick={() => answer('allow')}>
+        <button
+          type="button"
+          class="primary"
+          disabled={busy || held}
+          aria-describedby={warning === null ? undefined : `warn-${callId}`}
+          onClick={() => answer('allow')}
+        >
           Approve
         </button>
       </div>

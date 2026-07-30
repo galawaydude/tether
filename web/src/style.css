@@ -1354,6 +1354,47 @@ label {
   border-color: color-mix(in srgb, var(--danger) 55%, transparent);
 }
 
+/* The characters that make a command read as something else, named.
+ *
+ * Deliberately *not* a scroll container, unlike the composer's warning panel:
+ * `suspectWarning` caps how many characters it names, so this box's height is
+ * bounded by its own text and cannot push Deny — the answer this warning exists
+ * to make easy — off a 360×640 screen. It sits directly above the buttons it
+ * gates, because a warning above a diff is a warning scrolled past.
+ *
+ * Danger red rather than amber: rule 1 says amber is a human being *needed*, and
+ * the amber card border already says that. This says the card is lying. */
+.tool-warn {
+  margin: 0 0 8px;
+  padding: 9px 11px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--danger) 55%, transparent);
+  background: color-mix(in srgb, var(--danger) 12%, var(--wash));
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.5;
+  /* Code points and quoted glyphs, so the mono face is what says "the machine
+     read this" — and `anywhere`, because a run of them may not clip. */
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+}
+
+/* On a card nobody is blocked on the note is inside the card's own padding. */
+.tool > .tool-warn {
+  margin: 0 12px 12px;
+}
+
+/* Full width and thumb-sized like the two answers below it, so the row it costs
+   is a row that can actually be tapped — and it takes the warning's own border,
+   so the two read as one thing rather than as a caption above a control. Not
+   `.ghost`: the one control a user has to find here may not look like text. */
+.tool-ack {
+  width: 100%;
+  min-height: var(--tap);
+  margin-bottom: 8px;
+  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
+}
+
 .tool-answer-note {
   margin: 8px 0 0;
   font-size: 12px;
