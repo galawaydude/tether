@@ -402,6 +402,32 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   name from `providerLabel` in `web/src/providers.ts` — where the rest of the web
   app already reads a provider's name from, so it is the existing seam and not a
   new one — and it belongs to whoever next owns `web/src/conversation.ts`.
+- **A clipped command is approving blind; a homoglyph is the same failure with no
+  visual tell at all**, which is why `scanSuspects` in `web/src/conversation.ts`
+  names the characters that make a command read as something it is not, and an
+  answerable card holds Approve behind an acknowledgement — **Deny stays live**,
+  because someone reading that warning most likely wants to refuse and must never
+  acknowledge a warning in order to. Modelled on Zed's
+  `crates/agent_ui/src/unicode_confusables.rs` with one difference that is the
+  whole difficulty: Zed scans domains and paths, where **any** non-ASCII is
+  surprising, so it flags all of them; a tool call's input is arbitrary text, and
+  a guard that fires on ordinary non-English text trains people to tap through
+  the one that matters. So bidi controls and invisibles are always flagged, and a
+  visible character only when it can actually be mistaken for ASCII — a
+  single-character NFKC fold, or a Latin-lookalike script sharing a _word_ with an
+  ASCII letter. **The Latin block is exempt on purpose and must stay exempt**:
+  `søren`, `kullanıcı` and `café` are all ASCII letters mixed with a non-ASCII
+  Latin one, so the rule that would catch `ı` cries wolf on ordinary names. The
+  false-positive test is the one that decides whether the feature is worth having.
+  No dependency: a script name is four ranges, and `String.prototype.normalize`
+  does the folds. `inputSuspects` scans every string in the **input**, keys
+  included, rather than the fields the card happens to show — and never the
+  result, which is arbitrary output nobody is deciding about. The acknowledgement
+  takes a row of its own above the answers rather than Approve's place, or a
+  double-tap on one spot acknowledges and then approves; `suspectWarning` caps how
+  many characters it names so the panel's height is bounded without a scroll
+  container, and `e2e/render.spec.ts`'s third test measures all three controls
+  fully in the viewport at 360×640 on the arrival path.
 - **The hook secret is a `0600` file read at hook execution time, and the
   settings file gets only a path.** `settings.local.json` lives in the user's
   repository, so a token in it is one `git add` from being published (report
@@ -760,7 +786,9 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   _elements_ and nothing else, so a `<script>` an agent wrote is text in the page rather
   than a node in it — plus the answerable `Edit`, the combination the diff and permission
   entries create together and neither covers alone; it appends its records to the
-  transcript the stub already opened rather than teaching the stub a new behaviour.
+  transcript the stub already opened rather than teaching the stub a new behaviour. Its
+  third test is the one place besides `permission.spec.ts` that drives the real hook chain
+  end to end, for the lookalike-character guard the confusables entry above describes.
   `desktop.spec.ts` is the only spec
   above the 900px breakpoint and the only test that renders the `.workspace` shape at
   all: it measures the rail's box against the session's, counts the back button at **0**

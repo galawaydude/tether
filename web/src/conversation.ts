@@ -69,6 +69,12 @@ export type ToolRow = {
    */
   diff: Diff | null;
   /**
+   * Characters in the input that can make it read as something it is not, named.
+   * Computed here for the same reason `diff` is — a card re-renders on every
+   * event in the session — and see {@link inputSuspects} for what is scanned.
+   */
+  suspects: readonly Suspect[];
+  /**
    * The card was built from the provider's pre-tool hook and the transcript has
    * not caught up. It is the same card either way — this only lets the view say
    * "asking to run this" rather than "running this".
@@ -488,6 +494,7 @@ export function addPending(state: Rows, e: ToolCallEvent, deadline?: Timestamp):
     input: e.input,
     result: null,
     diff: toDiff(e.tool, e.input),
+    suspects: inputSuspects(e.input),
     pending: true,
     answerable: deadline === undefined ? null : { callId: e.callId, deadline },
     outcome: null,
@@ -617,6 +624,7 @@ function toRow(key: string, e: ConversationEvent, byCall: Map<string, ToolRow>):
         input: e.input,
         result: null,
         diff: toDiff(e.tool, e.input),
+        suspects: inputSuspects(e.input),
         pending: false,
         answerable: null,
         outcome: null,
@@ -642,6 +650,7 @@ function toRow(key: string, e: ConversationEvent, byCall: Map<string, ToolRow>):
         input: undefined,
         result: e.output,
         diff: null,
+        suspects: [],
         pending: false,
         answerable: null,
         outcome: null,
@@ -655,6 +664,246 @@ function toRow(key: string, e: ConversationEvent, byCall: Map<string, ToolRow>):
       // build has never compiled against.
       return { key, row: 'note', text: `Unsupported event: ${kindOf(e)}` };
   }
+}
+
+/* ── lookalike characters ────────────────────────────────────────────────────
+ *
+ * A clipped command is approving blind; a homoglyph is the same failure with no
+ * visual tell at all. `rm -rf ./buіld` — Cyrillic `і` — is `rm -rf ./build` to
+ * every reader at every width, and a phone shows less context and gets tapped
+ * faster than a desktop editor does. So the three classes that can make a
+ * command or a path read as something it is not are named on the card, and on an
+ * **answerable** card Approve waits behind an acknowledgement while Deny stays
+ * live: someone who sees this warning most likely wants to deny, and must never
+ * be made to acknowledge a warning in order to.
+ *
+ * Modelled on Zed's `crates/agent_ui/src/unicode_confusables.rs`, with one
+ * deliberate difference that is the whole difficulty of the feature. Zed scans
+ * *domains and paths* in a sandbox prompt, where **any** non-ASCII character is
+ * surprising, so it flags all of them. A tool call's input is arbitrary text —
+ * a Russian directory name, a Japanese commit message, a Danish username — and a
+ * guard that fires on ordinary text trains people to click through, which is
+ * worse than no guard. What is flagged is therefore narrowed to what can
+ * actually be mistaken for ASCII:
+ *
+ *  - **Bidi controls** and **invisible characters** — always, wherever they are.
+ *    Neither has a legitimate place in a command or a path, and the second is by
+ *    definition something the user cannot see.
+ *  - **Confusables** — only a non-ASCII character that either folds to a *single*
+ *    ASCII character under NFKC (`Ａ` → `A`, `／` → `/`), or belongs to a script
+ *    whose letters are drawn like Latin ones *and* shares a word with an ASCII
+ *    letter. A word of pure Cyrillic is a Russian word; a Cyrillic `і` in the
+ *    middle of `build` is an attack.
+ *
+ * ponytail: the confusable half is four script ranges and an NFKC fold, not
+ * UTS#39's confusables table. That is a real ceiling in both directions —
+ * `ﬁle` (a ligature, which folds to *two* ASCII characters) and `ı` are missed —
+ * and the upgrade is a generated table, which is a dependency this does not
+ * need for the attack that is actually cheap to mount. The Latin block is
+ * exempt **on purpose and must stay exempt**: `søren`, `kullanıcı` and `café`
+ * are all ASCII letters mixed with a non-ASCII Latin one, so a rule that caught
+ * `ı` would cry wolf on ordinary names.
+ */
+
+export type SuspectKind = 'bidi' | 'invisible' | 'confusable';
+
+/**
+ * One character worth naming, and the way it is named: the glyph where showing
+ * one means anything, the code point always, and the script or the ASCII it
+ * stands in for where that is knowable. "Suspicious characters" without saying
+ * which teaches nothing and cannot be checked by the reader.
+ */
+export type Suspect = { char: string; kind: SuspectKind; description: string };
+
+/** Bidi controls — the "Trojan Source" set. Nothing else reorders text. */
+const BIDI = /^[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]$/;
+
+/**
+ * Zero-width, invisible and non-ASCII-space characters. Only ever asked about a
+ * **non-ASCII** character, which is what keeps a newline, a tab or an ordinary
+ * space — all legitimate in a command and in a patch — out of it, and is why
+ * three whole categories can stand in for a hand-written list: `Cf` is every
+ * format character (the zero-width set, the soft hyphen, the BOM), `Cc` the
+ * remaining controls, `Zs` every exotic space.
+ */
+const INVISIBLE = /^(?:\p{Cc}|\p{Cf}|\p{Zs})$/u;
+
+/**
+ * The invisible characters that are *letters* by category and so in none of
+ * those three \u2014 the Hangul and Khmer fillers, which render as nothing at all. A
+ * set rather than a character class because two of them combine into one
+ * grapheme, which is a lint error in a class and would be a silent one here.
+ */
+const INVISIBLE_LETTERS = new Set(['\u115F', '\u1160', '\u17B4', '\u17B5', '\u3164', '\uFFA0']);
+
+/** The characters a word is made of, for "is this word otherwise ASCII?". */
+const WORD = /^[\p{L}\p{M}\p{N}]$/u;
+
+/**
+ * Scripts whose letters are drawn like Latin ones. The four UTS#39 names as the
+ * usual source of Latin homoglyphs; Han, Arabic, Hebrew and the rest are absent
+ * because their glyphs are not mistakable for ASCII and flagging them would fire
+ * on every genuinely multilingual path.
+ */
+const CONFUSABLE_SCRIPTS: readonly [number, number, string][] = [
+  [0x0370, 0x03ff, 'Greek'],
+  [0x1f00, 0x1fff, 'Greek'],
+  [0x0400, 0x052f, 'Cyrillic'],
+  [0x2de0, 0x2dff, 'Cyrillic'],
+  [0xa640, 0xa69f, 'Cyrillic'],
+  [0x0530, 0x058f, 'Armenian'],
+  [0x13a0, 0x13ff, 'Cherokee'],
+  [0xab70, 0xabbf, 'Cherokee'],
+];
+
+/**
+ * Names for the invisible and bidi characters most likely to turn up, so the
+ * warning reads as English rather than as a column of code points. Anything not
+ * listed is named by its code point alone, which still says *where* to look.
+ */
+const NAMES: Record<string, string> = {
+  '\u00A0': 'no-break space',
+  '\u00AD': 'soft hyphen',
+  '\u061C': 'arabic letter mark',
+  '\u180E': 'mongolian vowel separator',
+  '\u200B': 'zero-width space',
+  '\u200C': 'zero-width non-joiner',
+  '\u200D': 'zero-width joiner',
+  '\u200E': 'left-to-right mark',
+  '\u200F': 'right-to-left mark',
+  '\u202A': 'left-to-right embedding',
+  '\u202B': 'right-to-left embedding',
+  '\u202C': 'pop directional formatting',
+  '\u202D': 'left-to-right override',
+  '\u202E': 'right-to-left override',
+  '\u2060': 'word joiner',
+  '\u2066': 'left-to-right isolate',
+  '\u2067': 'right-to-left isolate',
+  '\u2068': 'first strong isolate',
+  '\u2069': 'pop directional isolate',
+  '\u3000': 'ideographic space',
+  '\u3164': 'hangul filler',
+  '\uFEFF': 'zero-width no-break space',
+};
+
+function scriptOf(char: string): string | null {
+  const at = char.codePointAt(0) ?? 0;
+  return CONFUSABLE_SCRIPTS.find(([from, to]) => at >= from && at <= to)?.[2] ?? null;
+}
+
+/** The single ASCII character this one is a compatibility form of, if it is. */
+function foldsToAscii(char: string): string | null {
+  const folded = char.normalize('NFKC');
+  return folded.length === 1 && /^[!-~]$/.test(folded) ? folded : null;
+}
+
+/**
+ * The non-ASCII, Latin-lookalike letters that share a word with an ASCII letter.
+ * Words are split on anything that is not a letter, mark or digit, so `файл-name`
+ * is two words and `buіld` is one — which is the distinction between a Russian
+ * name beside an English one and a Latin word with a Cyrillic letter in it.
+ */
+function mixedScript(text: string): Set<string> {
+  const found = new Set<string>();
+  let word: string[] = [];
+  let ascii = false;
+  const end = () => {
+    if (ascii) for (const char of word) found.add(char);
+    word = [];
+    ascii = false;
+  };
+  for (const char of text) {
+    if (!WORD.test(char)) {
+      end();
+      continue;
+    }
+    if (/^[A-Za-z]$/.test(char)) ascii = true;
+    else if (scriptOf(char) !== null) word.push(char);
+  }
+  end();
+  return found;
+}
+
+function describe(char: string, kind: SuspectKind): Suspect {
+  const point = `U+${(char.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')}`;
+  if (kind !== 'confusable') {
+    // No glyph: there is nothing to show, and printing a bidi control into the
+    // warning would reorder the warning's own text.
+    const name = NAMES[char];
+    return { char, kind, description: name === undefined ? point : `${point} ${name}` };
+  }
+  const script = scriptOf(char);
+  const ascii = foldsToAscii(char);
+  const note = script ?? (ascii === null ? null : `looks like "${ascii}"`);
+  return { char, kind, description: `'${char}' (${point}${note === null ? '' : ` ${note}`})` };
+}
+
+/**
+ * Every distinct character in `text` worth naming, once each, in order of first
+ * appearance — the order they occur in the thing the user is reading.
+ */
+export function scanSuspects(text: string): readonly Suspect[] {
+  const mixed = mixedScript(text);
+  const found = new Map<string, Suspect>();
+  for (const char of text) {
+    if ((char.codePointAt(0) ?? 0) < 0x80 || found.has(char)) continue;
+    const kind: SuspectKind | null = BIDI.test(char)
+      ? 'bidi'
+      : INVISIBLE.test(char) || INVISIBLE_LETTERS.has(char)
+        ? 'invisible'
+        : mixed.has(char) || foldsToAscii(char) !== null
+          ? 'confusable'
+          : null;
+    if (kind === null) continue;
+    found.set(char, describe(char, kind));
+  }
+  return [...found.values()];
+}
+
+/**
+ * A tool call's input → the characters worth naming on its card.
+ *
+ * Every string in the input is scanned, keys included: what a card shows is
+ * built from the input — the summary, the diff, the extras, the input view — so
+ * scanning the input covers every field on the card without having to enumerate
+ * them, and a field a later provider adds is covered the day it arrives.
+ *
+ * The **result** is deliberately not scanned. It is arbitrary output that the
+ * user is not deciding about, and a `grep` over a UTF-8 file would put a warning
+ * on a card where nothing is being approved. What is scanned is what is being
+ * asked for.
+ */
+export function inputSuspects(input: unknown): readonly Suspect[] {
+  const text: string[] = [];
+  const walk = (value: unknown) => {
+    if (typeof value === 'string') text.push(value);
+    else if (Array.isArray(value)) for (const item of value) walk(item);
+    else if (typeof value === 'object' && value !== null) {
+      for (const [name, item] of Object.entries(value)) {
+        text.push(name);
+        walk(item);
+      }
+    }
+  };
+  walk(input);
+  return scanSuspects(text.join('\n'));
+}
+
+/** How many are named before the line becomes one nobody reads. */
+const NAMED = 6;
+
+/**
+ * The sentence, or `null` when there is nothing to say. Bounded by construction
+ * rather than by a scroll container: an input can carry fifty distinct
+ * lookalikes, and a card whose warning grows without limit pushes Deny — the
+ * answer this warning exists to make easy — off a short phone.
+ */
+export function suspectWarning(suspects: readonly Suspect[]): string | null {
+  if (suspects.length === 0) return null;
+  const named = suspects.slice(0, NAMED).map((suspect) => suspect.description);
+  const rest = suspects.length - named.length;
+  const list = rest > 0 ? `${named.join(', ')}, and ${rest} more` : named.join(', ');
+  return `This contains characters that can make it read as something else: ${list}.`;
 }
 
 /**

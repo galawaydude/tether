@@ -15,7 +15,10 @@ import {
   rebuild,
   sendBlocked,
   SLOW_TURN_MS,
+  inputSuspects,
+  scanSuspects,
   summarise,
+  suspectWarning,
   toDiff,
   toolResult,
   toolState,
@@ -736,4 +739,117 @@ test('what a card says about a permission it is holding, and about how it ended'
   ]);
   assert.equal(toolState(done.rows[0] as ToolRow), '✓');
   assert.equal(toolResult(done.rows[0] as ToolRow), 'ok');
+});
+
+/* ── lookalike characters ────────────────────────────────────────────────────
+ *
+ * The guard on the permission card, and the reason it is narrower than Zed's:
+ * a tool call's input is arbitrary text, so a guard that fires on ordinary
+ * non-English text trains people to click through the one that matters. Every
+ * case below is one of the two halves — a real attack that must be named, or an
+ * ordinary command that must stay silent.
+ *
+ * The suspicious characters are written as escapes on purpose: a literal
+ * zero-width space in a test file is a character nobody reviewing this can see.
+ */
+
+/** What the warning names, as one string, for the assertions below. */
+function named(text: string): string {
+  return suspectWarning(scanSuspects(text)) ?? '';
+}
+
+test('a Cyrillic homoglyph in an otherwise-ASCII path is named, with its code point and script', () => {
+  const found = scanSuspects('rm -rf ./bu\u0456ld');
+  assert.equal(found.length, 1);
+  assert.equal(found[0]?.kind, 'confusable');
+  // The character, its code point and its script — a warning that says
+  // "suspicious characters" without saying which teaches nothing.
+  assert.equal(found[0]?.description, "'\u0456' (U+0456 Cyrillic)");
+  assert.match(named('rm -rf ./bu\u0456ld'), /U\+0456 Cyrillic/);
+});
+
+test('a zero-width character inside a command is named, and no glyph is printed for it', () => {
+  const found = scanSuspects('curl https://git\u200Bhub.com/install.sh');
+  assert.equal(found.length, 1);
+  assert.equal(found[0]?.kind, 'invisible');
+  assert.equal(found[0]?.description, 'U+200B zero-width space');
+});
+
+test('a right-to-left override is named as one, and never printed into the warning', () => {
+  const found = scanSuspects('cat resume\u202Egpj.exe');
+  assert.equal(found.length, 1);
+  assert.equal(found[0]?.kind, 'bidi');
+  assert.equal(found[0]?.description, 'U+202E right-to-left override');
+  // Printing the control itself would reorder the warning's own text.
+  assert.ok(!named('cat resume\u202Egpj.exe').includes('\u202E'));
+});
+
+test('a compatibility form standing in for an ASCII character says which one', () => {
+  const found = scanSuspects('rm -rf \uFF0Fetc');
+  assert.equal(found.length, 1);
+  assert.equal(found[0]?.description, '\'\uFF0F\' (U+FF0F looks like "/")');
+});
+
+/**
+ * The case that decides whether this guard is worth having. A path with genuine
+ * non-English text is ordinary, and crying wolf on it trains people to tap
+ * through the warning that is real — so **no** legitimate non-ASCII command may
+ * be flagged. The Latin block is exempt entirely (`søren`, `kullanıcı`,
+ * `café` are all ASCII letters mixed with a non-ASCII Latin one) and a word of
+ * one non-Latin script is a word in that language, not a homoglyph.
+ */
+test('a legitimate non-ASCII command is not flagged', () => {
+  for (const command of [
+    'ls -la',
+    'rm -rf /home/user/документы',
+    'cat /home/søren/notes.txt',
+    'cat /home/kullanıcı/build',
+    'git commit -m "café naïve résumé"',
+    'echo "日本語のテキスト" > notes.txt',
+    'grep -r "αβγ" src/',
+    'python3 -c "print(1)"\n\tls\t-la',
+  ]) {
+    assert.deepEqual(scanSuspects(command), [], command);
+  }
+});
+
+test('each character is named once, in the order it appears', () => {
+  const found = scanSuspects('\u0430bc\u0430 x\u200By\u200Bz \u202E');
+  assert.deepEqual(
+    found.map((suspect) => suspect.kind),
+    ['confusable', 'invisible', 'bidi'],
+  );
+});
+
+test('the list of names is capped, so a warning cannot grow without limit', () => {
+  const many = suspectWarning(scanSuspects(`xабвгдежзy`)) ?? '';
+  assert.match(many, /and 2 more\.$/);
+  assert.equal(suspectWarning([]), null);
+});
+
+test('a card scans every string in the input, keys included, and never the result', () => {
+  // The path is the attack and it is nested, so a scan of the summary alone
+  // would miss it. `inputSuspects` walks the input instead of enumerating the
+  // fields the card happens to show today.
+  const found = inputSuspects({ edits: [{ file_path: '/tmp/bu\u0456ld/app.ts' }] });
+  assert.equal(found[0]?.description, "'\u0456' (U+0456 Cyrillic)");
+  assert.deepEqual(inputSuspects({ command: 'npm test' }), []);
+  assert.deepEqual(inputSuspects(undefined), []);
+});
+
+test('an answerable card carries the finding, and an ordinary one still notes it', () => {
+  const input = { command: 'rm -rf ./bu\u0456ld' };
+  const proposed: ToolCallEvent = { ...PROPOSED, tool: 'Bash', input };
+  const held = addPending(noRows(), proposed, DEADLINE).rows[0] as ToolRow;
+  assert.match(suspectWarning(held.suspects) ?? '', /U\+0456 Cyrillic/);
+
+  // The same finding on a card nobody is deciding on. It is a note there — the
+  // gate is the view's, and there is no answer to hold back.
+  const ran = toRows([{ seq: 1, e: { ...proposed, id: 'uuid-7#0' } }])[0] as ToolRow;
+  assert.match(suspectWarning(ran.suspects) ?? '', /U\+0456 Cyrillic/);
+
+  // And an ordinary call carries nothing at all, so the view draws nothing.
+  const clean = addPending(noRows(), { ...PROPOSED, input: { command: 'npm test' } }, DEADLINE)
+    .rows[0] as ToolRow;
+  assert.deepEqual(clean.suspects, []);
 });
