@@ -786,7 +786,9 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   _elements_ and nothing else, so a `<script>` an agent wrote is text in the page rather
   than a node in it — plus the answerable `Edit`, the combination the diff and permission
   entries create together and neither covers alone; it appends its records to the
-  transcript the stub already opened rather than teaching the stub a new behaviour.
+  transcript the stub already opened rather than teaching the stub a new behaviour. Its
+  third test is the one place besides `permission.spec.ts` that drives the real hook chain
+  end to end, for the lookalike-character guard the confusables entry above describes.
   `desktop.spec.ts` is the only spec
   above the 900px breakpoint and the only test that renders the `.workspace` shape at
   all: it measures the rail's box against the session's, counts the back button at **0**

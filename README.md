@@ -245,6 +245,15 @@ never shows the dialog, so a reflex keystroke in the terminal afterwards is
 ordinary typing and approves nothing; answering in the terminal after a hold has
 expired updates the card. There is no second answer either way.
 
+**A command or path that reads as something it is not is named on the card.**
+`rm -rf ./buіld` — a Cyrillic `і` in place of the Latin one — reads as
+`rm -rf ./build` at any width, and an invisible character reads as nothing at
+all; a phone shows less of the surrounding context than a desktop editor and
+gets tapped faster, so this is where it matters most. When tether finds one on
+an answerable card, it names the character, its code point and its script, and
+**Approve** waits behind a one-tap acknowledgement while **Deny** stays live
+throughout, because someone reading that warning most likely wants to refuse.
+
 Answering is authenticated as the rest of the API is — an unauthenticated approve
 would be an unauthenticated command running on your machine — so it needs a
 logged-in session, and the hook's own secret buys no say in the decision.
