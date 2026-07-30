@@ -902,7 +902,7 @@ test('a hook payload the mapper cannot use changes nothing and does not throw', 
  * Everything above turns it off (`statusPollMs: 0`) because it shells out to
  * tmux, so this is the only place the path runs at all — and the case that
  * matters is the one where the file says nothing. `undefined` from
- * `readSessionStatus` is "tether cannot say"; reading it as `idle` would erase
+ * `readSession` is "tether cannot say"; reading it as `idle` would erase
  * the `waiting` a `Notification` hook had just set, one tick after the banner
  * this whole feature exists for appeared.
  */

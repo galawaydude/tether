@@ -138,30 +138,6 @@ export async function readSession(
 }
 
 /**
- * What the session on `pid` is doing, or `undefined` if that cannot be
- * established.
- *
- * `expectSessionId` is the registry row's `provider_session_id` where tether
- * has one. It is the last guard — a pid that is alive, whose start time matches
- * and whose file names a *different* session is not this session's status.
- * Callers that can *react* to the file naming a different session — the
- * conversation poller, which re-binds the row and follows the new transcript —
- * read `readSession` instead and compare the id themselves.
- */
-export async function readSessionStatus(
-  pid: number,
-  options: { home?: string; expectSessionId?: string | null } = {},
-): Promise<SessionState | undefined> {
-  const record = await readSession(pid, options);
-  if (record === undefined) return undefined;
-
-  const expected = options.expectSessionId;
-  if (expected != null && record.sessionId !== expected) return undefined;
-
-  return record.state;
-}
-
-/**
  * Which session Claude Code says is running on `pid` — the same guards asked the
  * other way round, and the only evidence tether has about *which process* a hook
  * payload came from. A hook carries a `cwd`, and a `cwd` is not proof: an agent

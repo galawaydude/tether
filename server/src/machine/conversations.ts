@@ -299,7 +299,7 @@ export class Conversations {
    * A **dead** pane is skipped rather than reported. `remain-on-exit` keeps such
    * a pane listed with the pid of a process that has already exited, and that
    * pid is exactly what the operating system is free to hand to something else.
-   * `readSessionStatus` will not trust it either — see the `procStart` check
+   * `readSession` will not trust it either — see the `procStart` check
    * there — but the cheapest place to not ask is here.
    */
   async #panes(): Promise<Pane[]> {
@@ -389,6 +389,38 @@ export class Conversations {
       return session;
     }
     return undefined;
+  }
+
+  /**
+   * What the pane on `pid` is doing, for the session list — the same one read the
+   * status poller makes, and the same re-bind, so a row follows its pane whether
+   * or not anybody has its conversation open.
+   *
+   * The list is polled every 5 seconds, so this adds nothing per call: it is the
+   * `readSession` the route already made, with `#bind` reading the id out of the
+   * snapshot it already had. Only an id that actually moved writes anything.
+   *
+   * The identity guard is unchanged and lives where it always did: `pid` is a
+   * *tether pane's* pid, so an agent the user ran by hand is in no pane here and
+   * is never reached, and `readSession`'s liveness and `procStart` checks are
+   * what say the file under that pid is really that pane's. What is dropped is
+   * only the comparison against the id the row happened to be carrying — which
+   * was never the guard, just the reason a resumed session's badge went blank.
+   *
+   * Claude Code only, as in `#syncFromPane` and `bindProviderSession`: Codex
+   * publishes no per-pid registry file, so anything found under a Codex pane's
+   * pid is a dead agent's leftover under a reused pid.
+   */
+  async paneState(session: Session, pid: number): Promise<SessionState | undefined> {
+    if (session.provider === CODEX) return undefined;
+    const record = await readSession(pid, this.#home());
+    if (record === undefined) return undefined;
+    const bound = this.#bind(session, record.sessionId);
+    if (bound !== 'unchanged') this.#restart(this.#live.get(session.id), bound === 'moved');
+    // A file that does not say which session it is cannot be attributed to a row
+    // that already names one: no badge rather than a possibly foreign state.
+    if (record.sessionId === undefined && session.providerSessionId !== null) return undefined;
+    return record.state;
   }
 
   /**
