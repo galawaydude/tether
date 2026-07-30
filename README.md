@@ -85,6 +85,24 @@ would answer the dialog rather than the agent, when the message is too long for
 the wire to carry, and once the session has ended or the server no longer has it;
 mid-turn it is fine, and the agent queues it.
 
+The composer is a **panel** rather than a bare box: beside Send is a row of option
+controls, and they are deliberately **not the same for both agents**. An axis is
+offered only where changing it was verified to move a running session, so Claude
+Code gets **Permission mode**, **Model** and **Effort**, Codex gets its fixed
+three-preset **Permissions** — and an axis an agent cannot be moved along
+mid-session, or can only be moved along by guessing at a menu whose contents
+tether cannot see, is **absent** rather than a control that fails quietly. They
+are menus, not readouts: each resets to the name of its axis once applied, because
+tether cannot keep a value true against you typing in the terminal, and the
+agent's own answer above the composer is the confirmation. Permission mode is the
+one exception — tether reads it off the pane's own status footer, so what it
+reports is the mode it **observed**, and it says so plainly when it could not
+confirm one. Anything no control covers is still reachable by typing the agent's
+own slash command into the box. And a choice that lets the agent act with less
+asking — Claude Code's _Accept edits_ and _Decide for me_, Codex's _Approve for
+me_ and _Full access_ — states what it means and takes effect only once you have
+confirmed it.
+
 The phone is still the primary target and gets one screen at a time — the list,
 then the session you opened. A laptop gets a different shape rather than a
 stretched one: past 900px the session list stays on screen as a rail beside the
@@ -99,6 +117,9 @@ POST   /api/machines/local/sessions            {"cwd": "…", "title"?: "…", "
 GET    /api/machines/local/sessions/:id
 POST   /api/machines/local/sessions/:id/resume restarts a dead session's conversation
 DELETE /api/machines/local/sessions/:id        kills the tmux session and marks the row dead
+POST   /api/machines/local/sessions/:id/permission-mode
+                                               {"mode": "default"|"acceptEdits"|"plan"|"auto"} — Claude
+                                               Code only; answers with the mode read back off the pane
 GET    /api/sessions/:id/conversation          the whole conversation, with sequence numbers
 POST   /api/sessions/:id/permission            {"callId": "…", "decision": "allow" | "deny"}
 WS     /api/sessions/:id/conv?since=<seq>      conversation events after `seq`, the last one you hold
@@ -414,6 +435,16 @@ loses detail — a tool card, a message, at worst the whole view. tether parses
 them tolerantly for that reason: an unrecognised record is logged to stderr and
 ignored, never thrown.
 
+**The composer's option controls are the same kind of bet.** Each is a slash
+command typed at the agent, or — for Claude Code's permission mode — a keystroke
+plus a read of the words in the pane's own status line, so an agent that renames
+a command or redraws that line can leave a control doing nothing. It can never
+leave one lying: permission mode is reported only as the mode that was read back,
+and every other control claims nothing at all, so the agent's own reply above the
+composer is what says the change landed. Every axis in the table was established
+against Claude Code 2.1.220 and codex-cli 0.145.0; setting any of them by hand in
+the terminal always works.
+
 **The terminal view depends on none of it.** It is the real TUI over tmux, it is
 always correct, and it is a complete fallback. If the conversation ever looks
 wrong or empty after a provider upgrade, that is the failure to expect, summoning
@@ -460,8 +491,8 @@ npx playwright install chromium   # once; npm 12 blocks playwright's own postins
 npm run test:e2e                  # the end-to-end specs
 ```
 
-`e2e/` is six Playwright specs, and they are the only tests here that are not
-unit tests. Five of them run at a phone viewport, which is the client tether is
+`e2e/` is seven Playwright specs, and they are the only tests here that are not
+unit tests. Six of them run at a phone viewport, which is the client tether is
 designed for. One logs in, starts a session, watches it, types at
 it, **reloads the page**, and asserts the conversation and the terminal come back
 intact and exactly once; it also summons the terminal over the conversation and
@@ -490,18 +521,26 @@ characters, a `<script>` in a fenced block that is text in the page rather than 
 node in it, an `Edit` drawn as a diff, a failed call that says _retrying_ or
 _needs you_ — and, on an **answerable** `Edit`, a diff that wraps with Approve
 still on screen, since nothing on a card the agent is blocked on may be off it.
-It checks at every step that the page itself has not moved sideways. The sixth is
-the only one that runs at a laptop viewport
+It checks at every step that the page itself has not moved sideways. The sixth
+drives the composer's option controls under both agents: that each provider is
+offered its own and only its own, that a keystroke axis really reaches the pane,
+that a bar-lowering choice does nothing until its sentence is confirmed and that
+a mode change tether could not confirm never claims one — and that at 360×340,
+with the warning up, Cancel, the confirm and Send are all still on screen. The
+seventh is the only one that runs at a laptop viewport
 (1280×800), because past 900px the app is a different shape rather than a wider
 phone: it measures the rail's box against the open session's, asserts the back
 button is **gone** rather than merely invisible, that the page has exactly one
-`<main>`, and that nothing makes it scroll sideways. All six run against
+`<main>`, and that nothing makes it scroll sideways. All seven run against
 `e2e/stub-agent.ts` — a script that prints, echoes
 what you type at it, writes a Claude-Code-shaped transcript, publishes its own
 status file, moves to a new session id and a new transcript on a `/resume`,
 fires whatever hook the project's settings register **and honours the decision
-that hook writes back**, exactly as Claude Code does — put on `PATH` as
-`claude`, so the session is created through the real code path.
+that hook writes back**, exactly as Claude Code does — put on `PATH` as both
+`claude` and `codex`, so a session under either agent is created through the real
+code path. It writes that same Claude-shaped transcript either way, so a Codex
+session in the suite has no conversation and the spec that starts one asserts on
+the keystrokes the pane received instead.
 **CI never runs a real agent**: that would
 need real credentials and would cost money per run. Everything they touch
 (`HOME`, the state file, the tmux socket, the session root) is redirected into a

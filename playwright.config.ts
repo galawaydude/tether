@@ -9,7 +9,8 @@ import { join } from 'node:path';
  * nothing else can (report §8): that a reload loses nothing, that a permission
  * prompt is on screen before the transcript has anything to say, that a composed
  * message reaches the agent and appears exactly once, that each session shows its
- * own conversation, and that past 900px the layout is a different shape.
+ * own conversation, that a composer option control reaches the pane under the
+ * agent that offers it, and that past 900px the layout is a different shape.
  *
  * Everything below the sandbox line is deliberate. `TETHER_ALLOWED_ROOTS` is
  * resolved through `realpath` because tether resolves the directory it is given

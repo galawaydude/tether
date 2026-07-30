@@ -336,6 +336,20 @@ export function captureViewport(socket: string, target: string): Promise<string>
   return run(socket, ['capture-pane', '-p', '-e', '-J', '-t', target]);
 }
 
+/**
+ * The visible screen as **text**, with no escape sequences — the replay path
+ * wants `-e` so the browser gets the colours, and anything that reads the screen
+ * to answer a question wants the opposite, because a colour change lands
+ * mid-line and every parse then has to strip it first.
+ *
+ * Here rather than in the caller because every tmux command goes through this
+ * module; a second `capture-pane` argv built elsewhere is one without
+ * `-f tether.conf`.
+ */
+export function capturePlainViewport(socket: string, target: string): Promise<string> {
+  return run(socket, ['capture-pane', '-p', '-J', '-t', target]);
+}
+
 /** Columns and rows of a pane's grid. */
 export interface PaneSize {
   cols: number;

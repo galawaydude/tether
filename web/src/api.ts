@@ -30,13 +30,28 @@ export class ApiError extends Error {
   readonly code: string;
   /** Seconds until a rate-limited login may be retried, when the server said. */
   readonly retryAfter: number | null;
+  /**
+   * The refusal's own body, unread. A rejection carries more than a code where
+   * the server has more to say — a permission-mode cycle that stalled reports
+   * the mode the pane actually landed in — and dropping it here is how a field
+   * the server went to the trouble of sending becomes unreachable. Whoever
+   * words the sentence reads what it needs and treats anything else as absent.
+   */
+  readonly body: unknown;
 
-  constructor(status: number, code: string, message: string, retryAfter: number | null = null) {
+  constructor(
+    status: number,
+    code: string,
+    message: string,
+    retryAfter: number | null = null,
+    body: unknown = null,
+  ) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.code = code;
     this.retryAfter = retryAfter;
+    this.body = body;
   }
 }
 
@@ -72,6 +87,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       // allowed roots, and that sentence is the whole answer to the refusal.
       fields.message ?? MESSAGES[code] ?? `The server refused this (${response.status}).`,
       header === null ? null : Number(header),
+      body,
     );
   }
   return body as T;
@@ -151,6 +167,23 @@ export function answerPermission(
   decision: PermissionDecision,
 ): Promise<void> {
   return request(`/api/sessions/${id}/permission`, json('POST', { callId, decision }));
+}
+
+/**
+ * Set a Claude Code pane's permission mode, and return the mode the **server
+ * confirmed by reading the pane back**.
+ *
+ * The one option control that is a request rather than a keystroke, because it
+ * is the one that needs a read: Shift+Tab cycles, so only the side that can see
+ * the screen can know where the pane started and where it ended up. A rejection
+ * is an {@link ApiError} like any other and its `code` says which — `unreadable`
+ * (the screen never said, so nothing was pressed), `busy` (another attempt on
+ * this pane had not finished, so nothing was pressed either) or `not_confirmed`
+ * (keys were pressed and it did not arrive), whose body carries the mode the
+ * pane was last seen in.
+ */
+export function setPermissionMode(id: string, mode: string): Promise<{ mode: string }> {
+  return request(`/api/machines/${MACHINE}/sessions/${id}/permission-mode`, json('POST', { mode }));
 }
 
 export type ConversationHistory = {

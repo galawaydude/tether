@@ -565,6 +565,56 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   the other direction. `busy` and `retrying` are **not** refused: both
   providers queue a message mid-turn, the unacked set carries one across a
   reconnect, and that is the most valuable thing a phone can do.
+- **A composer option earns its control by being _verified_ to change a running
+  pane — and "no slash command" is not the same as "not settable".**
+  `web/src/options.ts` is the per-provider table and `Axis.via` is the seam: two
+  mechanisms, deliberately not a plugin system. **`keys`** sends `input` frames
+  on the terminal socket a composed message already uses (no new plumbing, and
+  the resend-until-ACKed set finishes a two-frame picker across a reconnect);
+  the agent's own answer in the conversation is the confirmation, so those
+  controls are a **menu, not a display** — they reset to the axis name, because
+  tether cannot keep a value true against a user typing in the pane.
+  **`permission-mode`** is a route instead, because that axis is reached only by
+  cycling Shift+Tab and a cycle is safe only if the mode can be read back;
+  `server/src/providers/claude-code/permission-mode.ts` reads the pane's own
+  status footer, steps **one** key at a time waiting for the footer to move, and
+  confirms by reading again — so it never assumes the cycle order or length, and
+  what the browser reports is what was **observed**, never what was asked for.
+  The reference client owns its agent and can offer every axis it has; tether
+  owns a TUI and can only type at it, so **the CLI's flag list is not the
+  table** — the live evidence for every entry _and every omission_ is in those
+  two files' comments. Four traps worth not rediscovering: it is **`BTab`, not
+  `S-Tab`** (tmux resolves `S-Tab` against extended keys the application
+  negotiated, and otherwise sends a plain tab); a dead pane makes `capture-pane`
+  throw and must degrade to `unreadable` rather than a 500 carrying tether's own
+  argv; the footer says **"manual"** for what the CLI, the hook payload and the
+  transcript all call `default`; and `permission_mode` rides on the `PreToolUse`
+  payload tether already receives, which is the better _record_ but says nothing
+  about right now, which is why the footer is what the setter uses. A value that
+  lowers the permission bar is **held** behind its sentence (`lowersBar`) on both
+  providers, and `e2e/options.spec.ts` checks that by reading the pane _while the
+  warning is up_ and by asserting a failed mode change never says "is now".
+  `e2e/serve.ts` shims the stub as `codex` as well as `claude` for that spec; the
+  stub writes a Claude-shaped transcript either way, so a Codex session there has
+  no conversation and the spec asserts on keystrokes rather than rows — and the
+  stub paints no footer, so the browser-side permission-mode tests are the
+  unreadable case by construction. Reaching every mode from every mode is
+  `permission-mode.test.ts`, against real tmux. Three things the gate and the
+  read-back each needed to be true rather than nearly true: the confirm button
+  behind the warning goes through the **same `sendBlocked` guard** every select
+  and Send carry, re-asked inside `apply` because that path is the one with a
+  person-paced gap in it and the agent can reach a permission prompt while the
+  sentence is being read; `setPermissionMode` is **serialised per pane** in
+  `permission-mode.ts`, since two concurrent read-press-reads press between each
+  other's read and read-back and both then confirm a mode neither aimed at (a
+  second viewer reaches that with no double-tap, hence the server and not the
+  browser); and a `not_confirmed` **names the mode the pane was left in**, which
+  is why `ApiError` carries the refusal's body at all — reaching `plan` cycles
+  through `acceptEdits`, so a stalled cycle can lower the bar with no warning
+  shown. The composer is also `flex: 0 1 auto` with `overflow-y: auto`: the
+  warning is a third child outside the message box's height budget, and
+  `e2e/options.spec.ts` asserts at 360×340 that the document never grew and that
+  Cancel, the confirm and Send are each fully in the viewport.
 - **The conversation is the interface and the terminal is summoned over it.**
   There is no tab pair: opening a session lands on the conversation, and
   `.termsheet` (`app.tsx`, `style.css`) is an overlay a header control raises and
@@ -690,9 +740,10 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `coerceTypes` are on): `additionalProperties: false` strips instead of rejecting, and
   `{"password": 123}` arrives as `"123"`. `buildServer` turns both off. Do not remove that
   `ajv.customOptions` block, and do not assume stock Fastify behaviour when reading the tests.
-- **`e2e/` is six Playwright specs and they assert counts and geometry, not presence.**
+- **`e2e/` is seven Playwright specs and they assert counts and geometry, not presence.**
   They drive the real `tether serve` (`e2e/serve.ts` calls the CLI's own `main`) inside a
-  scratch `HOME`/state dir/tmux socket, with `e2e/stub-agent.ts` on `PATH` as `claude` — so
+  scratch `HOME`/state dir/tmux socket, with `e2e/stub-agent.ts` on `PATH` as `claude` and
+  as `codex` (the composer-option entry above says why the second shim is there) — so
   the session is created through the production path and **CI still never runs a live
   agent**. What `session.spec.ts` checks that nothing else can is the reload and
   the terminal overlay — that summoning and dismissing it keeps both scroll
@@ -714,11 +765,12 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   above the 900px breakpoint and the only test that renders the `.workspace` shape at
   all: it measures the rail's box against the session's, counts the back button at **0**
   rather than checking it is invisible (`display: none` is the point), counts exactly one
-  `<main>`, and checks the page cannot scroll sideways. Two Playwright projects carry
+  `<main>`, and checks the page cannot scroll sideways. What `options.spec.ts` checks
+  is in the composer-option entry above. Two Playwright projects carry
   that, `phone` and `desktop`, each with a `testIgnore`/`testMatch` so neither runs the
   other's spec at the wrong width — they still share the one server, so the directory
   and by-name rules below apply to it too. `e2e/ui.ts` is the harness beside
-  `serve.ts`: the summon/dismiss recipe is spelled there once rather than in four
+  `serve.ts`: the summon/dismiss recipe is spelled there once rather than in five
   specs, and evidence screenshots are namespaced by spec, because the shared
   `TETHER_E2E_SHOTS` directory plus one worker meant a number reused in a second
   spec silently overwrote the first spec's image.

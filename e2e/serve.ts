@@ -38,12 +38,21 @@ for (const path of [bin, join(dir, 'project'), join(dir, 'state')]) {
 
 // tmux runs `claude` through `execvp`, so a shim on PATH is all it takes. `sh`
 // rather than a symlink because the stub is TypeScript and needs node's flags.
-const shim = join(bin, 'claude');
-writeFileSync(
-  shim,
-  `#!/bin/sh\nexec node --disable-warning=ExperimentalWarning ${join(import.meta.dirname, 'stub-agent.ts')} "$@"\n`,
-);
-chmodSync(shim, 0o755);
+//
+// The same stub stands in for `codex` too. It writes a Claude-Code-shaped
+// transcript either way, so a Codex session driven through it has no
+// conversation — which is all `options.spec.ts` needs, because what that spec
+// asserts is the *keystrokes* a Codex composer sends, read back from the pane.
+// Anything that needs Codex's own records belongs in a unit test with the
+// captured fixtures, not here.
+for (const name of ['claude', 'codex']) {
+  const shim = join(bin, name);
+  writeFileSync(
+    shim,
+    `#!/bin/sh\nexec node --disable-warning=ExperimentalWarning ${join(import.meta.dirname, 'stub-agent.ts')} "$@"\n`,
+  );
+  chmodSync(shim, 0o755);
+}
 
 const db = openRegistry();
 await createAuthStore(db).setPassword(required('TETHER_E2E_PASSWORD'));
