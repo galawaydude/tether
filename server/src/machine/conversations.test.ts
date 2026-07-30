@@ -906,7 +906,11 @@ test('a hook payload the mapper cannot use changes nothing and does not throw', 
  * the `waiting` a `Notification` hook had just set, one tick after the banner
  * this whole feature exists for appeared.
  */
-async function polling(t: TestContext, statusPollMs: number) {
+async function polling(
+  t: TestContext,
+  statusPollMs: number,
+  options: { syncDelay?: () => Promise<void> } = {},
+) {
   const h = await harness(t);
   const socket = `tether-conv-${randomUUID().slice(0, 8)}`;
   t.after(async () => {
@@ -923,6 +927,7 @@ async function polling(t: TestContext, statusPollMs: number) {
     socket,
     statusPollMs,
     warn: (message) => h.warnings.push(message),
+    ...options,
   });
   t.after(() => conversations.closeAll());
   return { ...h, conversations, pid, socket };
@@ -1100,6 +1105,35 @@ test('a session id that changes mid-session is re-bound, and the view refetches'
     SECOND_SESSION,
     'and the row follows the pane, so `resume` and the history route agree with it',
   );
+});
+
+test('a first identification racing the search re-sends nothing, and asks for nothing', async (t) => {
+  // The load-dependent one. With no id on the row yet, `#start` finds the
+  // transcript through `findTranscript`'s own fallback and delivers from it
+  // immediately — so the poller's first tick can bind the id *after* a client
+  // already holds event 1. Restarting on that re-numbered from 0 and re-sent it
+  // with no refetch: the browser drops the duplicate, the server still emitted
+  // one. `syncDelay` holds the window open so the poller wins every run rather
+  // than two runs in twelve on a loaded machine.
+  const p = await polling(t, POLL, {
+    syncDelay: () => new Promise((resolve) => setTimeout(resolve, POLL * 4)),
+  });
+  await writeFile(p.transcript, userRecord(1));
+  await writeStatus(p.home, p.pid, {});
+
+  const client = sink();
+  await p.conversations.subscribe(p.session, 0, client.send);
+  await client.waitFor(1);
+
+  // Long enough for a restart to have run, ingested and fanned out.
+  await new Promise((resolve) => setTimeout(resolve, POLL * 8));
+  assert.deepEqual(seqs(client.frames), [1], 'once, and not again by a restart');
+  assert.deepEqual(
+    client.frames.filter((f) => f.c === 'refetch'),
+    [],
+    'and no refetch either: an ordinary start has cost a phone nothing',
+  );
+  assert.equal(getSession(p.db, p.session.id)?.providerSessionId, PROVIDER_SESSION);
 });
 
 // ── answering a Codex prompt ─────────────────────────────────────────────────
