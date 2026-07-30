@@ -161,7 +161,15 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   a different transcript, verified live on 2.1.220 — so it is what the pane is running
   _now_, re-read from `~/.claude/sessions/<pane_pid>.json` rather than settled once.
   `Conversations` is the only writer: `#bind` records it and, for a session anyone is
-  watching, restarts the tailer and sends `{c:'refetch'}` so the view follows.
+  watching, restarts the tailer and sends `{c:'refetch'}` so the view follows. It has
+  two callers, because the row has to follow the pane whether or not anybody is
+  watching: the status poller, and the **session list**, which reads its badge
+  through `Conversations.paneState` and holds no reader of its own. A badge may
+  never again ask about the id the row _used_ to carry — that is what emptied it,
+  `waiting` included, until somebody opened the conversation. Widening it costs no
+  guard: the pid is a tether pane's, so a hand-run agent is in no pane and is never
+  reached, and `status.ts`'s liveness and `procStart` checks are what say the file
+  under that pid is really that pane's.
   Rows are marked dead, never deleted: a dead row
   is what `resumeSession` (`machine/sessions.ts`) restarts through the provider's own
   resume, and `revive` is the only thing that clears `dead_at`. A row whose

@@ -25,8 +25,9 @@ import {
   listSessions,
   setProviderSessionId,
 } from '../machine/registry.ts';
+import { Conversations } from '../machine/conversations.ts';
 import { createTerminals } from '../machine/terminal.ts';
-import { killServer, listSessions as listTmuxSessions } from '../machine/tmux.ts';
+import { killServer, listPanes, listSessions as listTmuxSessions } from '../machine/tmux.ts';
 import { createAuthStore } from './auth.ts';
 import { defaultAllowedHosts } from './guards.ts';
 import { SESSION_COOKIE, buildServer } from './server.ts';
@@ -87,12 +88,23 @@ async function harness(t: TestContext) {
     stateDir: join(trustDir, 'state'),
   };
 
+  /**
+   * A scratch home for Claude Code's per-pid session registry files, which the
+   * list route reads through `Conversations`. Not optional for the same reason
+   * the trust directory is not: the real one is the developer's own
+   * `~/.claude/sessions`, and the badge tests below write files into it.
+   */
+  const home = await realpath(await mkdtemp(join(tmpdir(), 'tether-home-api-')));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const conversations = new Conversations(db, { socket, home });
+
   const app = buildServer({
     auth,
     db,
     // The real thing on this test's own socket: no test here attaches, so no PTY
     // is ever spawned, and `app.close()` takes it down either way.
     terminals: createTerminals(socket),
+    conversations,
     allowedHosts: defaultAllowedHosts('127.0.0.1'),
     loginDelayMs: 0,
     socket,
@@ -110,7 +122,7 @@ async function harness(t: TestContext) {
   const token = login.cookies[0]?.value;
   assert.ok(token, 'logged in');
 
-  return { app, db, socket, root, token, trustIn };
+  return { app, db, socket, root, token, trustIn, home };
 }
 
 /** An authenticated request, with the header guards satisfied. */
@@ -349,6 +361,119 @@ test('the list reconciles: a session killed behind tether’s back reads as dead
   const listed = (await call(h, 'GET', BASE)).json().sessions;
   assert.ok(listed[0].deadAt > 0, 'the list reports what tmux actually has');
   assert.ok((await call(h, 'GET', `${BASE}/${session.id}`)).json().session.deadAt > 0);
+});
+
+// ── The list's badge: it follows the pane, and only the pane ──
+
+/**
+ * Publish what Claude Code publishes for a live pane, into the scratch home.
+ * `procStart` has to be the kernel's own value for that pid or `status.ts`
+ * rejects the file, which is exactly the pid-reuse guard these tests keep.
+ */
+async function publishStatus(
+  home: string,
+  pid: number,
+  fields: { sessionId?: string; status: string },
+): Promise<void> {
+  const stat = await readFile(`/proc/${pid}/stat`, 'utf8');
+  const procStart = stat.slice(stat.lastIndexOf(') ') + 2).split(' ')[19];
+  await mkdir(join(home, '.claude', 'sessions'), { recursive: true });
+  await writeFile(
+    join(home, '.claude', 'sessions', `${pid}.json`),
+    JSON.stringify({ pid, procStart, ...fields }),
+  );
+}
+
+async function panePid(h: Harness, tmuxName: string): Promise<number> {
+  const pid = (await listPanes(h.socket)).find((pane) => pane.session === tmuxName)?.pid;
+  assert.ok(pid, 'the pane is running');
+  return pid;
+}
+
+test('the badge follows the pane after a /resume, with nothing watching', async (t) => {
+  const h = await harness(t);
+  const session = (await create(h, h.root)).json().session;
+  setProviderSessionId(h.db, session.id, 'before-resume');
+
+  // What `/resume` typed into the terminal does: the same pane, a different
+  // session id and a different transcript. Nobody has the conversation open, so
+  // the poller that re-binds a live row is not running at all.
+  await publishStatus(h.home, await panePid(h, session.tmuxName), {
+    sessionId: 'after-resume',
+    status: 'waiting',
+  });
+
+  const listed = (await call(h, 'GET', BASE)).json();
+  assert.deepEqual(listed.states[session.id], { state: 'waiting' }, 'the badge is not blank');
+  // And the row now names what its pane is really running, so a later resume
+  // restores that conversation rather than the abandoned one.
+  assert.equal(getSession(h.db, session.id)?.providerSessionId, 'after-resume');
+  assert.equal(listed.sessions[0].providerSessionId, 'after-resume');
+});
+
+test('a hand-run agent in a tether directory is still not adopted by the list', async (t) => {
+  const h = await harness(t);
+  const session = (await create(h, h.root)).json().session;
+  setProviderSessionId(h.db, session.id, 'mine');
+
+  // An agent the user started by hand in the same directory: a live process
+  // publishing a live status file, in no tether pane. The join is the pane's
+  // pid, so there is nothing here to mistake it for.
+  await publishStatus(h.home, process.pid, { sessionId: 'theirs', status: 'busy' });
+
+  assert.equal((await call(h, 'GET', BASE)).json().states[session.id], undefined);
+  assert.equal(getSession(h.db, session.id)?.providerSessionId, 'mine', 'the row is untouched');
+
+  // The same file under a *Codex* pane's own pid, which is the leftover-under-a-
+  // reused-pid case: Codex publishes no such file, so one found there is some
+  // dead Claude Code's, and binding it would write a foreign id into the row.
+  const codex = (await create(h, h.root, { provider: 'codex' })).json().session;
+  setProviderSessionId(h.db, codex.id, 'codex-rollout');
+  await publishStatus(h.home, await panePid(h, codex.tmuxName), {
+    sessionId: 'leftover',
+    status: 'busy',
+  });
+
+  assert.equal((await call(h, 'GET', BASE)).json().states[codex.id], undefined);
+  assert.equal(getSession(h.db, codex.id)?.providerSessionId, 'codex-rollout');
+});
+
+test('the list spawns a constant number of tmux commands, whatever it is listing', async (t) => {
+  const h = await harness(t);
+
+  // A `tmux` on PATH that records each invocation and then is the real one. The
+  // list is polled every 5 seconds by every open browser, so what matters is
+  // that its cost per call did not become per-session: the pane state is read
+  // from a file, off the one `list-panes` this already made.
+  const real = (await execFileAsync('sh', ['-c', 'command -v tmux'])).stdout.trim();
+  const log = join(await mkdtemp(join(tmpdir(), 'tether-tmuxlog-')), 'calls');
+  await writeFile(join(STUB_BIN, 'tmux'), `#!/bin/sh\necho x >> ${log}\nexec ${real} "$@"\n`, {
+    mode: 0o755,
+  });
+  t.after(() => rmSync(join(STUB_BIN, 'tmux'), { force: true }));
+
+  const counted = async () => {
+    await writeFile(log, '');
+    await call(h, 'GET', BASE);
+    return (await readFile(log, 'utf8')).split('\n').filter(Boolean).length;
+  };
+
+  const first = (await create(h, h.root)).json().session;
+  await publishStatus(h.home, await panePid(h, first.tmuxName), {
+    sessionId: 'one',
+    status: 'busy',
+  });
+  const one = await counted();
+
+  for (let i = 0; i < 3; i += 1) {
+    const extra = (await create(h, h.root)).json().session;
+    await publishStatus(h.home, await panePid(h, extra.tmuxName), {
+      sessionId: `extra-${i}`,
+      status: 'busy',
+    });
+  }
+  assert.equal(Object.keys((await call(h, 'GET', BASE)).json().states).length, 4);
+  assert.equal(await counted(), one, 'four sessions cost the same tmux calls as one');
 });
 
 test('a session is titled after its directory by default', async (t) => {

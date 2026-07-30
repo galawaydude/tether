@@ -19,7 +19,7 @@ import {
   setPermissionMode,
   type PermissionMode,
 } from '../providers/claude-code/permission-mode.ts';
-import { readSessionStatus } from '../providers/claude-code/status.ts';
+import type { Conversations } from '../machine/conversations.ts';
 import { DEFAULT_PROVIDER } from '../machine/registry.ts';
 import {
   NoProviderSessionError,
@@ -35,6 +35,12 @@ import { DEFAULT_SOCKET, InvalidCwdError, listPanes, resolveCwd } from '../machi
 export type SessionRoutesOptions = {
   /** The registry database, schema already applied. */
   db: DatabaseSync;
+  /**
+   * The same instance the conversation routes use. The list reads a pane's state
+   * through it so that the re-bind a `/resume` needs happens whether or not
+   * anybody has that conversation open — see `Conversations.paneState`.
+   */
+  conversations: Conversations;
   /** tmux socket to drive. Tests point this at a server of their own. */
   socket?: string | undefined;
   /** Directories a session may be started in; defaults to `allowedRoots()`. */
@@ -142,6 +148,7 @@ type ModeBody = { mode: PermissionMode };
 async function statesFor(
   sessions: readonly Session[],
   socket: string,
+  conversations: Conversations,
 ): Promise<Record<string, { state: SessionState }>> {
   const live = sessions.filter((session) => session.deadAt === null);
   if (live.length === 0) return {};
@@ -152,14 +159,12 @@ async function statesFor(
     live.map(async (session) => {
       const pid = pids.get(session.tmuxName);
       if (pid === undefined) return;
-      // The re-bind that keeps a row naming what its pane is really running lives
-      // in the conversation poller, which only a conversation subscriber starts.
-      // So a `/resume` typed with no conversation view open anywhere leaves this
-      // badge blank — `waiting` included — until one is opened, which re-binds the
-      // row and heals it. Deliberately deferred: the alternatives are dropping
-      // `expectSessionId` here, which is the pid-reuse guard, or giving this hot
-      // route a bind of its own.
-      const state = await readSessionStatus(pid, { expectSessionId: session.providerSessionId });
+      // The pane is the authority on which session it is running, here as in the
+      // conversation poller: a `/resume` moves Claude Code to a different session
+      // id, and a badge that asked about the id the row used to carry went blank
+      // — `waiting` included — until somebody opened the conversation. The row
+      // follows the pane instead, off the read this was already making.
+      const state = await conversations.paneState(session, pid);
       if (state === undefined) return;
       states[session.id] = { state };
     }),
@@ -168,7 +173,7 @@ async function statesFor(
 }
 
 export function registerSessionRoutes(app: FastifyInstance, options: SessionRoutesOptions): void {
-  const { db } = options;
+  const { db, conversations } = options;
   const socket = options.socket ?? DEFAULT_SOCKET;
   const roots = options.allowedRoots;
   const trustIn = options.trustIn ?? {};
@@ -181,7 +186,7 @@ export function registerSessionRoutes(app: FastifyInstance, options: SessionRout
       // session that died while tether was not running.
       await reconcileWithTmux(db, socket);
       const sessions = listSessions(db);
-      return { sessions, states: await statesFor(sessions, socket) };
+      return { sessions, states: await statesFor(sessions, socket, conversations) };
     },
   );
 

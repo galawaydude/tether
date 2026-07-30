@@ -17,7 +17,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { readSessionStatus, sessionStatusPath } from './status.ts';
+import { readSession, sessionStatusPath } from './status.ts';
 
 const SESSION_ID = '261d15fb-c568-41fa-ae66-917b107857bd';
 
@@ -87,7 +87,7 @@ test('the three states Claude Code publishes are the three tether renders', asyn
   const dir = await home();
   for (const state of ['busy', 'idle', 'waiting'] as const) {
     await writeStatus(dir, process.pid, { status: state });
-    assert.equal(await readSessionStatus(process.pid, { home: dir }), state);
+    assert.equal((await readSession(process.pid, { home: dir }))?.state, state);
   }
 });
 
@@ -98,7 +98,7 @@ test('a stale file left by a hard kill is rejected, not reported', async () => {
   // did not. Its `procStart` is even self-consistent — liveness is the only
   // thing standing between it and a phantom `busy` session in the list.
   await writeStatus(dir, pid, { status: 'busy' });
-  assert.equal(await readSessionStatus(pid, { home: dir }), undefined);
+  assert.equal((await readSession(pid, { home: dir }))?.state, undefined);
 });
 
 test('a live pid whose procStart disagrees is a reused pid, and is rejected', async () => {
@@ -107,28 +107,29 @@ test('a live pid whose procStart disagrees is a reused pid, and is rejected', as
   // this is the case `kill(pid, 0)` alone cannot catch, and the reason Claude
   // Code records `procStart` at all.
   await writeStatus(dir, process.pid, { status: 'busy', procStart: '1' });
-  assert.equal(await readSessionStatus(process.pid, { home: dir }), undefined);
+  assert.equal((await readSession(process.pid, { home: dir }))?.state, undefined);
 
   // Same file, right start time: the guard rejects the mismatch and nothing else.
   await writeStatus(dir, process.pid, { status: 'busy' });
-  assert.equal(await readSessionStatus(process.pid, { home: dir }), 'busy');
+  assert.equal((await readSession(process.pid, { home: dir }))?.state, 'busy');
 });
 
-test('a file naming another session is not this session’s status', async () => {
+test('which session and what it is doing come from one read', async () => {
   const dir = await home();
   await writeStatus(dir, process.pid, { status: 'busy' });
 
-  assert.equal(
-    await readSessionStatus(process.pid, { home: dir, expectSessionId: 'some-other-session' }),
-    undefined,
-  );
-  assert.equal(
-    await readSessionStatus(process.pid, { home: dir, expectSessionId: SESSION_ID }),
-    'busy',
-  );
-  // A row whose provider session id has not been back-filled yet still gets a
-  // badge: null means "unknown", not "must not match".
-  assert.equal(await readSessionStatus(process.pid, { home: dir, expectSessionId: null }), 'busy');
+  // Both, together: a `/resume` rewrites the two at once, and both callers — the
+  // status poller and the session list — re-bind the row off the id in the same
+  // snapshot the state came from, never off a later read.
+  assert.deepEqual(await readSession(process.pid, { home: dir }), {
+    sessionId: SESSION_ID,
+    state: 'busy',
+  });
+
+  // A file this build recognises but that names no session: the state stands on
+  // its own, and it is the caller that decides what it can attribute it to.
+  await writeStatus(dir, process.pid, { status: 'busy', sessionId: '' });
+  assert.deepEqual(await readSession(process.pid, { home: dir }), { state: 'busy' });
 });
 
 test('nothing about the file’s contents can make this throw or guess', async () => {
@@ -136,26 +137,26 @@ test('nothing about the file’s contents can make this throw or guess', async (
   await mkdir(join(dir, '.claude', 'sessions'), { recursive: true });
 
   // Missing entirely — the normal case for a provider that is not Claude Code.
-  assert.equal(await readSessionStatus(process.pid, { home: dir }), undefined);
+  assert.equal((await readSession(process.pid, { home: dir }))?.state, undefined);
 
   for (const body of ['', '{ not json', 'null', '[]', '"a string"', '42']) {
     await writeFile(sessionStatusPath(process.pid, dir), body);
-    assert.equal(await readSessionStatus(process.pid, { home: dir }), undefined, body);
+    assert.equal((await readSession(process.pid, { home: dir }))?.state, undefined, body);
   }
 
   // A status this build does not know must not be forwarded to the badge.
   await writeStatus(dir, process.pid, { status: 'compacting' });
-  assert.equal(await readSessionStatus(process.pid, { home: dir }), undefined);
+  assert.equal((await readSession(process.pid, { home: dir }))?.state, undefined);
 
   // A file whose own `pid` disagrees with its name is a shape tether does not
   // understand, and guessing is how a wrong badge gets shown.
   await writeStatus(dir, process.pid, { pid: process.pid + 1 });
-  assert.equal(await readSessionStatus(process.pid, { home: dir }), undefined);
+  assert.equal((await readSession(process.pid, { home: dir }))?.state, undefined);
 });
 
 test('a pid that is not a pid is refused before anything is read', async () => {
   const dir = await home();
   for (const pid of [0, -1, 1.5, Number.NaN]) {
-    assert.equal(await readSessionStatus(pid, { home: dir }), undefined, String(pid));
+    assert.equal((await readSession(pid, { home: dir }))?.state, undefined, String(pid));
   }
 });

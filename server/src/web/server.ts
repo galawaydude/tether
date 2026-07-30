@@ -231,20 +231,24 @@ export function buildServer(options: ServerOptions): FastifyInstance {
 
   registerStatic(app, options.webRoot);
 
+  // The same socket the session routes drive: both providers join to a registry
+  // row by the tmux pane's pid — a Codex `SessionStart`, Claude Code's status
+  // file — so discovery has to be asking the same tmux the sessions started on.
+  // Built before those routes because the list reads its badges through it, so
+  // that the re-bind after a `/resume` does not wait for a conversation viewer.
+  const conversations =
+    options.conversations ?? new Conversations(options.db, { socket: options.socket });
+
   // Behind the same default-deny hook as everything else — these routes opt out of
   // nothing, which is the whole point of the posture being deny-by-default.
   registerSessionRoutes(app, {
     db: options.db,
+    conversations,
     socket: options.socket,
     allowedRoots: options.allowedRoots,
     trustIn: options.trustIn,
   });
 
-  // The same socket the session routes drive: both providers join to a registry
-  // row by the tmux pane's pid — a Codex `SessionStart`, Claude Code's status
-  // file — so discovery has to be asking the same tmux the sessions started on.
-  const conversations =
-    options.conversations ?? new Conversations(options.db, { socket: options.socket });
   registerConversationRoutes(app, options.db, conversations);
   registerHookRoute(app, options.db, conversations, {
     ...(options.stateDir === undefined ? {} : { stateDir: options.stateDir }),
