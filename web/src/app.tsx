@@ -318,8 +318,12 @@ function SessionScreen({
                 at "permission to…" is not a reason. So it hangs below the
                 header rather than sitting in it: out of flow, free to wrap to
                 as many lines as it needs, and costing the header and therefore
-                the terminal pane no height at all. */}
-            {agent.state === 'waiting' && (
+                the terminal pane no height at all. Gated on `summoned` as well
+                as on the state, exactly as `.waiting` is gated on `!summoned`:
+                out of flow it would cost nothing to leave mounted behind a
+                hidden sheet, but then it exists while nobody can see it and
+                every assertion about it passes over a closed overlay. */}
+            {agent.state === 'waiting' && summoned && (
               <p class="termsheet-waiting">
                 <strong>Waiting for you.</strong> {waitingDetail}
               </p>

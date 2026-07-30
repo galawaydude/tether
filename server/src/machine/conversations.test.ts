@@ -755,18 +755,18 @@ test('a subscriber looking at the terminal pane does not stall the agent', async
   assert.equal(h.client.pendings[0]?.deadline, undefined, 'reported, with no button to offer');
 });
 
-test('switching to the terminal mid-hold releases the agent rather than denying for it', async (t) => {
+test('summoning the terminal mid-hold releases the agent rather than denying for it', async (t) => {
   const h = await held(t, { permissionTimeoutMs: 60_000 });
   const decision = h.conversations.hook(h.session, preToolUse());
   await h.client.waitForOther(h.client.pendings, 1);
 
   // Exactly what the last viewer leaving does: the question goes back to the
-  // provider's own prompt, which is on the tab the user has just switched to.
+  // provider's own prompt, which is on the terminal the user has just summoned.
   h.conversations.watch(h.session.id, h.client.send, false);
   assert.equal(await decision, undefined, 'no decision, so Claude Code’s own rules apply');
   assert.equal(h.client.answers[0]?.outcome, 'timeout', 'released, never denied');
 
-  // And switching back holds again: the socket never dropped, so there is
+  // And dismissing it holds again: the socket never dropped, so there is
   // nothing to re-establish.
   h.conversations.watch(h.session.id, h.client.send, true);
   const second = h.conversations.hook(h.session, preToolUse('toolu_second'));

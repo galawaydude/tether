@@ -310,7 +310,7 @@ test('a deny reaches the held hook as a deny', async (t) => {
   assert.equal(await decision, 'deny');
 });
 
-test('the client saying it is on the terminal tab is what stops the hold', async (t) => {
+test('the client saying the terminal has been summoned is what stops the hold', async (t) => {
   const h = await harness(t);
   await writeFile(h.transcript, userRecord(1));
   const socket = new WebSocket(`ws://${h.host}/api/sessions/${ID}/conv?since=0`, {
@@ -321,7 +321,7 @@ test('the client saying it is on the terminal tab is what stops the hold', async
   // reading, so a frame sent between the two would be shouted at nobody.
   await new Promise<void>((resolve) => socket.addEventListener('message', () => resolve()));
 
-  // Both panes stay mounted, so the tab going to Terminal is a frame rather than
+  // Both panes stay mounted, so summoning the terminal is a frame rather than
   // a close — and everything that is not that frame is dropped in silence.
   socket.send('not json');
   socket.send(JSON.stringify({ c: 'watch', watching: 'no' }));

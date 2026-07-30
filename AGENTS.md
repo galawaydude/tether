@@ -534,7 +534,11 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   out, the header keeps its height, and the reason wraps to as many lines as it
   needs — `agent.detail` is "Claude needs your permission to use Bash", and a
   reason ellipsised at "permission to…" is the "approving blind" this surface
-  exists against. Neither overlay may swallow a tap: `.waiting` is
+  exists against. Each is gated on the surface it belongs to — `.waiting` on
+  `!summoned`, `.termsheet-waiting` on `summoned` — so neither exists while
+  nothing can see it: out of flow the sheet's line would cost no layout to leave
+  mounted behind a hidden overlay, but then every assertion about it passes over
+  a closed sheet. Neither overlay may swallow a tap: `.waiting` is
   `pointer-events: none` with its own link back to `auto`, so a tool card under
   it still opens, and `.termsheet-waiting` lies over a terminal a user may be
   typing at. The one announcer of agent state is a separate always-present
@@ -545,7 +549,10 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   rectangle and xterm's row count through the hidden pane with
   `getBoundingClientRect` — Playwright reports no box for `visibility: hidden`,
   which is the state being asserted about — plus the waiting line's overflow in
-  both axes and an `elementFromPoint` hit test through the banner.
+  both axes and an `elementFromPoint` hit test through the banner — which asserts
+  the **conversation** got the tap, not merely that the banner did not, since a
+  second inert layer in between would pass the weaker form with the rows
+  underneath just as unreachable.
 - **The look is one system with three rules, and they are written down at the
   top of `web/src/style.css`**: amber means a human (the waiting badge and
   banner, Approve, Send, New session, the spine on your own messages) and

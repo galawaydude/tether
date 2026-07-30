@@ -346,17 +346,20 @@ test('tether’s own chrome never resizes the terminal pane', async ({ page }) =
   // *disabling* them is not, so the banner is click-through everywhere except
   // its own link. Hit-tested rather than clicked: what is under the banner at
   // this moment is whatever the conversation happens to be showing, and the
-  // claim is about which element receives the tap, not about what it does.
+  // claim is about which element receives the tap, not about what it does. The
+  // assertion is that the *conversation* got it, not merely that the banner did
+  // not: another inert layer in between would pass the weaker form while the
+  // rows underneath stayed just as unreachable.
   const bannerBox = await banner.evaluate((element) => {
     const box = element.getBoundingClientRect();
     return { x: box.x, y: box.y, width: box.width, height: box.height };
   });
   expect(bannerBox.height).toBeGreaterThan(0);
   const under = await page.evaluate(
-    ([x, y]) => document.elementFromPoint(x as number, y as number)?.closest('.waiting') !== null,
+    ([x, y]) => document.elementFromPoint(x as number, y as number)?.closest('.conv') !== null,
     [bannerBox.x + 4, bannerBox.y + bannerBox.height - 4],
   );
-  expect(under).toBe(false);
+  expect(under).toBe(true);
 
   // And the one thing that *is* meant to take a tap still does, at full size.
   const open = banner.getByRole('button', { name: 'Open the terminal' });
