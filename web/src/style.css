@@ -1573,10 +1573,24 @@ label {
    once already. Everything it contains is bounded (the box by `max-height`, the
    controls by one or two rows of chips), so the conversation above it stays the
    thing that grows. It changes no height outside this pane, so the terminal —
-   and every other viewer's tmux pane — is untouched by any of it. */
+   and every other viewer's tmux pane — is untouched by any of it.
+
+   And it is bounded by the pane rather than by the sum of its own parts, which
+   is the difference between "each piece is sized" and "all of them fit". The
+   bar-lowering warning is a third child of this column and not in the box's
+   height budget: at 360×340 its sentence, its Cancel and its confirm are ~170px
+   on top of a panel that already filled the pane, and `flex: none` would push
+   that straight out of the bottom — a confirm button below the fold, on the one
+   surface asking the user to lower their own protection. `flex: 0 1 auto` plus
+   `min-height: 0` lets it shrink to the pane instead, and `overflow-y` is what
+   makes that survivable rather than a clip. The conversation absorbs none of it:
+   `.scroll` is `flex: 1 1 0`, so its scaled shrink factor is zero and every
+   pixel comes out of this panel. */
 .composer {
   display: flex;
-  flex: none;
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
   flex-direction: column;
   gap: 8px;
   padding: 10px 12px;

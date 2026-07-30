@@ -223,8 +223,10 @@ export function registerSessionRoutes(app: FastifyInstance, options: SessionRout
    * where it ended up, and only this side can see the screen. The browser
    * therefore learns the outcome from the response and has nothing to poll.
    *
-   * 409 rather than 500 for both failures: the request was well formed and the
-   * caller could not have known. `unreadable` means nothing was pressed at all.
+   * 409 rather than 500 for every failure: the request was well formed and the
+   * caller could not have known. `unreadable` means nothing was pressed at all,
+   * and so does `busy` — a second concurrent attempt on one pane is refused
+   * there rather than interleaved into the first one's read-press-read.
    */
   app.post<{ Params: SessionParams; Body: ModeBody }>(
     '/api/machines/:machineId/sessions/:id/permission-mode',
@@ -242,8 +244,11 @@ export function registerSessionRoutes(app: FastifyInstance, options: SessionRout
 
       const result = await setPermissionMode(socket, session.tmuxName, request.body.mode);
       if (result.ok) return reply.send({ mode: result.mode, changed: result.changed });
-      // Where it actually ended up, when the screen still says — the browser
-      // reports that rather than the mode nobody reached.
+      // Where it actually ended up, when the screen still says. The browser
+      // names *this* mode in its refusal rather than the one nobody reached:
+      // reaching `plan` passes through `acceptEdits`, so a cycle that stalls
+      // can leave the pane one step short with the bar already lowered, and a
+      // sentence that only said "check the terminal" would leave that unsaid.
       const landed = result.reason === 'not_confirmed' ? (result.mode ?? null) : null;
       return reply.code(409).send({ error: result.reason, mode: landed });
     },

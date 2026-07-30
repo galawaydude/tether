@@ -599,7 +599,22 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   no conversation and the spec asserts on keystrokes rather than rows — and the
   stub paints no footer, so the browser-side permission-mode tests are the
   unreadable case by construction. Reaching every mode from every mode is
-  `permission-mode.test.ts`, against real tmux.
+  `permission-mode.test.ts`, against real tmux. Three things the gate and the
+  read-back each needed to be true rather than nearly true: the confirm button
+  behind the warning goes through the **same `sendBlocked` guard** every select
+  and Send carry, re-asked inside `apply` because that path is the one with a
+  person-paced gap in it and the agent can reach a permission prompt while the
+  sentence is being read; `setPermissionMode` is **serialised per pane** in
+  `permission-mode.ts`, since two concurrent read-press-reads press between each
+  other's read and read-back and both then confirm a mode neither aimed at (a
+  second viewer reaches that with no double-tap, hence the server and not the
+  browser); and a `not_confirmed` **names the mode the pane was left in**, which
+  is why `ApiError` carries the refusal's body at all — reaching `plan` cycles
+  through `acceptEdits`, so a stalled cycle can lower the bar with no warning
+  shown. The composer is also `flex: 0 1 auto` with `overflow-y: auto`: the
+  warning is a third child outside the message box's height budget, and
+  `e2e/options.spec.ts` asserts at 360×340 that the document never grew and that
+  Cancel, the confirm and Send are each fully in the viewport.
 - **The conversation is the interface and the terminal is summoned over it.**
   There is no tab pair: opening a session lands on the conversation, and
   `.termsheet` (`app.tsx`, `style.css`) is an overlay a header control raises and

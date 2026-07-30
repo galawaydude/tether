@@ -370,6 +370,11 @@ function Composer({
   // the prompt in the terminal first" can stop them — the second because a
   // slash command pasted at a permission dialog answers the dialog.
   const optionsBlocked = sendBlocked(agent, '', terminal) !== null;
+  // A permission-mode request is a read-press-read on a pane nobody else may be
+  // pressing at, so a second one while the first is in flight is refused by the
+  // server and would only ever report a mode it did not aim at. The control says
+  // so rather than taking a tap that cannot land.
+  const modeInFlight = outcome !== null && outcome.busy;
   const axes = axesFor(provider);
 
   const submit = (event: Event) => {
@@ -388,6 +393,12 @@ function Composer({
    * than leaving a control that looks like it worked.
    */
   const apply = (choice: Choice, axis: Axis) => {
+    // Re-asked here rather than only on the controls, because this is the one
+    // path with a person-paced gap in it: a value that lowers the bar is held
+    // behind its sentence, and the agent can reach a permission prompt — or the
+    // socket can close — while that sentence is being read. Sending then pastes
+    // into a live dialog, where the Enter behind the text answers it.
+    if (sendBlocked(agent, '', terminal) !== null) return;
     if (axis.via === 'keys') {
       onApply(choice.keys ?? []);
       return;
@@ -397,10 +408,12 @@ function Composer({
       .then(() => setOutcome({ busy: false, text: `Permission mode is now ${choice.label}.` }))
       .catch((error: unknown) => {
         // The server's own code, so the sentence can distinguish "nothing was
-        // pressed" from "keys were pressed and it did not arrive". Anything else
-        // falls through to the neutral wording.
+        // pressed" from "keys were pressed and it did not arrive", and its body,
+        // which carries the mode the pane was last seen in. Anything else falls
+        // through to the neutral wording.
         const code = error instanceof ApiError ? error.code : '';
-        setOutcome({ busy: false, text: modeFailure(code, choice.label) });
+        const body = error instanceof ApiError ? error.body : null;
+        setOutcome({ busy: false, text: modeFailure(code, choice.label, body) });
       });
   };
 
@@ -451,6 +464,7 @@ function Composer({
             <button
               type="button"
               class="primary"
+              disabled={optionsBlocked || (held.axis.via === 'permission-mode' && modeInFlight)}
               onClick={() => {
                 apply(held.choice, held.axis);
                 setHeld(null);
@@ -472,7 +486,7 @@ function Composer({
             key={axis.id}
             class="composer-opt"
             aria-label={axis.label}
-            disabled={optionsBlocked}
+            disabled={optionsBlocked || (axis.via === 'permission-mode' && modeInFlight)}
             value=""
             onChange={(event) => {
               const element = event.currentTarget;
@@ -489,7 +503,11 @@ function Composer({
             ))}
           </select>
         ))}
-        <button type="submit" class="primary" disabled={message === '' || blocked !== null}>
+        <button
+          type="submit"
+          class="composer-send primary"
+          disabled={message === '' || blocked !== null}
+        >
           Send
         </button>
       </div>

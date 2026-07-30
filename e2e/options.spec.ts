@@ -9,7 +9,7 @@
  * of it. A control that looks live and reaches nothing is the exact failure
  * this feature is not allowed to be, so the assertion is the pane's own text.
  *
- * Three claims live only here:
+ * Four claims live only here:
  *
  *  - **The two providers offer different controls.** Counted, not sampled: a
  *    Claude Code composer has Model, Effort and Permission mode, and a Codex
@@ -22,6 +22,11 @@
  *  - **A permission mode the server could not confirm is never claimed.** The
  *    assertion that matters is the absence of "is now": a note saying something
  *    went wrong and a note saying the mode changed are both "a note".
+ *  - **Every action in the panel is reachable at 360×340 with the warning gate
+ *    up.** Measured, because Playwright scrolls before it clicks and would drive
+ *    a confirm button that is off screen for a real thumb. This is the third
+ *    panel in this product to grow past a small viewport, so it fails loudly
+ *    here rather than waiting for a reviewer.
  *
  * Its own directories, like every other spec here: the suite shares one `tether
  * serve` and one session list, and two sessions in one directory would share a
@@ -137,6 +142,33 @@ test('each provider offers its own controls, and they reach the pane', async ({ 
   if (send === null) throw new Error('Send is not laid out at all at 360×340');
   expect(send.y + send.height).toBeLessThanOrEqual(340);
   await shoot(page, '6-claude-360x340');
+
+  // ── and the same screen with the warning gate up ───────────────────────────
+  // The gate is a third child of the composer's column and is *not* in the
+  // message box's height budget: its sentence, its Cancel and its confirm are
+  // ~170px on top of a panel that already filled the pane. This is the third
+  // time a panel has grown past a small viewport in this product, so it is
+  // asserted rather than left to be noticed — and asserted as reachability of
+  // every action, because the confirm being the one below the fold is exactly
+  // the surface where a user is being asked to lower their own protection.
+  await page.getByLabel('Permission mode').selectOption('acceptEdits');
+  await expect(page.locator('.composer-warn')).toHaveCount(1);
+  // The panel bounds itself and scrolls inside, so nothing it grows by ever
+  // leaves the page. A document taller than the viewport is the failure whether
+  // or not a control could be scrolled to afterwards — the header and the
+  // conversation scrolling away with it is not a fix.
+  expect(
+    await page.evaluate(() => document.documentElement.scrollHeight - window.innerHeight),
+  ).toBeLessThanOrEqual(0);
+  for (const name of ['Cancel', 'Set permission mode to Accept edits', 'Send']) {
+    const control = page.getByRole('button', { name, exact: true });
+    await control.scrollIntoViewIfNeeded();
+    await expect(control, name).toBeInViewport({ ratio: 1 });
+    const box = await control.boundingBox();
+    if (box === null) throw new Error(`${name} is not laid out at all at 360×340`);
+    expect(box.height, name).toBeGreaterThanOrEqual(44);
+  }
+  await shoot(page, '7-claude-360x340-warned');
 });
 
 /**

@@ -115,13 +115,55 @@ test('a failed permission-mode request never implies the mode changed', () => {
   assert.match(maybe, /could not confirm/i);
   assert.notEqual(nothing, maybe);
 
+  // A third failure that pressed nothing, and it may not read as either of the
+  // other two: a refused second attempt is a "try again", not a broken pane.
+  const busy = modeFailure('busy', 'Plan only');
+  assert.match(busy, /nothing was changed/i);
+  assert.notEqual(busy, nothing);
+
   // Whatever the server says, and whatever it does not: no sentence here may
   // claim the mode was set, because the only evidence for that is a read the
   // server did not manage.
-  for (const code of ['unreadable', 'not_confirmed', 'session_dead', 'wrong_provider', '']) {
+  for (const code of ['unreadable', 'not_confirmed', 'busy', 'session_dead', 'wrong_provider', '']) {
     const said = modeFailure(code, 'Decide for me');
     assert.doesNotMatch(said, /\bis now\b|\bset to\b|\bchanged to\b/i, code);
     assert.ok(said.length > 20, code);
+  }
+});
+
+test('a cycle that stalled names the mode the pane was left in', () => {
+  // Reaching `plan` passes *through* `acceptEdits`, so a `not_confirmed` can
+  // leave the pane with the permission bar already lowered — in a mode the user
+  // never chose and never saw the warning for. The server reads that off the
+  // screen and sends it; a sentence that dropped it would leave the one fact
+  // worth acting on unsaid.
+  const said = modeFailure('not_confirmed', 'Plan only', { mode: 'acceptEdits' });
+  // The menu's own word for it, not the server's identifier.
+  assert.match(said, /Accept edits/);
+  assert.match(said, /could not confirm/i);
+  // Naming where it stopped is still not claiming it was set — the target is
+  // named as unreached, and the landed mode as observed.
+  assert.doesNotMatch(said, /\bis now\b|\bset to\b|\bchanged to\b/i);
+
+  // "tether cannot say" is every other shape of body, and falls back to the
+  // sentence that points at the terminal without naming anything.
+  const blind = modeFailure('not_confirmed', 'Plan only');
+  for (const body of [null, {}, { mode: null }, { mode: '' }, { mode: 7 }, 'nope']) {
+    assert.equal(modeFailure('not_confirmed', 'Plan only', body), blind, JSON.stringify(body));
+  }
+  // A mode this build has no label for is passed through as the server said it,
+  // never dressed up as one of the four.
+  assert.match(modeFailure('not_confirmed', 'Plan only', { mode: 'dontAsk' }), /dontAsk/);
+
+  // Only the failure that pressed keys has anywhere to point: the other two
+  // never touched the pane, so a landed mode there would be a claim about a
+  // read that did not happen.
+  for (const code of ['unreadable', 'busy']) {
+    assert.equal(
+      modeFailure(code, 'Plan only', { mode: 'acceptEdits' }),
+      modeFailure(code, 'Plan only'),
+      code,
+    );
   }
 });
 

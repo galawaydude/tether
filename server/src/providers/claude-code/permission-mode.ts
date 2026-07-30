@@ -100,6 +100,8 @@ export type ModeResult =
   | { ok: true; mode: PermissionMode; changed: boolean }
   /** The screen never said what mode it was in, so nothing was pressed. */
   | { ok: false; reason: 'unreadable' }
+  /** Another attempt on the same pane had not finished, so nothing was pressed. */
+  | { ok: false; reason: 'busy' }
   /** Keys were pressed and the pane did not arrive. `mode` is where it actually
    *  is, when that could still be read. */
   | { ok: false; reason: 'not_confirmed'; mode: PermissionMode | undefined };
@@ -138,6 +140,35 @@ const press = (socket: string, target: string): Promise<boolean> =>
   );
 
 /**
+ * One attempt per pane at a time, and the serialisation lives here rather than
+ * in the browser because a second viewer — or a second tab — reaches the same
+ * state with no double-tap at all.
+ *
+ * Read-press-read is only sound if nothing else is pressing between the read and
+ * the read back. Two concurrent attempts interleave their keystrokes, and each
+ * then confirms a mode the *other* one cycled the pane into: both return `ok`,
+ * and whichever the browser renders last claims a mode the pane is no longer in.
+ * That is the one thing this axis exists not to do, so a second attempt is
+ * refused rather than queued — it was aimed at a mode the pane has since left,
+ * and the person who asked for it can ask again once the screen has settled.
+ */
+const running = new Set<string>();
+
+export async function setPermissionMode(
+  socket: string,
+  target: string,
+  mode: PermissionMode,
+): Promise<ModeResult> {
+  if (running.has(target)) return { ok: false, reason: 'busy' };
+  running.add(target);
+  try {
+    return await drive(socket, target, mode);
+  } finally {
+    running.delete(target);
+  }
+}
+
+/**
  * Drive the pane to `target`, confirming every step by reading the screen back.
  *
  * `now` is passed to each read so a step is only counted once the footer has
@@ -145,11 +176,7 @@ const press = (socket: string, target: string): Promise<boolean> =>
  * than sleeping a fixed time is what keeps a slow repaint from being read as
  * "the key did nothing" and answered with a second Shift+Tab.
  */
-export async function setPermissionMode(
-  socket: string,
-  target: string,
-  mode: PermissionMode,
-): Promise<ModeResult> {
+async function drive(socket: string, target: string, mode: PermissionMode): Promise<ModeResult> {
   let now = read(await screen(socket, target));
   if (now === undefined) return { ok: false, reason: 'unreadable' };
   if (now === mode) return { ok: true, mode, changed: false };

@@ -138,6 +138,31 @@ test('it reaches every mode from every mode, and says what it confirmed', async 
   }
 });
 
+test('a second attempt on one pane is refused, not interleaved into the first', async (t) => {
+  const { socket, name } = await pane(t);
+  await setPermissionMode(socket, name, 'default');
+
+  // Two concurrent read-press-reads on one pane press *between* each other's
+  // read and read-back, so both confirm a mode the other one cycled into and
+  // both return `ok` — and whichever the browser renders last claims a mode the
+  // pane is no longer in, which is the one thing this axis exists not to do.
+  const [first, second] = await Promise.all([
+    setPermissionMode(socket, name, 'plan'),
+    setPermissionMode(socket, name, 'auto'),
+  ]);
+  assert.deepEqual(second, { ok: false, reason: 'busy' });
+  assert.deepEqual(first, { ok: true, mode: 'plan', changed: true });
+  // The pane agrees with the one that ran, and the refused one pressed nothing.
+  assert.equal(readPermissionMode(await capturePlainViewport(socket, name)), 'plan');
+
+  // And the gate is released, not sticky: the next attempt is an ordinary one.
+  assert.deepEqual(await setPermissionMode(socket, name, 'auto'), {
+    ok: true,
+    mode: 'auto',
+    changed: true,
+  });
+});
+
 test('a pane that does not say is left alone and reported, not guessed at', async (t) => {
   const socket = `tether-mode-${randomUUID().slice(0, 8)}`;
   const dir = await mkdtemp(join(tmpdir(), 'tether-mode-'));

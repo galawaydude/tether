@@ -239,24 +239,60 @@ export function lowersBar(choice: Choice): string | null {
 }
 
 /**
+ * The menu's own word for a mode value — `acceptEdits` is "Accept edits" on
+ * this screen and nowhere is it two different things. An unknown value is
+ * returned as it stands: it is the server's, and inventing a label for it would
+ * be the guess this axis is not allowed to make.
+ */
+function modeLabel(value: string): string {
+  const axis = CLAUDE_AXES.find((entry) => entry.via === 'permission-mode');
+  return (axis === undefined ? undefined : choiceIn(axis, value)?.label) ?? value;
+}
+
+/**
+ * The mode the pane was last seen in, off a refusal's body, or `null` for
+ * "tether cannot say" — which is what the server sends whenever the screen
+ * stopped answering, and what any other shape of body means too.
+ */
+function landedMode(body: unknown): string | null {
+  const mode = (body as { mode?: unknown } | null | undefined)?.mode;
+  return typeof mode === 'string' && mode !== '' ? mode : null;
+}
+
+/**
  * What to say when setting the permission mode did not land.
  *
  * The whole value of this axis is that the server confirms by reading the pane
- * back, so a failure has to be **stated**, and stated as what it is: the two
- * ways it fails are genuinely different and only one of them touched the pane.
- * Nothing here may imply the mode changed, and nothing may name a mode tether
- * did not observe — `code` is the server's, and an unrecognised one falls
- * through to the neutral sentence rather than a guess.
+ * back, so a failure has to be **stated**, and stated as what it is: the ways it
+ * fails are genuinely different and only one of them touched the pane. Nothing
+ * here may imply the mode changed, and nothing may name a mode tether did not
+ * observe — `code` is the server's, and an unrecognised one falls through to the
+ * neutral sentence rather than a guess.
+ *
+ * `not_confirmed` is the one that has somewhere to point: reaching `plan` cycles
+ * *through* `acceptEdits`, so a stalled cycle can leave the pane one step short
+ * with the bar already lowered. Where the server could still read the screen it
+ * says so on the refusal, and this sentence names that mode — a user told only
+ * "check the terminal" would never learn their agent had stopped asking before
+ * it writes. It is still a refusal and still says the target was not reached.
  *
  * The terminal is the fallback for all of them, which is why every sentence
  * points at it: Shift+Tab in the pane always works, whatever tether can see.
  */
-export function modeFailure(code: string, wanted: string): string {
+export function modeFailure(code: string, wanted: string, body: unknown = null): string {
   if (code === 'unreadable') {
     return `Could not read the current permission mode, so nothing was changed. Set it with Shift+Tab in the terminal.`;
   }
+  if (code === 'busy') {
+    return `Another permission mode change had not finished, so nothing was changed. Try again in a moment.`;
+  }
   if (code === 'not_confirmed') {
-    return `Could not confirm the mode reached ${wanted}. Check the terminal — it shows the mode tether could not.`;
+    const landed = landedMode(body);
+    const where =
+      landed === null
+        ? 'Check the terminal — it shows the mode tether could not.'
+        : `The pane was last seen in ${modeLabel(landed)}. Check the terminal.`;
+    return `Could not confirm the mode reached ${wanted}. ${where}`;
   }
   if (code === 'session_dead') return 'This session has ended. Nothing can reach it now.';
   return `Could not set the permission mode to ${wanted}. The terminal still shows what it is.`;
