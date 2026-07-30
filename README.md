@@ -52,7 +52,15 @@ search box over it that filters on title and directory, so finding one on a
 machine that has been running a while is a scan rather than a scroll. Opening a
 session lands you in the **conversation**: your prompts, the
 agent's replies, and a collapsed card per tool call that opens onto its input and
-result. There is no second tab to choose — **Terminal** in the header summons the
+result. Messages are rendered as the markdown they are written in — headings,
+lists, links, emphasis, quotes and above all **fenced code**, in a monospace box
+that scrolls inside itself rather than widening the page. An `Edit` or a `Write`
+opens onto the change itself: added and removed lines with a `+`/`−` gutter, not
+a paragraph describing one. A call that failed says whether it is _retrying_
+itself or _needs you_, so a glance is enough to know whether to pick the phone
+up. And a turn that runs unusually long shows how long beside the state chip —
+a fast one shows nothing, so the number appearing is itself the news.
+There is no second tab to choose — **Terminal** in the header summons the
 real TUI over the conversation, with a bar for the keys a phone keyboard has not
 got (Esc, Tab, arrows, Ctrl-C), and Close puts it away with both views exactly
 where you left them. A live session shows what its agent is doing — _Working_,
@@ -452,8 +460,8 @@ npx playwright install chromium   # once; npm 12 blocks playwright's own postins
 npm run test:e2e                  # the end-to-end specs
 ```
 
-`e2e/` is five Playwright specs, and they are the only tests here that are not
-unit tests. Four of them run at a phone viewport, which is the client tether is
+`e2e/` is six Playwright specs, and they are the only tests here that are not
+unit tests. Five of them run at a phone viewport, which is the client tether is
 designed for. One logs in, starts a session, watches it, types at
 it, **reloads the page**, and asserts the conversation and the terminal come back
 intact and exactly once; it also summons the terminal over the conversation and
@@ -476,11 +484,18 @@ send, and that the composer leaves Send on screen with the keyboard up. The
 fourth starts two sessions in **one** directory and asserts each shows its own
 conversation and neither shows the other's, then acts out a `/resume` at one of
 their panes and asserts that view follows the agent to the conversation it
-resumed into. The fifth is the only one that runs at a laptop viewport
+resumed into. The fifth writes what an agent actually writes into the transcript
+and asserts what the conversation makes of it: markdown rather than a wall of
+characters, a `<script>` in a fenced block that is text in the page rather than a
+node in it, an `Edit` drawn as a diff, a failed call that says _retrying_ or
+_needs you_ — and, on an **answerable** `Edit`, a diff that wraps with Approve
+still on screen, since nothing on a card the agent is blocked on may be off it.
+It checks at every step that the page itself has not moved sideways. The sixth is
+the only one that runs at a laptop viewport
 (1280×800), because past 900px the app is a different shape rather than a wider
 phone: it measures the rail's box against the open session's, asserts the back
 button is **gone** rather than merely invisible, that the page has exactly one
-`<main>`, and that nothing makes it scroll sideways. All five run against
+`<main>`, and that nothing makes it scroll sideways. All six run against
 `e2e/stub-agent.ts` — a script that prints, echoes
 what you type at it, writes a Claude-Code-shaped transcript, publishes its own
 status file, moves to a new session id and a new transcript on a `/resume`,

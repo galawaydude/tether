@@ -690,7 +690,7 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `coerceTypes` are on): `additionalProperties: false` strips instead of rejecting, and
   `{"password": 123}` arrives as `"123"`. `buildServer` turns both off. Do not remove that
   `ajv.customOptions` block, and do not assume stock Fastify behaviour when reading the tests.
-- **`e2e/` is five Playwright specs and they assert counts and geometry, not presence.**
+- **`e2e/` is six Playwright specs and they assert counts and geometry, not presence.**
   They drive the real `tether serve` (`e2e/serve.ts` calls the CLI's own `main`) inside a
   scratch `HOME`/state dir/tmux socket, with `e2e/stub-agent.ts` on `PATH` as `claude` — so
   the session is created through the production path and **CI still never runs a live
@@ -704,7 +704,13 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   each session shows _its own_ conversation and keeps it — two sessions in one directory,
   then a `/resume` typed at one pane (which the stub acts out by moving to a new session
   id and a new transcript, announcing it only through its registry file). That last claim
-  is the one found in live use rather than by a test. `desktop.spec.ts` is the only spec
+  is the one found in live use rather than by a test. What `render.spec.ts` checks is the
+  one claim the markdown entry above cannot make from a unit test — that the tree becomes
+  _elements_ and nothing else, so a `<script>` an agent wrote is text in the page rather
+  than a node in it — plus the answerable `Edit`, the combination the diff and permission
+  entries create together and neither covers alone; it appends its records to the
+  transcript the stub already opened rather than teaching the stub a new behaviour.
+  `desktop.spec.ts` is the only spec
   above the 900px breakpoint and the only test that renders the `.workspace` shape at
   all: it measures the rail's box against the session's, counts the back button at **0**
   rather than checking it is invisible (`display: none` is the point), counts exactly one
