@@ -905,6 +905,16 @@ CI runs exactly those (`.github/workflows/ci.yml`).
     and evidence screenshots are namespaced by spec, because the shared
     `TETHER_E2E_SHOTS` directory plus one worker meant a number reused in a second spec
     silently overwrote the first spec's image.
+  - `e2e/ui.ts` also owns **`reachable`**, the one definition of that word in the suite,
+    because four panels in this product outgrew a small phone and a reviewer — never a
+    test — caught every one: a control is reachable when, _after being scrolled to
+    through its own container_, its box is wholly in the viewport, is 44px tall, has
+    nothing hit-testing on top of it, and the **document** does not scroll. Every failure
+    names the control and the viewport, and `KEYBOARD_UP` (360×340) is where two of the
+    four only failed, so the sheet, the permission card, the composer and the waiting
+    banner are each asserted there. It found a live one on its first run: `.sr-only` was
+    `position: absolute` with no offsets, so the diff gutter's "added"/"removed" sat at a
+    static position partway down a scrolled conversation and grew the document by 348px.
   - `retries: 0` is deliberate. `npm ci` does not fetch the browser (npm 12 blocks
     playwright's postinstall); `npx playwright install chromium` does, and CI runs it.
 
