@@ -16,7 +16,7 @@ import { expect, test, type Locator } from '@playwright/test';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { dismiss, hatch, shots, summon } from './ui.ts';
+import { dismiss, hatch, KEYBOARD_UP, reachable, shots, summon } from './ui.ts';
 
 /** This spec's own directory inside the sandbox; `serve.ts` makes it. */
 const project = join(process.env['TETHER_E2E_DIR'] as string, 'project');
@@ -312,14 +312,11 @@ test('tether’s own chrome never resizes the terminal pane', async ({ page }) =
       down: element.scrollHeight - element.clientHeight,
     })),
   ).toEqual({ sideways: 0, down: 0 });
-  const close = await page
-    .locator('.termsheet')
-    .getByRole('button', { name: 'Close' })
-    .boundingBox();
-  expect(close?.height ?? 0).toBeGreaterThanOrEqual(44);
-  await expect(page.locator('.termsheet').getByRole('button', { name: 'Close' })).toBeInViewport({
-    ratio: 1,
-  });
+  await reachable(
+    page,
+    page.locator('.termsheet').getByRole('button', { name: 'Close' }),
+    'the terminal’s Close, with the waiting line above it',
+  );
 
   // …and back to idle, still with the terminal up.
   await page.keyboard.type(ANSWER);
@@ -361,19 +358,13 @@ test('tether’s own chrome never resizes the terminal pane', async ({ page }) =
   );
   expect(under).toBe(true);
 
-  // And the one thing that *is* meant to take a tap still does, at full size.
-  const open = banner.getByRole('button', { name: 'Open the terminal' });
-  const openBox = await open.boundingBox();
-  expect(openBox?.height ?? 0).toBeGreaterThanOrEqual(44);
-  expect(
-    await page.evaluate(
-      ([x, y]) => document.elementFromPoint(x as number, y as number)?.closest('.link') !== null,
-      [
-        (openBox as { x: number; width: number }).x + (openBox as { width: number }).width / 2,
-        (openBox as { y: number; height: number }).y + (openBox as { height: number }).height / 2,
-      ],
-    ),
-  ).toBe(true);
+  // And the one thing that *is* meant to take a tap still does, at full size and
+  // with nothing over it — the same `reachable` every other panel is held to.
+  await reachable(
+    page,
+    banner.getByRole('button', { name: 'Open the terminal' }),
+    'the banner’s Open the terminal',
+  );
 
   await conversation.getByRole('button', { name: 'Approve' }).click();
   await expect(banner).toHaveCount(0, { timeout: HOLD_MS });
@@ -388,8 +379,9 @@ test('tether’s own chrome never resizes the terminal pane', async ({ page }) =
  * there goes off the *top*, taking the Agent picker with it, and it only shows
  * on a viewport shorter than the one it was last looked at on.
  *
- * So this asserts geometry rather than presence: the card's top edge against the
- * viewport, at the shortest phones and at a phone with the keyboard up. No
+ * So this asserts geometry rather than presence: `reachable` in `e2e/ui.ts`, at
+ * the shortest phones and at a phone with the keyboard up — which is the size
+ * the directory is typed at, so it is the size Start has to be found at. No
  * session is started, so it needs no agent — the sheet is asserted on before it
  * is submitted.
  */
@@ -397,6 +389,7 @@ for (const [width, height] of [
   [360, 640],
   [375, 667],
   [390, 500],
+  [KEYBOARD_UP.width, KEYBOARD_UP.height],
 ] as const) {
   test(`the New session sheet stays reachable at ${width}x${height}`, async ({ page }) => {
     await page.setViewportSize({ width, height });
@@ -416,20 +409,12 @@ for (const [width, height] of [
     const accept = page.getByLabel('I trust this folder');
     await expect(accept).not.toBeChecked();
 
-    const card = page.locator('.sheet .card');
-    const top = async (locator: Locator): Promise<number> => {
-      const box = await locator.boundingBox();
-      expect(box).not.toBeNull();
-      return (box as { y: number }).y;
-    };
-    expect(await top(card)).toBeGreaterThanOrEqual(0);
-
-    // And the controls are not merely on screen but usable: scrolled to, focused
-    // and operated, which one clipped out of the overlay cannot be. Both ends of
-    // the card, because the trust ask sits between them and pushes each way — the
-    // picker off the top and Start off the bottom.
-    await agent.scrollIntoViewIfNeeded();
-    expect(await top(agent)).toBeGreaterThanOrEqual(0);
+    // The controls, not the card: a card measured at its top edge is a proxy for
+    // this and says nothing about which control went off the screen. Reachable,
+    // then focused and operated, which one clipped out of the overlay cannot be.
+    // Both ends of the card, because the trust ask sits between them and pushes
+    // each way — the picker off the top and Start off the bottom.
+    await reachable(page, agent, 'the Agent picker');
     await agent.selectOption('claude-code');
     await expect(agent).toHaveValue('claude-code');
 
@@ -439,12 +424,6 @@ for (const [width, height] of [
     await accept.check();
     await expect(accept).toBeChecked();
 
-    const start = page.getByRole('button', { name: 'Start' });
-    await start.scrollIntoViewIfNeeded();
-    const startBox = await start.boundingBox();
-    expect(startBox).not.toBeNull();
-    const { y, height: tall } = startBox as { y: number; height: number };
-    expect(y).toBeGreaterThanOrEqual(0);
-    expect(y + tall).toBeLessThanOrEqual(height);
+    await reachable(page, page.getByRole('button', { name: 'Start' }), 'Start');
   });
 }

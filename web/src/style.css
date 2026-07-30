@@ -368,8 +368,17 @@ summary:focus-visible {
 
 /* A label a screen reader reads and a sighted user does not need: the composer's
    placeholder says what the box is, and a placeholder is not an accessible name. */
+/* `position: absolute` with no offsets leaves the box at its *static* position,
+   which for the gutter's "added"/"removed" is a point partway down a scrolled
+   conversation — measured against the initial containing block, so the document
+   grew by 348px on an answerable Edit card and the whole app became scrollable.
+   Pinning it takes it out of the page's height entirely; screen readers read it
+   in DOM order regardless of where its box lands. Caught by `reachable` in
+   `e2e/ui.ts`. */
 .sr-only {
   position: absolute;
+  top: 0;
+  left: 0;
   width: 1px;
   height: 1px;
   margin: -1px;

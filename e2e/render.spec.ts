@@ -22,7 +22,7 @@ import { randomUUID } from 'node:crypto';
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { shots } from './ui.ts';
+import { reachable, shots } from './ui.ts';
 
 /** Its own directory and its own title, by the rule every spec here follows. */
 const home = process.env['TETHER_E2E_DIR'] as string;
@@ -287,10 +287,10 @@ test('an answerable Edit card shows the change, wraps it, and keeps Approve reac
 
   const approve = card.getByRole('button', { name: 'Approve' });
   const deny = card.getByRole('button', { name: 'Deny' });
-  await expect(approve).toBeInViewport({ ratio: 1 });
-  await expect(deny).toBeInViewport({ ratio: 1 });
-  // 44px, the target size this app holds itself to.
-  expect((await approve.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
+  // `reachable` in `e2e/ui.ts` is the one definition of that word in this suite:
+  // wholly on screen, a 44px target, and with nothing lying on top of it.
+  await reachable(page, approve, 'Approve, on an answerable Edit');
+  await reachable(page, deny, 'Deny, on an answerable Edit');
   await shoot(page, '5-an-answerable-edit');
 
   await approve.click();
@@ -396,9 +396,12 @@ test('a lookalike character is named on the card, and Approve waits while Deny d
   // All three entirely on screen, and each a thumb tall. A gate whose own control
   // is off the bottom of the screen leaves a user with a dead Approve and no
   // stated way past it.
-  for (const button of [deny, approve, ack]) {
-    await expect(button).toBeInViewport({ ratio: 1 });
-    expect((await button.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
+  for (const [button, name] of [
+    [deny, 'Deny'],
+    [approve, 'Approve'],
+    [ack, 'I have read this'],
+  ] as const) {
+    await reachable(page, button, `${name}, on a lookalike-warned card`);
   }
   expect(await sideways(page)).toBe(0);
   await shoot(page, '7-a-lookalike-named-at-360');
@@ -423,8 +426,8 @@ test('a lookalike character is named on the card, and Approve waits while Deny d
   await expect(ack).toHaveCount(0);
   await expect(approve).toBeEnabled();
   await expect(warning).toContainText('U+0456 Cyrillic');
-  await expect(approve).toBeInViewport({ ratio: 1 });
-  await expect(deny).toBeInViewport({ ratio: 1 });
+  await reachable(page, approve, 'Approve, once acknowledged');
+  await reachable(page, deny, 'Deny, once acknowledged');
   expect(await sideways(page)).toBe(0);
   await shoot(page, '9-acknowledged-at-360');
 

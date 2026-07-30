@@ -37,7 +37,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { dismiss, hatch, shots, summon } from './ui.ts';
+import { dismiss, hatch, KEYBOARD_UP, reachable, shots, summon } from './ui.ts';
 
 /**
  * Its own directory inside the sandbox, not `session.spec.ts`'s. The three specs
@@ -144,11 +144,22 @@ test('a permission prompt is answered from the conversation view, and only once'
     useInnerText: true,
   });
   await expect(approve).toHaveCount(1);
-  // The buttons are the whole feature, so they have to be *reachable*: inside
-  // the viewport, not merely in the DOM. This project has shipped a control
-  // clipped out of a fixed box once already.
-  await expect(approve).toBeInViewport({ ratio: 1 });
-  await expect(deny).toBeInViewport({ ratio: 1 });
+  // The buttons are the whole feature, so they have to be *reachable* rather
+  // than merely in the DOM — and reachable with the keyboard up, which is the
+  // size two of this product's four clipped panels needed to fail. `reachable`
+  // in `e2e/ui.ts` says what that means; here it is asserted twice, because the
+  // card is drawn under a composer whose own height is what changes between them.
+  // Every viewport change here refits xterm and so resizes the tmux pane: no
+  // `.xterm-rows` claim about a line printed before one of these loops may be
+  // asserted after it, which is why the only text this spec reads out of the pane
+  // is printed later and read before the loop that follows it.
+  const phone = page.viewportSize() as { width: number; height: number };
+  for (const size of [phone, KEYBOARD_UP]) {
+    await page.setViewportSize(size);
+    await reachable(page, approve, 'Approve');
+    await reachable(page, deny, 'Deny');
+  }
+  await page.setViewportSize(phone);
   await shoot(page, '1-approve-on-a-phone');
 
   await approve.click();
@@ -211,12 +222,23 @@ test('a permission prompt is answered from the conversation view, and only once'
   // panes that says so.
   await expect(banner).toContainText('Claude needs your permission to use Bash');
   await expect(agentChip).toHaveText('Waiting for you');
+  // Read the pane *before* the viewport moves. Resizing refits xterm, which
+  // resizes the tmux pane, which can push a line the agent has already printed
+  // into the scrollback — and `.xterm-rows` is the rendered screen, not the
+  // history. Asserting here rather than only after the summon below keeps the
+  // measurements that follow from deciding whether this claim holds.
+  await expect(page.locator('.xterm-rows')).toContainText(OWN_PROMPT);
   // The one control a user taps one-handed while an agent is blocked on them,
   // so it is measured rather than merely found: styling `.link` down to its own
-  // text height once dropped it to 16.5px, which a presence check passes.
+  // text height once dropped it to 16.5px, which a presence check passes. With
+  // the keyboard up too — the banner wraps to more lines at 360px, and the way
+  // out of it must survive that.
   const open = banner.getByRole('button', { name: 'Open the terminal' });
-  const openBox = await open.boundingBox();
-  expect(openBox?.height ?? 0).toBeGreaterThanOrEqual(44);
+  for (const size of [phone, KEYBOARD_UP]) {
+    await page.setViewportSize(size);
+    await reachable(page, open, 'the banner’s Open the terminal');
+  }
+  await page.setViewportSize(phone);
   await shoot(page, '5-handed-back-to-the-terminal');
 
   // And it is a way *there*, not a tab switch: it summons the overlay, which is

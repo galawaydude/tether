@@ -37,7 +37,7 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { dismiss, shots, summon } from './ui.ts';
+import { dismiss, KEYBOARD_UP, reachable, shots, summon } from './ui.ts';
 
 const dir = process.env['TETHER_E2E_DIR'] as string;
 const shoot = shots('options');
@@ -158,12 +158,15 @@ test('each provider offers its own controls, and they reach the pane', async ({ 
   // 360×340 is this phone with its keyboard up, and it is the size that finds a
   // composer able to eat the conversation it belongs to. The wrapped row costs
   // 52px there, which is why the message box gives height back below 420px —
-  // Send must still be on screen, which is the failure PR #16 shipped once.
-  await page.setViewportSize({ width: 360, height: 340 });
+  // Send must still be on screen, which is the failure PR #16 shipped once. And
+  // not Send alone: every control in the panel, by the same rule the sheet and
+  // the permission card are held to.
+  await page.setViewportSize(KEYBOARD_UP);
   await page.locator('.composer-text').fill('one\ntwo\nthree\nfour\nfive\nsix\nseven\neight');
-  const send = await page.locator('.composer button.primary').boundingBox();
-  if (send === null) throw new Error('Send is not laid out at all at 360×340');
-  expect(send.y + send.height).toBeLessThanOrEqual(340);
+  for (const name of ['Model', 'Effort', 'Permission mode']) {
+    await reachable(page, page.getByLabel(name), name);
+  }
+  await reachable(page, page.locator('.composer button.primary'), 'Send');
   await shoot(page, '6-claude-360x340');
 
   // ── and the same screen with the warning gate up ───────────────────────────
@@ -184,12 +187,7 @@ test('each provider offers its own controls, and they reach the pane', async ({ 
     await page.evaluate(() => document.documentElement.scrollHeight - window.innerHeight),
   ).toBeLessThanOrEqual(0);
   for (const name of ['Cancel', 'Set permission mode to Accept edits', 'Send']) {
-    const control = page.getByRole('button', { name, exact: true });
-    await control.scrollIntoViewIfNeeded();
-    await expect(control, name).toBeInViewport({ ratio: 1 });
-    const box = await control.boundingBox();
-    if (box === null) throw new Error(`${name} is not laid out at all at 360×340`);
-    expect(box.height, name).toBeGreaterThanOrEqual(44);
+    await reachable(page, page.getByRole('button', { name, exact: true }), name);
   }
   await shoot(page, '7-claude-360x340-warned');
 });
