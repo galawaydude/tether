@@ -407,9 +407,14 @@ for (const [width, height] of [
     await page.getByRole('button', { name: 'New session' }).click();
     const agent = page.getByLabel('Agent');
     await agent.selectOption('codex');
-    // The note is what makes the sheet overflow; without it on screen this test
-    // would pass on the layout it exists to catch.
-    await expect(page.locator('.sheet .note')).toHaveCount(1);
+    // The tallest the sheet ever gets, which is the case worth measuring: the
+    // Codex hook note *and* the folder-trust ask, which appears once a directory
+    // is filled in and this sandbox trusts nothing. Without both on screen this
+    // test would pass on the layout it exists to catch.
+    await page.getByLabel('Working directory').fill(project);
+    await expect(page.locator('.sheet .note')).toHaveCount(2);
+    const accept = page.getByLabel('I trust this folder');
+    await expect(accept).not.toBeChecked();
 
     const card = page.locator('.sheet .card');
     const top = async (locator: Locator): Promise<number> => {
@@ -419,12 +424,27 @@ for (const [width, height] of [
     };
     expect(await top(card)).toBeGreaterThanOrEqual(0);
 
-    // And the picker itself is not merely on screen but usable: scrolled to,
-    // focused and changed back, which a control clipped out of the overlay
-    // cannot be.
+    // And the controls are not merely on screen but usable: scrolled to, focused
+    // and operated, which one clipped out of the overlay cannot be. Both ends of
+    // the card, because the trust ask sits between them and pushes each way — the
+    // picker off the top and Start off the bottom.
     await agent.scrollIntoViewIfNeeded();
     expect(await top(agent)).toBeGreaterThanOrEqual(0);
     await agent.selectOption('claude-code');
     await expect(agent).toHaveValue('claude-code');
+
+    // Selecting a different agent re-asks, and clears the box with it: a tick
+    // must never outlive the question it was given for.
+    await expect(page.getByLabel('I trust this folder')).not.toBeChecked();
+    await accept.check();
+    await expect(accept).toBeChecked();
+
+    const start = page.getByRole('button', { name: 'Start' });
+    await start.scrollIntoViewIfNeeded();
+    const startBox = await start.boundingBox();
+    expect(startBox).not.toBeNull();
+    const { y, height: tall } = startBox as { y: number; height: number };
+    expect(y).toBeGreaterThanOrEqual(0);
+    expect(y + tall).toBeLessThanOrEqual(height);
   });
 }

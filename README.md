@@ -307,6 +307,34 @@ else changes. tether will neither nag you nor retry. Codex also needs `hooks = t
 leaves that file to you, since it is also where Codex records what you have
 trusted.
 
+## Trusting a folder, before the agent asks
+
+Both agents ask whether you trust a directory the first time they run in one.
+Met in the terminal, that question is a cramped dialog behind an overlay you have
+to summon. So the **New session sheet asks it first**: fill in a directory, and if
+the agent you picked does not already trust it, tether says so — what trusting
+means, that the agent will be able to read, change and run files there, and that
+the answer is remembered — with a box to tick.
+
+- **Tick it and the session starts with no prompt.** tether records your answer
+  where that agent reads it: `hasTrustDialogAccepted` in `~/.claude.json` for
+  Claude Code, `trust_level = "trusted"` under `[projects."…"]` in
+  `~/.codex/config.toml` for Codex. Both files are the agent's, not tether's, so
+  each is backed up first (under tether's state directory, never beside the
+  original), merged rather than rewritten, and left alone entirely if tether
+  cannot make sense of it. The Codex entry is marked with a comment so you can
+  find it and take it out again.
+- **Leave it unticked and the session still starts** — the agent asks you in the
+  terminal, exactly as it did before any of this existed. That is a real answer,
+  not an error, and it is the default: nothing is ever trusted because you left a
+  box alone.
+- **Codex trusts a repository, not a directory**, so a session in `repo/sub` is a
+  question about `repo` — the sheet names that path rather than saying "this
+  folder". Claude Code accepts a directory and everything under it.
+- **If tether cannot read the agent's configuration, it says so and offers
+  nothing.** A guess here would either hide a question you should answer or offer
+  to write into a file tether has just failed to understand.
+
 ## Access and security
 
 **Reaching tether's web interface is equivalent to having a shell on the machine

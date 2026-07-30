@@ -14,6 +14,8 @@
  * not compile JSX.
  */
 
+import type { FolderTrust } from '@tether/shared';
+
 /** The provider a session gets when nothing says otherwise. */
 export const DEFAULT_PROVIDER = 'claude-code';
 
@@ -51,6 +53,72 @@ export function whoLabel(who: 'user' | 'assistant', provider: string): string {
  */
 export function copyLabel(who: 'user' | 'assistant', provider: string): string {
   return who === 'user' ? 'Copy your text' : `Copy the reply from ${providerLabel(provider)}`;
+}
+
+/**
+ * What the New session sheet says about folder trust, before the agent starts.
+ *
+ * Here rather than in the `.tsx` for the usual reason — the tests cannot compile
+ * JSX — and here rather than anywhere else because every sentence names the
+ * agent, and this module is where the web app reads an agent's name.
+ *
+ * The shape of the answer decides the shape of the ask:
+ *
+ * - **trusted** — nothing at all. There is no question to put in front of anyone,
+ *   and a reassuring line about a folder the agent was always going to accept is
+ *   the nagging the consent pattern rules out.
+ * - **untrusted** — the explanation and a box to tick. Unticked is a real answer
+ *   and the default: the session still starts and the agent asks in the terminal,
+ *   exactly as it does today, which the last line says so the consequence of
+ *   declining is visible rather than discovered.
+ * - **unknown** — the explanation with no box. tether says it cannot tell instead
+ *   of guessing, and offers nothing, because the file it would have to write is
+ *   the one it has just failed to understand.
+ *
+ * `path` is the directory the answer is *about* and is named whenever it differs
+ * from the one being started in: Codex keys trust by repository, so a session in
+ * `repo/sub` trusts `repo` and everything else under it. A control that said
+ * "this folder" over that would be a lie by omission on a security decision.
+ */
+export type TrustAsk = {
+  /** Paragraphs, in order. */
+  lines: readonly string[];
+  /** The checkbox's label — absent when there is nothing to offer. */
+  accept?: string;
+};
+
+export function trustAsk(
+  provider: string,
+  trust: FolderTrust,
+  path: string,
+  cwd: string,
+): TrustAsk | null {
+  const agent = providerLabel(provider);
+  if (trust === 'trusted') return null;
+  if (trust === 'unknown') {
+    return {
+      lines: [
+        `tether cannot tell whether ${agent} already trusts ${path} — its configuration could not ` +
+          `be read, so tether will not guess and will not write to it.`,
+        `The session starts either way. If ${agent} does not trust this folder yet, it will ask in ` +
+          `the terminal, and you can answer it there.`,
+      ],
+    };
+  }
+  const scope =
+    path === cwd
+      ? `${agent} has not been told to trust ${path}.`
+      : `${agent} has not been told to trust ${path}, the repository ${cwd} is in — it records ` +
+        `trust per repository, so this covers every directory inside it.`;
+  return {
+    lines: [
+      `${scope} Trusting it lets ${agent} read, change and run files there, including anything a ` +
+        `file in it tells ${agent} to do.`,
+      `Your answer is remembered in ${agent}'s own settings, so it will not ask again. Leave this ` +
+        `unticked and the session still starts — ${agent} will ask you in the terminal instead.`,
+    ],
+    accept: `I trust this folder`,
+  };
 }
 
 /**

@@ -8,11 +8,11 @@
  * of information the server went to the trouble of sending.
  */
 
-import type { PermissionDecision, Session, SessionState } from '@tether/shared';
+import type { PermissionDecision, Session, SessionState, TrustReport } from '@tether/shared';
 
 import type { SeqEvent } from './conversation.ts';
 
-export type { Session };
+export type { Session, TrustReport };
 
 /**
  * What each live session is doing, beside the rows rather than on them. No
@@ -117,14 +117,30 @@ export async function listSessions(): Promise<{ sessions: Session[]; states: Ses
   return { sessions: body.sessions, states: body.states ?? {} };
 }
 
+/**
+ * Whether the selected agent already trusts a directory, from that agent's own
+ * configuration — asked while the New session sheet is open, before anything is
+ * started. A 400 means the directory would be refused a session anyway, which is
+ * ordinary while one is being typed and is Start's sentence to say, not this one's.
+ */
+export function folderTrust(cwd: string, provider: string): Promise<TrustReport> {
+  const query = new URLSearchParams({ cwd, provider });
+  return request(`/api/machines/${MACHINE}/folder-trust?${query.toString()}`);
+}
+
 export async function createSession(
   cwd: string,
   title?: string,
   provider?: string,
+  trustFolder?: boolean,
 ): Promise<Session> {
   const body = {
     cwd,
     ...(title === undefined || title === '' ? {} : { title }),
+    // Sent only when it is true, and true only from the user's own tap on the
+    // sheet's trust box. This is the one field in the product that causes tether
+    // to write into the agent's configuration, so it says nothing by default.
+    ...(trustFolder === true ? { trustFolder: true } : {}),
     // The picker always has a provider selected, so in practice this always
     // sends one — the web's own id, not the server's default. That is the
     // design: the create route's `enum` is the enforcement, so an id that has

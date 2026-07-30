@@ -7,6 +7,7 @@ import {
   DEFAULT_PROVIDER,
   PROVIDERS,
   providerLabel,
+  trustAsk,
   unresumableNote,
   whoLabel,
 } from './providers.ts';
@@ -60,4 +61,54 @@ test('a dead session says it cannot be resumed only when it genuinely cannot', (
   assert.equal(unresumableNote({ deadAt: null, providerSessionId: null }), null);
   assert.equal(unresumableNote({ deadAt: 1, providerSessionId: 'abc' }), null);
   assert.equal(unresumableNote({ deadAt: null, providerSessionId: 'abc' }), null);
+});
+
+test('a trusted folder is asked nothing at all', () => {
+  // Not a reassuring sentence, not a ticked box: there is no question here, and
+  // the consent pattern this follows rules out mentioning a settled one.
+  for (const provider of [DEFAULT_PROVIDER, CODEX]) {
+    assert.equal(trustAsk(provider, 'trusted', '/w/p', '/w/p'), null);
+  }
+});
+
+test('an untrusted folder says what trusting means, and that declining still works', () => {
+  const ask = trustAsk(DEFAULT_PROVIDER, 'untrusted', '/w/p', '/w/p');
+  const text = (ask?.lines ?? []).join(' ');
+  assert.match(text, /Claude Code/, 'the agent is named, not "the agent"');
+  assert.match(text, /\/w\/p/, 'and so is the directory');
+  // The three things the user has to be told before deciding.
+  assert.match(text, /read, change and run files/);
+  assert.match(text, /remembered/);
+  assert.match(text, /will ask you in the terminal instead/);
+  // Something to tick, and it is a plain first-person statement rather than an
+  // instruction: the label is the decision, so it must read like one.
+  assert.equal(ask?.accept, 'I trust this folder');
+});
+
+test('a folder whose trust is about a different path says which', () => {
+  // Codex keys trust by repository, so a session in `repo/sub` agrees to `repo`.
+  // A control saying "this folder" over that would be a lie by omission.
+  const ask = trustAsk(CODEX, 'untrusted', '/w/repo', '/w/repo/sub');
+  const text = (ask?.lines ?? []).join(' ');
+  assert.match(text, /\/w\/repo, the repository \/w\/repo\/sub is in/);
+  assert.match(text, /every directory inside it/);
+  assert.equal(ask?.accept, 'I trust this folder');
+});
+
+test('an undeterminable state reports rather than assuming, and offers nothing', () => {
+  const ask = trustAsk(CODEX, 'unknown', '/w/p', '/w/p');
+  const text = (ask?.lines ?? []).join(' ');
+  assert.match(text, /cannot tell whether Codex/);
+  assert.match(text, /will not guess/);
+  // Nothing to tick. There is exactly one file tether would have to write, and it
+  // is the one it has just failed to read.
+  assert.equal(ask?.accept, undefined);
+  // And it says what happens next, because the session still starts.
+  assert.match(text, /ask in the terminal/);
+});
+
+test('an agent this build has not heard of is named by its id, and asked nothing it cannot answer', () => {
+  const ask = trustAsk('some-future-agent', 'unknown', '/w/p', '/w/p');
+  assert.match((ask?.lines ?? []).join(' '), /some-future-agent/);
+  assert.equal(ask?.accept, undefined);
 });

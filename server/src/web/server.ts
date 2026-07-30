@@ -11,6 +11,7 @@ import type { AuthStore } from './auth.ts';
 import { registerConvSocket, registerConversationRoutes } from './conversation.ts';
 import { isHostAllowed, isOriginAllowed, isStateChanging } from './guards.ts';
 import { registerHookRoute } from './hooks.ts';
+import type { TrustLocations } from '../providers/trust.ts';
 import { registerSessionRoutes } from './sessions.ts';
 import { registerStatic } from './static.ts';
 import { registerTermSocket } from './term-socket.ts';
@@ -38,6 +39,12 @@ export type ServerOptions = {
   socket?: string | undefined;
   /** Directories a session may be started in; defaults to `allowedRoots()`. */
   allowedRoots?: readonly string[] | undefined;
+  /**
+   * Where the providers keep folder trust; defaults to their real locations.
+   * Tests point it at scratch homes, so nothing reads or writes the developer's
+   * own `.claude.json` or `config.toml`.
+   */
+  trustIn?: TrustLocations | undefined;
   /** Where the built browser app lives; defaults to `WEB_DIST`. */
   webRoot?: string | undefined;
   /** Where the hook secret lives; defaults to `stateDir()`. Tests point it away. */
@@ -230,6 +237,7 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     db: options.db,
     socket: options.socket,
     allowedRoots: options.allowedRoots,
+    trustIn: options.trustIn,
   });
 
   // The same socket the session routes drive: both providers join to a registry

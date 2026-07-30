@@ -295,6 +295,39 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `Tail.catchUp` exists for one caller: the blocked hook reads the log to its end
   itself, because the `PreToolUse` it needs is certainly on disk and waiting for
   `fs.watch` would be a race an agent's turn is blocked on.
+- **Folder trust is read from each agent's own config, and the two schemes
+  differ in ways an exact-path check gets wrong.** `providers/trust.ts` holds the
+  tri-state, one `writeAtomically`, and the git resolution; each provider's
+  `trust.ts` holds its own file; the switch is `PROVIDER_TRUST` beside the other
+  two in `machine/sessions.ts`. Every rule was established by running the
+  installed CLIs under a scratch `HOME` and reading the pane, and the surprising
+  ones are why the code is not two `readFile`s: Claude Code
+  (`$CLAUDE_CONFIG_DIR/.claude.json` else `~/.claude.json`,
+  `projects["<dir>"].hasTrustDialogAccepted`) accepts a directory, **any path
+  ancestor**, or the main repo root — but _not_ the repo root's ancestors — while
+  Codex (`$CODEX_HOME/config.toml`, `[projects."<dir>"] trust_level`) matches
+  **only the main repository root, exactly**, with no ancestor walk at all. Both
+  resolve a linked worktree back to the repository it belongs to, so the git
+  helper is `dirname(--git-common-dir)` and **never `--show-toplevel`**, which
+  would key an entry the agent then ignores — in the shape this product is
+  actually used in. `unknown` is a real answer and never a guess: an absent file
+  is `untrusted` (nothing is trusted, which is determinable), a file that exists
+  and cannot be understood is `unknown`, and the sheet then says tether cannot
+  tell and offers nothing — because the file it would write is the one it just
+  failed to read. Declining writes **nothing at all**, and a write happens only
+  for a create request carrying `trustFolder: true`. Unlike the hook it is not
+  best-effort: a refused config fails the create with `trust_not_recorded`,
+  having started nothing, because a silent failure would drop the user into the
+  prompt they had just answered to avoid. Codex's is the one place tether writes
+  `config.toml` — the file holding its hook trust hashes — so the line scanner
+  there **refuses rather than guesses** on any TOML it cannot reason about
+  (multi-line strings, a bare `[projects]` table, a top-level `projects.…` dotted
+  key): appending a second table for a key the reader missed is a duplicate-key
+  error, i.e. tether breaking Codex while recording consent. One `scan` serves
+  the read and the write so the two can never disagree. The wording lives in
+  `web/src/providers.ts` (`trustAsk`) with the rest of the sentences that name an
+  agent, and the ticked box is cleared whenever the directory or the provider
+  changes — a tick must never outlive the question it was given for.
 - **The permission _policy_ is shared and the _plumbing_ is not.**
   `providers/permission.ts` holds what both providers must be held to identically:
   the three nested timeouts, `permissionTimeoutMs`, the `0600` secret and the

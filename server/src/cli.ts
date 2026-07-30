@@ -233,8 +233,10 @@ async function codexHookCommand(argv: readonly string[]): Promise<number> {
         '  [features]',
         '  hooks = true',
         '',
-        'tether does not edit that file — it is also where Codex records which',
-        'hooks you have trusted.',
+        'tether changes no setting in that file — it is also where Codex records',
+        'which hooks you have trusted. The one thing it ever writes there is a',
+        'folder you chose to trust in the New session sheet, and it backs the file',
+        'up first.',
       ].join('\n') + '\n',
     );
   }
