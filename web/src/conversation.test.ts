@@ -1,4 +1,4 @@
-import type { ConversationEvent } from '@tether/shared';
+import type { ConversationEvent, ToolCallEvent } from '@tether/shared';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -7,6 +7,7 @@ import {
   addEcho,
   addEvents,
   addPending,
+  diffExtras,
   elapsedLabel,
   errorAdvice,
   markUndelivered,
@@ -169,6 +170,7 @@ test("an Edit's input becomes a diff, and the card shows that instead of the inp
       { at: 'add', text: 'const extra = 0;' },
       { at: 'ctx', text: 'const c = 3;' },
     ],
+    covers: ['file_path', 'old_string', 'new_string'],
   });
 });
 
@@ -180,6 +182,7 @@ test('a Write is every line added, and any other tool has no diff at all', () =>
       { at: 'add', text: 'one' },
       { at: 'add', text: 'two' },
     ],
+    covers: ['file_path', 'content'],
   });
   // Nothing is guessed at: a card only draws a change when the input says one.
   assert.equal(toDiff('Bash', { command: 'rm -rf ./build' }), null);
@@ -190,19 +193,75 @@ test('a Write is every line added, and any other tool has no diff at all', () =>
 
 test("Codex's apply_patch is read as the patch it already is", () => {
   // Byte-for-byte the shape in the 0.145.0 rollout fixture.
+  const patch =
+    '*** Begin Patch\n*** Update File: /home/tester/work/probe.txt\n@@\n-HELLO\n+WORLD\n*** End Patch\n';
+  const lines = [
+    { at: 'meta', text: '*** Update File: /home/tester/work/probe.txt' },
+    { at: 'meta', text: '@@' },
+    { at: 'del', text: 'HELLO' },
+    { at: 'add', text: 'WORLD' },
+  ];
+  assert.deepEqual(toDiff('apply_patch', patch), {
+    path: '/home/tester/work/probe.txt',
+    lines,
+    covers: [],
+  });
+  // The same call as its *hook* payload carries it — `{ command: <patch> }`, the
+  // shape in the 0.145.0 hooks fixture. Whichever of the two arrives first is
+  // the card that gets drawn, and `toRow` only flips `pending` on the other, so
+  // both orderings have to produce the same diff or an answerable Codex card
+  // shows raw JSON where the change should be.
+  assert.deepEqual(toDiff('apply_patch', { command: patch }), {
+    path: '/home/tester/work/probe.txt',
+    lines,
+    covers: ['command'],
+  });
+});
+
+test('a rename is kept rather than drawn as an edit of the old path', () => {
+  // `*** Move to:` is the one `*** ` directive that changes where the file ends
+  // up, and a card the agent is blocked on may not drop it.
   const diff = toDiff(
     'apply_patch',
-    '*** Begin Patch\n*** Update File: /home/tester/work/probe.txt\n@@\n-HELLO\n+WORLD\n*** End Patch\n',
+    '*** Begin Patch\n*** Update File: old.txt\n*** Move to: new.txt\n@@\n-a\n+b\n*** End of File\n*** End Patch',
   );
-  assert.deepEqual(diff, {
-    path: '/home/tester/work/probe.txt',
-    lines: [
-      { at: 'meta', text: '*** Update File: /home/tester/work/probe.txt' },
-      { at: 'meta', text: '@@' },
-      { at: 'del', text: 'HELLO' },
-      { at: 'add', text: 'WORLD' },
-    ],
+  assert.deepEqual(diff?.lines, [
+    { at: 'meta', text: '*** Update File: old.txt' },
+    { at: 'meta', text: '*** Move to: new.txt' },
+    { at: 'meta', text: '@@' },
+    { at: 'del', text: 'a' },
+    { at: 'add', text: 'b' },
+  ]);
+});
+
+test('an answerable card says the input fields its diff does not', () => {
+  const edit = (input: unknown): ToolCallEvent => ({
+    kind: 'tool_call',
+    id: 'a#0',
+    at: AT,
+    tool: 'Edit',
+    input,
+    callId: 'c',
   });
+  const covered = { file_path: '/home/you/app/src/keys.ts', old_string: 'a', new_string: 'b' };
+
+  // Held: the diff shows one occurrence, `replace_all` rewrites every match of
+  // it, and the field is not a special case — it is simply not in the set the
+  // branch that built the diff says it consumed, so the rule catches the next
+  // such field without anyone having to think of it.
+  const held = addPending(noRows(), edit({ ...covered, replace_all: true }), AT + 20_000)
+    .rows[0] as ToolRow;
+  assert.equal(diffExtras(held), 'replace_all: true');
+
+  // The same call while it runs: nothing is being approved, so the diff is the
+  // right level of detail and the card is unchanged.
+  const running = toRows(stream(edit({ ...covered, replace_all: true })))[0] as ToolRow;
+  assert.equal(diffExtras(running), null);
+
+  // And nothing at all when the diff already speaks for the whole input — no
+  // empty section, no heading, no furniture on the card that has to fit a phone.
+  const plain = addPending(noRows(), edit(covered), AT + 20_000).rows[0] as ToolRow;
+  assert.equal(diffExtras(plain), null);
 });
 
 test('a failed call says whether it is fixing itself or waiting for a human', () => {

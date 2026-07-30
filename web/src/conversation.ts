@@ -39,7 +39,18 @@ export type SeqEvent = { seq: number; e: ConversationEvent };
  * paragraph saying so is the thing that is unreadable at 360px.
  */
 export type DiffLine = { at: 'add' | 'del' | 'ctx' | 'meta'; text: string };
-export type Diff = { path: string | null; lines: readonly DiffLine[] };
+export type Diff = {
+  path: string | null;
+  lines: readonly DiffLine[];
+  /**
+   * Which keys of the input the diff already speaks for. Reported by the branch
+   * that built it rather than listed a second time in the view, so the two
+   * cannot drift: {@link diffExtras} is what turns this into the fields an
+   * answerable card still has to say out loud, and a branch added below without
+   * naming its keys shows them all rather than hiding them.
+   */
+  covers: readonly string[];
+};
 
 export type ToolRow = {
   key: string;
@@ -156,7 +167,13 @@ const CONTEXT = 3;
  *  - Claude Code's `Edit` (`old_string`/`new_string`) and `Write` (`content`,
  *    which is every line added).
  *  - Codex's `apply_patch`, whose input already *is* a patch — so it is read
- *    rather than recomputed, and its own `+`/`-` are believed.
+ *    rather than recomputed, and its own `+`/`-` are believed. It arrives in
+ *    two shapes and both are read here: the rollout record's `input` is the
+ *    patch string itself, while the hook that proposes the same call wraps it
+ *    as `{ command: <patch> }`. Whichever of the two reaches the client first
+ *    builds the card — `toRow` only flips `pending` on the other — so a card
+ *    built from the hook has to be right the first time or it shows raw JSON
+ *    where the change should be, on the one card the agent is blocked on.
  *
  * Anything else is `null` and the card keeps the input view it has always had.
  * A third provider's shape is another branch here, not a redesign: the row
@@ -170,13 +187,57 @@ export function toDiff(tool: string, input: unknown): Diff | null {
   const before = fields['old_string'];
   const after = fields['new_string'];
   if (typeof before === 'string' && typeof after === 'string') {
-    return { path, lines: lineDiff(before, after) };
+    return {
+      path,
+      lines: lineDiff(before, after),
+      covers: ['file_path', 'old_string', 'new_string'],
+    };
   }
   const content = fields['content'];
   if (tool === 'Write' && typeof content === 'string') {
-    return { path, lines: content.split('\n').map((text) => ({ at: 'add', text })) };
+    return {
+      path,
+      lines: content.split('\n').map((text) => ({ at: 'add', text })),
+      covers: ['file_path', 'content'],
+    };
+  }
+  const command = fields['command'];
+  if (typeof command === 'string') {
+    const patch = parsePatch(command);
+    // `parsePatch` requires the marker, so an ordinary `Bash` command is `null`
+    // here and the card keeps its input view.
+    return patch === null ? null : { ...patch, covers: ['command'] };
   }
   return null;
+}
+
+/**
+ * The input fields the diff does **not** itself say, on a card the agent is
+ * blocked on — one `name: value` per line, or `null` when there are none.
+ *
+ * The diff replaces the input view, which is the right level of detail for a
+ * call already running: it is the change, and the fields it was built from are
+ * in it. On an *answerable* card it is not, because anything the diff cannot
+ * draw is then a part of what is being approved that nobody is shown —
+ * `replace_all` rewriting every match where the diff shows one occurrence is
+ * the instance that was noticed, and the next such field is the one nobody
+ * thought of. So the rule is the general one: whatever `Diff.covers` does not
+ * name is said beside it. In the ordinary case the set is empty and the card is
+ * exactly as short as it was.
+ */
+export function diffExtras(row: ToolRow): string | null {
+  const diff = row.diff;
+  if (row.answerable === null || diff === null) return null;
+  if (typeof row.input !== 'object' || row.input === null) return null;
+  const covered = new Set(diff.covers);
+  const extras = Object.entries(row.input as Record<string, unknown>)
+    .filter(([name]) => !covered.has(name))
+    .map(([name, value]) => `${name}: ${typeof value === 'string' ? value : format(value)}`);
+  return extras.length === 0 ? null : extras.join('\n');
+}
+
+function format(value: unknown): string {
+  return JSON.stringify(value) ?? String(value);
 }
 
 /**
@@ -215,6 +276,14 @@ function lineDiff(before: string, after: string): DiffLine[] {
 const PATCH_FILE = /^\*\*\* (?:Update|Add|Delete) File: (.+)$/;
 
 /**
+ * The only `*** ` lines that carry nothing: the two delimiters and the marker
+ * that a hunk runs to the end of the file. Every other directive is kept —
+ * `*** Move to: <path>` is a rename, and a rename dropped from a card the agent
+ * is blocked on is a file moving somewhere nobody approved.
+ */
+const PATCH_NOISE = /^\*\*\* (?:Begin Patch|End Patch|End of File)\s*$/;
+
+/**
  * Codex's `apply_patch` input. Verified against the 0.145.0 rollout fixture:
  * `*** Begin Patch` / `*** Update File: <path>` / `@@` / `-old` / `+new` /
  * `*** End Patch`. The marker is required rather than sniffed for `+`/`-`,
@@ -230,13 +299,14 @@ function parsePatch(text: string): Diff | null {
     if (file !== null) {
       path ??= file[1] ?? null;
       lines.push({ at: 'meta', text: line });
-    } else if (line.startsWith('*** ')) continue;
+    } else if (PATCH_NOISE.test(line)) continue;
+    else if (line.startsWith('*** ')) lines.push({ at: 'meta', text: line });
     else if (line.startsWith('@@')) lines.push({ at: 'meta', text: line });
     else if (line.startsWith('+')) lines.push({ at: 'add', text: line.slice(1) });
     else if (line.startsWith('-')) lines.push({ at: 'del', text: line.slice(1) });
     else lines.push({ at: 'ctx', text: line.startsWith(' ') ? line.slice(1) : line });
   }
-  return { path, lines };
+  return { path, lines, covers: [] };
 }
 
 /**
@@ -703,8 +773,11 @@ export function elapsedLabel(
   const ms = now - startedAt;
   if (ms < threshold) return null;
   const seconds = Math.floor(ms / 1000);
-  // Padded, so the width does not change every second: the chip sits on the
-  // session bar, and nothing on that bar may reflow while a session runs.
+  // The seconds are padded, so the label does not jitter a character wider and
+  // narrower every second. It is not a *constant* width — the minutes grow at
+  // 10m — and it does not need to be: what may not change on the session bar is
+  // its **height**, and `.chip` is `nowrap` inside a `.bar-chips` row that is
+  // sized by the row and not by this string.
   return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`;
 }
 

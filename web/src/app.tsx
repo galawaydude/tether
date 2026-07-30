@@ -54,13 +54,16 @@ function useWide(): boolean {
  * rest of the time, which is nearly all of it. The clock starts when the turn
  * does and stops when it ends, so a session sitting idle costs no timer at all.
  *
- * The tick is 1s and unconditional while a turn runs, which is one re-render of
- * the session header per second. That is the cheapest thing on this screen (the
- * panes below it are memo-free but re-render from their own state, not this),
- * and the alternative — a timer that only starts at the threshold — needs a
- * second timer to arm it.
+ * The tick is 1s and unconditional while a turn runs, so **this is a leaf of its
+ * own** rather than a hook on the session screen. A re-render is a re-render of
+ * the component holding the state and everything under it: from the screen, one
+ * tick would re-diff the whole conversation — every card, every markdown tree,
+ * every diff row, thousands of nodes on a session with a few `Edit`s — once a
+ * second, precisely while the agent is working. From here it re-renders one
+ * `<span>`. The alternative to ticking unconditionally is a timer that only
+ * starts at the threshold, which needs a second timer to arm it.
  */
-function useElapsed(running: boolean): string | null {
+function ElapsedChip({ running }: { running: boolean }) {
   const [now, setNow] = useState(() => Date.now());
   const startedAt = useRef<number | null>(null);
   if (running && startedAt.current === null) startedAt.current = Date.now();
@@ -73,7 +76,10 @@ function useElapsed(running: boolean): string | null {
     return () => clearInterval(timer);
   }, [running]);
 
-  return running ? elapsedLabel(startedAt.current, now) : null;
+  const elapsed = running ? elapsedLabel(startedAt.current, now) : null;
+  // Mono, because it is the machine reporting. Nothing at all until the turn is
+  // long enough to be worth saying — see `elapsedLabel`.
+  return elapsed === null ? null : <span class="chip-elapsed">{elapsed}</span>;
 }
 
 /**
@@ -202,7 +208,6 @@ function SessionScreen({
   // summoned it is exactly the thing that says why, and the banner under it is
   // what sends a user to the terminal in the first place.
   const [agent, setAgent] = useState<{ state: SessionState; detail?: string }>({ state: 'idle' });
-  const elapsed = useElapsed(agent.state === 'busy');
 
   // The one thing the two panes do share, and only because the wire says so: a
   // composed message is an `input` frame on the terminal channel, which is where
@@ -267,11 +272,9 @@ function SessionScreen({
         <div class="bar-chips">
           <span class={`chip chip-agent-${agent.state}`}>
             {STATE_TEXT[agent.state]}
-            {/* Nothing at all until the turn is long enough to be worth
-                saying — see `elapsedLabel`. Mono, because it is the machine
-                reporting, and its width is fixed by the padded seconds so the
-                bar cannot reflow under a running terminal. */}
-            {elapsed !== null && <span class="chip-elapsed">{elapsed}</span>}
+            {/* Its own component, so the 1s tick re-renders this span and not
+                the conversation under it — see `ElapsedChip`. */}
+            <ElapsedChip running={agent.state === 'busy'} />
           </span>
           <span class={`chip chip-${status[front]}`} role="status">
             {STATUS_TEXT[status[front]]}

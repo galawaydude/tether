@@ -1507,8 +1507,10 @@ label {
 }
 
 /* The turn stopwatch, inside the state chip. It appears only past the threshold
-   (`elapsedLabel`), so it is never furniture — and the seconds are padded, so
-   the chip's width is constant once it is there and the bar cannot reflow. */
+   (`elapsedLabel`), so it is never furniture — and the seconds are padded, so it
+   does not jitter a character wider and narrower every second. Its width still
+   grows once, at 10m; what the bar may not change is its *height*, and this chip
+   is `nowrap` on a row that is sized by the row rather than by this string. */
 .chip-elapsed {
   margin-left: 6px;
   font-variant-numeric: tabular-nums;

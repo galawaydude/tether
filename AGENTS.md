@@ -498,7 +498,17 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `conversation.ts` reads the tool call's **input** — `old_string`/`new_string`,
   `Write`'s `content`, or Codex's `apply_patch` patch text, which is believed
   rather than recomputed — and the row carries the result, computed once where
-  it is built. It is not an LCS: the identical head and tail are trimmed and
+  it is built. Codex hands that patch over in **two** shapes and both are read
+  here: the rollout record's `input` is the patch string, the hook that proposes
+  the same call wraps it as `{ command: … }`, and whichever arrives first builds
+  the card (`toRow` only flips `pending` on the other), so a card built from the
+  hook has to be right the first time. Each branch reports the input keys it
+  consumed as `Diff.covers`, which is what `diffExtras` subtracts: on an
+  **answerable** card anything the diff does not speak for is shown beside it —
+  `replace_all` rewrites every match where the diff draws one — and that is a
+  general rule rather than a list of known fields, precisely so the field nobody
+  thought of is covered too. Nothing is drawn when the set is empty. It is not
+  an LCS: the identical head and tail are trimmed and
   everything between is called changed, which is exactly what an `Edit` is, and
   where it is not it over-reports rather than mis-attributing a line. Two things
   the view must keep: the rows are a CSS table so a tinted row runs the full

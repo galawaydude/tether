@@ -23,6 +23,7 @@ import {
   addEcho,
   addEvents,
   addPending,
+  diffExtras,
   errorAdvice,
   markUndelivered,
   noRows,
@@ -588,6 +589,9 @@ function RowView({ row, provider, sessionId }: { row: Row; provider: string; ses
 function ToolCard({ row, sessionId }: { row: ToolRow; sessionId: string }) {
   const answerable = row.answerable;
   const advice = row.failed && row.result !== null ? errorAdvice(row.result) : null;
+  // What the diff does not itself say, on a card that is being approved.
+  // `null` — which is nearly always — draws nothing at all, not an empty box.
+  const extras = diffExtras(row);
   return (
     <details
       class={`tool${row.failed ? ' tool-failed' : ''}${row.pending ? ' tool-pending' : ''}${
@@ -601,7 +605,15 @@ function ToolCard({ row, sessionId }: { row: ToolRow; sessionId: string }) {
         <span class="tool-state">{toolState(row)}</span>
       </summary>
       {row.diff !== null ? (
-        <DiffView diff={row.diff} />
+        <>
+          <DiffView diff={row.diff} />
+          {extras !== null && (
+            <>
+              <h4 class="tool-label">Also</h4>
+              <pre class="tool-body">{extras}</pre>
+            </>
+          )}
+        </>
       ) : (
         row.input !== undefined && (
           <>
