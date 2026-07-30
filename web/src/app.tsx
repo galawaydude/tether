@@ -84,7 +84,12 @@ export function App() {
   if (!authenticated) return <Login onDone={() => setAuthenticated(true)} />;
   const signedOut = () => setAuthenticated(false);
   const list = (
-    <Sessions onOpen={setOpen} onSignedOut={signedOut} openId={wide ? (open?.id ?? null) : null} />
+    <Sessions
+      onOpen={setOpen}
+      onSignedOut={signedOut}
+      rail={wide}
+      openId={wide ? (open?.id ?? null) : null}
+    />
   );
   const session =
     open === null ? null : (
@@ -103,10 +108,12 @@ export function App() {
     <div class="workspace">
       {list}
       {session ?? (
-        <div class="blank">
+        // The `<main>` of this shape when nothing is open: the right-hand pane is
+        // the primary content either way, and the rail beside it is complementary.
+        <main class="blank">
           <p class="wordmark">tether</p>
           <p class="muted">Pick a session on the left, or start a new one.</p>
-        </div>
+        </main>
       )}
     </div>
   );
@@ -167,7 +174,9 @@ function SessionScreen({
   const sender = useRef<((message: string) => void) | null>(null);
 
   return (
-    <div class="screen">
+    // The `<main>` in both shapes: on a phone the list has unmounted, and in the
+    // rail shape the list is the complementary landmark beside this one.
+    <main class="screen">
       <header class="bar">
         <button class="ghost bar-back" onClick={onBack} aria-label="Back to sessions">
           ‹ Sessions
@@ -250,7 +259,7 @@ function SessionScreen({
           </div>
         ))}
       </div>
-    </div>
+    </main>
   );
 }
 
@@ -312,10 +321,19 @@ function Login({ onDone }: { onDone: () => void }) {
 function Sessions({
   onOpen,
   onSignedOut,
+  rail,
   openId,
 }: {
   onOpen: (session: Session) => void;
   onSignedOut: () => void;
+  /**
+   * Whether this list is the rail beside an open session rather than the whole
+   * screen. It decides the landmark and the class the rail's border keys off, and
+   * nothing else: a document may have exactly one `<main>`, and in the rail shape
+   * that is the session on the right, so here the list is a named complementary
+   * landmark instead.
+   */
+  rail: boolean;
   /**
    * Which row is the session on screen beside this list, or `null` on a phone,
    * where the list is never on screen at the same time as a session and a
@@ -356,8 +374,11 @@ function Sessions({
     await refresh();
   };
 
+  // `.rail` is also what the desktop border keys off, so the class carries the
+  // shape rather than the element name doing it.
+  const Frame = rail ? 'aside' : 'main';
   return (
-    <main class="screen">
+    <Frame class={rail ? 'screen rail' : 'screen'} aria-label={rail ? 'Sessions' : undefined}>
       <header class="bar">
         <h1 class="wordmark">tether</h1>
         <button
@@ -458,7 +479,7 @@ function Sessions({
           }}
         />
       )}
-    </main>
+    </Frame>
   );
 }
 

@@ -435,8 +435,24 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   secure-context gate. Crossing the breakpoint remounts the session screen, so
   it costs one tmux replay and one conversation refetch; that is acceptable
   because a phone never crosses it (390×844 rotated is still 844) and nothing
-  is lost, only re-derived. The rail needs no class of its own — the list is
-  the only `<main>` in the tree.
+  is lost, only re-derived. Which element is the `<main>` follows the shape, so
+  neither layout has two or none: on a phone the list is the `<main>` and the
+  open session replaces it, while in the rail shape the **right** pane is the
+  `<main>` — the open session, or `.blank` when nothing is open — and the list
+  becomes a complementary landmark named "Sessions" (`rail` is the only thing
+  that prop decides). The rail's border keys off `.rail`, never off `main`: a
+  border that follows the landmark moves the day the landmark does.
+- **The desktop rail keeps the session list mounted beside the open session, so
+  its 5s poll no longer stops when a session is opened.** On a phone `Sessions`
+  unmounts and `clearInterval` runs; past `WIDE` it does not, so every tick is a
+  `GET /api/sessions` for as long as a session is watched — `tmux list-sessions`
+  via `reconcileWithTmux`, `tmux list-panes` via `statesFor`, and a
+  `/proc/<pid>/stat` plus a status-file read per live session. That is the
+  deliberate price of a **live** rail: on the hardware tether runs on it is
+  negligible, and a stale list beside a running session is worse than the cost.
+  It is desktop-only — the narrow branch is unchanged. Do not add
+  visibility-pause machinery, tab-focus gating or a longer interval while a
+  session is open; no pause mechanism is wanted here.
 - **The session bar's height may not follow its own text.** The chips say
   "Connecting…" then "Live", "Idle" then "Waiting for you", and a bar that wraps
   only when its own text happens to be long changes height as a session runs —
@@ -452,7 +468,7 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `coerceTypes` are on): `additionalProperties: false` strips instead of rejecting, and
   `{"password": 123}` arrives as `"123"`. `buildServer` turns both off. Do not remove that
   `ajv.customOptions` block, and do not assume stock Fastify behaviour when reading the tests.
-- **`e2e/` is four Playwright specs and they assert counts and geometry, not presence.**
+- **`e2e/` is five Playwright specs and they assert counts and geometry, not presence.**
   They drive the real `tether serve` (`e2e/serve.ts` calls the CLI's own `main`) inside a
   scratch `HOME`/state dir/tmux socket, with `e2e/stub-agent.ts` on `PATH` as `claude` — so
   the session is created through the production path and **CI still never runs a live
@@ -463,7 +479,14 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   each session shows _its own_ conversation and keeps it — two sessions in one directory,
   then a `/resume` typed at one pane (which the stub acts out by moving to a new session
   id and a new transcript, announcing it only through its registry file). That last claim
-  is the one found in live use rather than by a test.
+  is the one found in live use rather than by a test. `desktop.spec.ts` is the only spec
+  above the 900px breakpoint and the only test that renders the `.workspace` shape at
+  all: it measures the rail's box against the session's, counts the back button at **0**
+  rather than checking it is invisible (`display: none` is the point), counts exactly one
+  `<main>`, and checks the page cannot scroll sideways. Two Playwright projects carry
+  that, `phone` and `desktop`, each with a `testIgnore`/`testMatch` so neither runs the
+  other's spec at the wrong width — they still share the one server, so the directory
+  and by-name rules below apply to it too.
   `toContainText` passes just as happily
   on a view that replayed itself twice, on two cards for one tool call, and on an echo
   still standing beside its own record.
@@ -473,7 +496,7 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `.conv` and `.xterm-rows` because both panes stay mounted; the terminal comparison is of
   the **rendered screen** before versus after — the buffer above it legitimately holds the
   capture _under_ tmux's repaint, and byte-exactness of the recipe is
-  `terminal.test.ts`'s job; and the four specs share one server and one session list, so
+  `terminal.test.ts`'s job; and the specs share one server and one session list, so
   each takes its own directory and reopens its session **by name**, never `.row-open` —
   which is why `identity.spec.ts`, the one spec that deliberately puts two sessions in one
   directory, gives both a title.

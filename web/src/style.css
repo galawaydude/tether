@@ -125,9 +125,11 @@ body {
   min-height: 0;
 }
 
-/* The list is the only `<main>` in the tree, so the rail needs no class of its
-   own — and `app.tsx` needs no prop saying which shape it is being rendered in. */
-.workspace > main.screen {
+/* Its own class, never `main.screen`: in this shape the open session is the
+   `<main>` and the list is a complementary landmark beside it, and a border that
+   keys off which element happens to be the landmark moves the moment that
+   changes. */
+.workspace > .rail {
   border-right: 1px solid var(--line);
 }
 
@@ -444,21 +446,28 @@ label {
   --spine: var(--codex);
 }
 
-/* The one that is open, in the desktop rail. Tinted with its own provider
-   colour rather than a fourth accent, so "selected" and "which agent" are the
-   same fact told twice.
+/* The one that is open, in the desktop rail. Said in its own provider colour
+   rather than a fourth accent, so "selected" and "which agent" are the same fact
+   told twice — and said with the spine and the border rather than with a tint.
  *
- * The tint is a fourth surface, so it takes both numbers below to stay legible:
- * a tint this strong puts `--dim` at 5:1, under the floor, so on this row `--dim`
- * steps up to `--muted` — which 12% would leave at 5.4:1 and 8% leaves at 5.9:1.
- * The path, the note and the state word on the row being read are the one place
- * they are not at the floor. */
+ * A row's background is a shared boundary: `.tag` and `.chip` each lay their own
+ * translucent wash on top of whatever they sit on, so a row that lifts its
+ * background re-opens the contrast floor for every one of them at once. A tint
+ * here did exactly that — it put `--claude` on a tag at 4.96:1 and a dead row's
+ * chip at 5.06:1 — so this state adds no surface: the background stays
+ * `--raise`, which every number in this file is already computed against, and
+ * "selected" is carried by a doubled spine and a provider-coloured border. Any
+ * future change to a row's background must be re-measured against those
+ * self-tinting children, for every provider and every chip tone. */
 .row-on,
 .row-on:hover {
-  --dim: var(--muted); /* 5.9:1 on the codex tint, 6:1 on the claude one */
-  background: color-mix(in srgb, var(--spine, var(--fg)) 8%, var(--raise));
-  border-color: color-mix(in srgb, var(--spine, var(--line-lit)) 35%, var(--line));
-  border-left-color: var(--spine, var(--line-lit));
+  background: var(--raise);
+  /* The whole border in the provider's colour, and the spine twice as wide — a
+     solid bar, not a wash, and inside the row's own padding where no text sits,
+     so it composites with nothing. Together they are what keeps "selected"
+     unmistakable against hover, which shares this background. */
+  border-color: var(--spine, var(--line-lit));
+  box-shadow: inset 3px 0 0 0 var(--spine, var(--line-lit));
 }
 
 /* Right-aligned whether they share the title's line or wrapped below it. */
@@ -520,7 +529,7 @@ label {
   padding: 3px 7px;
   border-radius: 5px;
   background: color-mix(in srgb, currentcolor 16%, transparent);
-  font: 600 10.5px/1 var(--mono);
+  font: 600 11.5px/1 var(--mono);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--dim);
@@ -606,7 +615,7 @@ label {
    well clear of the 12% wash it lays down, but a neutral one *is* that wash, so
    text and background rise together and the ratio cannot be won by choosing a
    lighter grey. Unfilled, "Idle" reads on the row's own surface, at the same
-   6.4:1 (panel) / 6:1 (raise) / 5.9:1 (a selected row) as every other machine
+   6.4:1 (panel) / 6:1 (raise, so a hovered or selected row too) as every other machine
    detail — and it stays the quietest state on the screen, which is what it is. */
 .chip-agent-idle {
   --tone: var(--dim);
@@ -744,7 +753,7 @@ label {
 
 .msg-who {
   margin: 0 0 5px;
-  font: 600 10.5px/1 var(--mono);
+  font: 600 11.5px/1 var(--mono);
   color: var(--dim);
   text-transform: uppercase;
   letter-spacing: 0.09em;
@@ -775,7 +784,7 @@ label {
   display: flex;
   align-items: center;
   gap: 10px;
-  font: 600 10.5px/1 var(--mono);
+  font: 600 11.5px/1 var(--mono);
   text-transform: uppercase;
   letter-spacing: 0.09em;
 }
@@ -932,7 +941,7 @@ label {
 
 .tool-label {
   margin: 10px 12px 5px;
-  font: 600 10px/1 var(--mono);
+  font: 600 11.5px/1 var(--mono);
   color: var(--dim);
   text-transform: uppercase;
   letter-spacing: 0.09em;
