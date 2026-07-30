@@ -37,7 +37,8 @@ import {
   type ToolRow,
 } from './conversation.ts';
 import { markdown, type Block, type Span } from './markdown.ts';
-import { copyLabel, whoLabel } from './providers.ts';
+import { axesFor, choiceIn, composerHint, lowersBar, type Axis, type Choice } from './options.ts';
+import { copyLabel, providerLabel, whoLabel } from './providers.ts';
 import type { Send, Status } from './terminal.tsx';
 
 /** Same shape of backoff as the terminal channel, and for the same phone. */
@@ -288,10 +289,18 @@ export function ConversationView({
       </div>
       <Composer
         agent={agent}
+        provider={provider}
         terminal={terminal}
         onSend={(text) => {
           sender.current?.(text);
           setState((current) => addEcho(current, text));
+        }}
+        // An option is keystrokes, not a message: no echo, because nothing the
+        // user wrote is outstanding. The agent's own answer to the command is
+        // the confirmation, and it arrives through the transcript like
+        // everything else on this screen.
+        onApply={(keys) => {
+          for (const key of keys) sender.current?.(key);
         }}
       />
     </>
@@ -315,20 +324,33 @@ export function ConversationView({
  */
 function Composer({
   agent,
+  provider,
   terminal,
   onSend,
+  onApply,
 }: {
   agent: SessionState;
+  provider: string;
   terminal: Status;
   onSend: (text: string) => void;
+  onApply: (keys: readonly string[]) => void;
 }) {
   const [text, setText] = useState('');
   const box = useRef<HTMLTextAreaElement>(null);
+  /** A choice held back until its warning has been read. Never more than one:
+   *  a second warning stacked behind the first is a warning nobody reads. */
+  const [held, setHeld] = useState<{ axis: Axis; choice: Choice; note: string } | null>(null);
 
   // The message as it would be sent, so the refusal measures what the server
   // will measure rather than what is on screen.
   const message = text.trim();
   const blocked = sendBlocked(agent, message, terminal);
+  // The same two facts, minus the length rule: an option's keystrokes are a
+  // handful of characters, so only "nothing can reach this session" and "answer
+  // the prompt in the terminal first" can stop them — the second because a
+  // slash command pasted at a permission dialog answers the dialog.
+  const optionsBlocked = sendBlocked(agent, '', terminal) !== null;
+  const axes = axesFor(provider);
 
   const submit = (event: Event) => {
     event.preventDefault();
@@ -336,6 +358,16 @@ function Composer({
     onSend(message);
     setText('');
     if (box.current !== null) box.current.style.height = '';
+  };
+
+  const pick = (axis: Axis, value: string) => {
+    const choice = choiceIn(axis, value);
+    if (choice === undefined) return;
+    const note = lowersBar(choice);
+    // Held, not applied: a value that stops the agent asking before it acts has
+    // to say so first, in the same spirit as the Codex hook's own consent.
+    if (note !== null) setHeld({ axis, choice, note });
+    else onApply(choice.keys);
   };
 
   return (
@@ -348,7 +380,7 @@ function Composer({
         ref={box}
         class="composer-text"
         rows={1}
-        placeholder="Message the agent…"
+        placeholder={composerHint(providerLabel(provider))}
         aria-describedby={blocked === null ? undefined : 'composer-blocked'}
         value={text}
         onInput={(event) => {
@@ -361,9 +393,60 @@ function Composer({
           element.style.height = `${element.scrollHeight}px`;
         }}
       />
-      <button type="submit" class="primary" disabled={message === '' || blocked !== null}>
-        Send
-      </button>
+      {held !== null && (
+        <div class="composer-warn" role="group" aria-label={`Confirm ${held.axis.label}`}>
+          <p role="alert">
+            <strong>{held.choice.label}</strong> — {held.note}
+          </p>
+          <div class="composer-warn-acts">
+            <button type="button" onClick={() => setHeld(null)}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              class="primary"
+              onClick={() => {
+                onApply(held.choice.keys);
+                setHeld(null);
+              }}
+            >
+              {`Set ${held.axis.label.toLowerCase()} to ${held.choice.label}`}
+            </button>
+          </div>
+        </div>
+      )}
+      <div class="composer-bar">
+        {/* Each control is a menu of values, never a display of the agent's
+            current one — tether cannot read most of those from a running pane,
+            and a stale value beside a live agent is worse than no value. So it
+            shows the axis, resets to it after applying, and the pane's own
+            answer in the conversation above is the confirmation. */}
+        {axes.map((axis) => (
+          <select
+            key={axis.id}
+            class="composer-opt"
+            aria-label={axis.label}
+            disabled={optionsBlocked}
+            value=""
+            onChange={(event) => {
+              const element = event.currentTarget;
+              const value = element.value;
+              element.value = '';
+              if (value !== '') pick(axis, value);
+            }}
+          >
+            <option value="">{axis.label}</option>
+            {axis.choices.map((choice) => (
+              <option key={choice.value} value={choice.value}>
+                {choice.label}
+              </option>
+            ))}
+          </select>
+        ))}
+        <button type="submit" class="primary" disabled={message === '' || blocked !== null}>
+          Send
+        </button>
+      </div>
       {blocked !== null && (
         <p class="composer-note" id="composer-blocked" role="status">
           {blocked}

@@ -1562,14 +1562,22 @@ label {
 
 /* ── composer ───────────────────────────────────────────────────────────── */
 
-/* Sits below the conversation and inside the pane, so it scrolls nothing and is
-   never scrolled away from. `flex: none` for the same reason `.conv > *` needs
-   it: this is a column flex container's child. */
+/* A panel, not a text field: the box, then a row of the agent's own option
+   controls and Send. Sits below the conversation and inside the pane, so it
+   scrolls nothing and is never scrolled away from. `flex: none` for the same
+   reason `.conv > *` needs it: this is a column flex container's child.
+
+   A column rather than a wrapping row, so the message box keeps the full width
+   at every size and the controls can never squeeze it — pushing the box off
+   screen is the failure a 360px screen finds first, and it has been found here
+   once already. Everything it contains is bounded (the box by `max-height`, the
+   controls by one or two rows of chips), so the conversation above it stays the
+   thing that grows. It changes no height outside this pane, so the terminal —
+   and every other viewer's tmux pane — is untouched by any of it. */
 .composer {
   display: flex;
   flex: none;
-  flex-wrap: wrap;
-  align-items: flex-end;
+  flex-direction: column;
   gap: 8px;
   padding: 10px 12px;
   padding-bottom: max(10px, env(safe-area-inset-bottom));
@@ -1577,8 +1585,88 @@ label {
   border-top: 1px solid var(--line);
 }
 
+/* The controls row: every option control, then Send, on **one** line at every
+   width tether supports.
+ *
+ * That is the whole of the phone decision, and it is enforced by making the
+ * options share what Send does not take rather than by hoping they fit. The
+ * reference is a desktop app with room for five controls; at 360px two of them
+ * at their natural width plus Send already overflow, and a wrapped row is not a
+ * free fallback here — a second row is 52px, which at 360×340 (this phone with
+ * its keyboard up) is most of what is left of the conversation. So the options
+ * flex from a zero basis and Send keeps its own width, and the row is 44px for
+ * one control or four. */
+.composer-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Deliberately the *native* control. A `<select>` is the platform's own menu:
+   on a phone it opens as a full-screen picker with real touch targets, it is
+   keyboard- and screen-reader-complete for free, and it needs no popup
+   positioning code that would have to be kept inside a 360px viewport. Only its
+   frame is styled, so the platform keeps drawing its own disclosure arrow — and
+   the popup is not bound by the control's width, which is what lets these be
+   narrow while their values are not.
+ *
+ * `flex: 1 1 0` with `min-width: 0` against the global `select { width: 100% }`,
+ * which is sized for the New session sheet's stacked form and would give each of
+ * these the full row. `font-size` stays at the global 16px: under it, iOS Safari
+ * zooms the page on focus and never zooms back.
+ *
+ * Cool and quiet, never amber — amber in this app means a human is needed, and
+ * these set machine state. Sans rather than mono for the same reason: what the
+ * control shows is tether's own word for the axis, not the machine's. */
+.composer-opt {
+  flex: 1 1 0;
+  width: auto;
+  min-width: 0;
+  max-width: 200px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line-lit);
+  background: var(--raise);
+  color: var(--muted);
+  font-family: var(--sans);
+}
+
+.composer-opt:disabled {
+  opacity: 0.55;
+}
+
+/* A value that stops the agent asking before it acts says so, and is applied
+   only after that sentence has been read. Bordered in the danger colour and
+   given the full width, because it is the one thing in this panel that changes
+   what the agent may do to the machine — the same standard the permission card
+   is held to, on the surface that could otherwise undo it silently. */
+.composer-warn {
+  border: 1px solid var(--danger);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--danger) 10%, var(--wash));
+}
+
+.composer-warn p {
+  margin: 0 0 10px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--fg);
+}
+
+.composer-warn-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* `flex: none` because the panel is a column now: left to grow, the box would
+   take every pixel the conversation gave up rather than the height its own text
+   asks for. */
 .composer-text {
-  flex: 1;
+  flex: none;
+  width: 100%;
   min-width: 0;
   /* Grown to fit by the view, up to here. A composer that can eat the
      conversation is the failure a 360×640 screen finds first. */
