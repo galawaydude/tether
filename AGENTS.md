@@ -475,6 +475,48 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   contain the word "message"**, because the composer's own label is that word
   and Playwright's `getByLabel` matches on a substring, so one that does makes
   `getByLabel('Message')` ambiguous and takes two e2e specs down at once.
+- **Agent text is rendered as markdown, and the safety of that is structural
+  rather than a filter.** `web/src/markdown.ts` parses a **bounded** subset —
+  headings, `*`-only emphasis, lists, links, inline code, block quotes, fenced
+  code — into a tree of blocks and spans, and `conversation.tsx` picks an element
+  per node and passes every string through as a **child**, so agent text becomes
+  a text node. There is no `innerHTML` and no HTML string anywhere in the path,
+  which is why a `<script>` in a fenced block needs no escaping to be harmless;
+  keep it that way rather than adding a sanitiser. The one value that becomes
+  live browser behaviour is a link's `href`, gated by `safeHref` — an allow-list
+  of `http`/`https`/`mailto`, never a `javascript:` blocklist, because
+  `java\nscript:` is a URL a blocklist misses and a browser honours. Three
+  parser rules that look arbitrary and are not: `_` is **not** an emphasis
+  marker (`old_string` is one identifier, not two words around an italic); a
+  bare `**` matches and emits nothing, which is a lookbehind written as an
+  alternative because a real `(?<!\*)` is a _parse-time_ SyntaxError on iOS
+  Safari before 16.4 and would take the bundle down on exactly the phones this
+  is for; and plain text emits a **bare string** rather than a `<span>`, because
+  the e2e specs count `getByText(exact)` matches. No new dependency for any of
+  it, and none is wanted.
+- **An Edit is a diff, not a paragraph about one.** `toDiff` in
+  `conversation.ts` reads the tool call's **input** — `old_string`/`new_string`,
+  `Write`'s `content`, or Codex's `apply_patch` patch text, which is believed
+  rather than recomputed — and the row carries the result, computed once where
+  it is built. It is not an LCS: the identical head and tail are trimmed and
+  everything between is called changed, which is exactly what an `Edit` is, and
+  where it is not it over-reports rather than mis-attributing a line. Two things
+  the view must keep: the rows are a CSS table so a tinted row runs the full
+  scroll width, so **every row has exactly two cells** (a third puts its text in
+  a column of its own and shoves it off the right edge — hence the spoken
+  "added"/"removed" living inside the gutter cell); and on an **answerable**
+  card the diff wraps instead of scrolling, by the same rule as the command,
+  since a removed line running past the right edge of a card the agent is
+  blocked on is the same "approving blind". The `+`/`−` gutter is not
+  decoration: red/green alone is the one distinction a large minority of people
+  cannot make.
+- **A failed card says whether to act, and that is the whole of the typed-error
+  feature.** `errorAdvice` maps an output to _retrying itself_ or _needs you_,
+  and `toolState` puts that word on the collapsed row, which is what a glance
+  gets. Cases are added **one at a time as they are met**, each anchored to the
+  start of the output — tool output is arbitrary text, and a `grep` that finds
+  "rate limit" in a log must not be reported as the provider rate-limiting.
+  `null` — no claim at all — is the right answer for anything not recognised.
 - **The composer's message leaves on the _terminal_ pane's socket, and that is
   the only thing the two panes share.** A composed message is an `input` frame,
   and input sequencing — the per-client `seq`, the server's highest-applied map,

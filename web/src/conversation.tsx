@@ -23,16 +23,19 @@ import {
   addEcho,
   addEvents,
   addPending,
+  errorAdvice,
   markUndelivered,
   noRows,
   rebuild,
   sendBlocked,
   toolResult,
   toolState,
+  type Diff,
   type Row,
   type Rows,
   type ToolRow,
 } from './conversation.ts';
+import { markdown, type Block, type Span } from './markdown.ts';
 import { copyLabel, whoLabel } from './providers.ts';
 import type { Send, Status } from './terminal.tsx';
 
@@ -274,7 +277,10 @@ export function ConversationView({
             {/* The same label the record that replaces it will carry, so the
                 swap changes the note and nothing else. */}
             <h3 class="msg-who">{whoLabel('user', provider)}</h3>
-            <p class="msg-text">{echo.text}</p>
+            {/* Rendered the same way the record that replaces it will be, so a
+                message with a code fence in it does not change shape a second
+                later when the transcript catches up. */}
+            <Markdown blocks={markdown(echo.text)} />
             <p class="msg-note">{echo.undelivered ?? 'Sending…'}</p>
           </article>
         ))}
@@ -432,16 +438,123 @@ function MessageActions({ text, label }: { text: string; label: string }) {
   );
 }
 
+/**
+ * The markdown tree → elements, and that is the whole of it: every string
+ * arrives as a *child*, which Preact makes a text node out of, so nothing an
+ * agent writes can become markup. There is no `dangerouslySetInnerHTML` in this
+ * file and no HTML string anywhere behind it. The one attribute taken from
+ * agent text is `href`, and `markdown.ts` has already refused everything that
+ * is not `http`, `https` or `mailto`.
+ *
+ * Keyed by position because a block list is rebuilt whole from one immutable
+ * string — a message's text never changes under it, so position is stable.
+ */
+function Markdown({ blocks }: { blocks: readonly Block[] }) {
+  return (
+    <div class="msg-text md">
+      {blocks.map((block, at) => (
+        <BlockView key={at} block={block} />
+      ))}
+    </div>
+  );
+}
+
+function BlockView({ block }: { block: Block }) {
+  switch (block.block) {
+    case 'p':
+      return (
+        <p class="md-p">
+          <Spans spans={block.spans} />
+        </p>
+      );
+    case 'heading': {
+      // Demoted three levels and clamped, so a message's own `#` sits *under*
+      // the `<h3>` naming who said it rather than above it: a screen reader
+      // walking headings must not find the page's outline inverted by something
+      // an agent wrote. The size is the class's job, not the element's.
+      const Tag = `h${Math.min(6, block.level + 3)}` as 'h4';
+      return (
+        <Tag class={`md-h md-h${block.level}`}>
+          <Spans spans={block.spans} />
+        </Tag>
+      );
+    }
+    case 'quote':
+      return (
+        <blockquote class="md-quote">
+          <Spans spans={block.spans} />
+        </blockquote>
+      );
+    case 'list': {
+      const Tag = block.ordered ? 'ol' : 'ul';
+      return (
+        <Tag class="md-list">
+          {block.items.map((item, at) => (
+            <li key={at} class={`md-item md-depth${item.depth}`}>
+              <Spans spans={item.spans} />
+            </li>
+          ))}
+        </Tag>
+      );
+    }
+    case 'code':
+      // The language is a label, not a lexer: highlighting is a dependency, and
+      // what makes code legible on a phone is the monospace box and the fact
+      // that it scrolls inside itself rather than widening the page.
+      return (
+        <div class="md-code">
+          {block.lang !== null && <span class="md-lang">{block.lang}</span>}
+          <pre>
+            <code>{block.text}</code>
+          </pre>
+        </div>
+      );
+  }
+}
+
+function Spans({ spans }: { spans: readonly Span[] }) {
+  return (
+    <>
+      {spans.map((span, at) => {
+        switch (span.span) {
+          case 'code':
+            return (
+              <code key={at} class="md-inline-code">
+                {span.text}
+              </code>
+            );
+          case 'strong':
+            return <strong key={at}>{span.text}</strong>;
+          case 'em':
+            return <em key={at}>{span.text}</em>;
+          case 'link':
+            // A new tab: this app is a live session, and following a link in
+            // place costs a terminal replay and a conversation refetch.
+            return (
+              <a key={at} class="md-link" href={span.href} target="_blank" rel="noreferrer">
+                {span.text}
+              </a>
+            );
+          default:
+            // A bare string, deliberately: an extra element around plain text
+            // would be one more node per run for nothing.
+            return span.text;
+        }
+      })}
+    </>
+  );
+}
+
 function RowView({ row, provider, sessionId }: { row: Row; provider: string; sessionId: string }) {
   switch (row.row) {
     case 'message':
       return (
         <article class={`msg msg-${row.who}`}>
           <h3 class="msg-who">{whoLabel(row.who, provider)}</h3>
-          {/* `pre-wrap`, not a markdown pipeline: the events carry plain text and
-              the agent's own line breaks, and a renderer would be a dependency
-              plus an injection surface for output tether does not control. */}
-          <p class="msg-text">{row.text}</p>
+          {/* Markdown, and not a dependency: `markdown.ts` is a bounded subset
+              that returns data, and this renders data. Copy still copies what
+              the agent actually wrote. */}
+          <Markdown blocks={row.blocks} />
           <MessageActions text={row.text} label={copyLabel(row.who, provider)} />
         </article>
       );
@@ -474,11 +587,12 @@ function RowView({ row, provider, sessionId }: { row: Row; provider: string; ses
  */
 function ToolCard({ row, sessionId }: { row: ToolRow; sessionId: string }) {
   const answerable = row.answerable;
+  const advice = row.failed && row.result !== null ? errorAdvice(row.result) : null;
   return (
     <details
       class={`tool${row.failed ? ' tool-failed' : ''}${row.pending ? ' tool-pending' : ''}${
         answerable === null ? '' : ' tool-answerable'
-      }`}
+      }${advice?.act === true ? ' tool-act' : ''}`}
       open={answerable !== null}
     >
       <summary>
@@ -486,18 +600,75 @@ function ToolCard({ row, sessionId }: { row: ToolRow; sessionId: string }) {
         <span class="tool-summary">{row.summary}</span>
         <span class="tool-state">{toolState(row)}</span>
       </summary>
-      {row.input !== undefined && (
-        <>
-          <h4 class="tool-label">Input</h4>
-          <pre class="tool-body">{format(row.input)}</pre>
-        </>
+      {row.diff !== null ? (
+        <DiffView diff={row.diff} />
+      ) : (
+        row.input !== undefined && (
+          <>
+            <h4 class="tool-label">Input</h4>
+            <pre class="tool-body">{format(row.input)}</pre>
+          </>
+        )
       )}
       <h4 class="tool-label">Result</h4>
+      {advice !== null && (
+        <p class={`tool-advice${advice.act ? ' tool-advice-act' : ''}`}>{advice.text}</p>
+      )}
       <pre class="tool-body">{toolResult(row)}</pre>
       {answerable !== null && (
         <Answer sessionId={sessionId} callId={answerable.callId} deadline={answerable.deadline} />
       )}
     </details>
+  );
+}
+
+/**
+ * A change as a change: added lines, removed lines and the path they are in.
+ *
+ * A `+`/`-` in the text as well as the colour, because colour alone is not a
+ * distinction — a red/green pair is exactly the one a large minority of people
+ * cannot make, and this is the card that says what an agent is about to do to a
+ * file. The marker is `aria-hidden` and each line carries its own word instead,
+ * so a screen reader hears "added"/"removed" rather than "plus".
+ *
+ * It scrolls inside its own box in both directions, like `.tool-body` — except
+ * on an answerable card, where the same wrap-don't-clip rule applies as to a
+ * command: a line that runs past the right edge of a card the agent is blocked
+ * on is a line nobody read before approving it.
+ */
+function DiffView({ diff }: { diff: Diff }) {
+  const added = diff.lines.filter((line) => line.at === 'add').length;
+  const removed = diff.lines.filter((line) => line.at === 'del').length;
+  return (
+    <>
+      <h4 class="tool-label">
+        Change
+        <span class="diff-count">
+          <span class="diff-added">+{added}</span> <span class="diff-removed">−{removed}</span>
+        </span>
+      </h4>
+      {diff.path !== null && <p class="diff-path">{diff.path}</p>}
+      <div class="tool-body diff">
+        {/* Exactly two cells on every row, always: the rows lay out as a CSS
+            table so a tinted row runs the full scroll width, and a row with a
+            third cell would put its text in a column of its own and shove it off
+            the right edge. The spoken word therefore lives *inside* the gutter
+            cell rather than beside it. */}
+        {diff.lines.map((line, at) => (
+          <div key={at} class={`diff-line diff-${line.at}`}>
+            <span class="diff-mark">
+              <span aria-hidden="true">
+                {line.at === 'add' ? '+' : line.at === 'del' ? '−' : ' '}
+              </span>
+              {(line.at === 'add' || line.at === 'del') && (
+                <span class="sr-only">{line.at === 'add' ? 'added ' : 'removed '}</span>
+              )}
+            </span>
+            <span class="diff-text">{line.text}</span>
+          </div>
+        ))}
+      </div>
+    </>
   );
 }
 

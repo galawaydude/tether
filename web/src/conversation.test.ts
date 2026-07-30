@@ -7,11 +7,15 @@ import {
   addEcho,
   addEvents,
   addPending,
+  elapsedLabel,
+  errorAdvice,
   markUndelivered,
   noRows,
   rebuild,
   sendBlocked,
+  SLOW_TURN_MS,
   summarise,
+  toDiff,
   toolResult,
   toolState,
   toRows,
@@ -45,7 +49,15 @@ test('the three things a conversation is made of become three kinds of row', () 
     rows.map((row) => row.row),
     ['message', 'thinking', 'message'],
   );
-  assert.deepEqual(rows[0], { key: '1', row: 'message', who: 'user', text: 'add a test' });
+  assert.deepEqual(rows[0], {
+    key: '1',
+    row: 'message',
+    who: 'user',
+    // Both: `text` is what Copy copies and what a test asserts on, `blocks` is
+    // what the view draws. They are the same characters, parsed once.
+    text: 'add a test',
+    blocks: [{ block: 'p', spans: [{ span: 'text', text: 'add a test' }] }],
+  });
   // Presence only: the row carries no text, because the transcript carries none.
   assert.deepEqual(rows[1], { key: '2', row: 'thinking' });
 });
@@ -129,6 +141,109 @@ test('an unrecognised event kind degrades to a note and never throws', () => {
   assert.deepEqual(toRows(stream(shapeless)), [
     { key: '1', row: 'note', text: 'Unsupported event: unknown' },
   ]);
+});
+
+test("an Edit's input becomes a diff, and the card shows that instead of the input", () => {
+  const card = toRows(
+    stream({
+      kind: 'tool_call',
+      id: 'a#0',
+      at: AT,
+      tool: 'Edit',
+      input: {
+        file_path: '/home/you/app/src/keys.ts',
+        old_string: 'const a = 1;\nconst b = 2;\nconst c = 3;',
+        new_string: 'const a = 1;\nconst b = 20;\nconst extra = 0;\nconst c = 3;',
+      },
+      callId: 'c',
+    }),
+  )[0] as ToolRow;
+  assert.deepEqual(card.diff, {
+    path: '/home/you/app/src/keys.ts',
+    lines: [
+      // The identical head and tail are context; everything between them is
+      // removed and then added, which is what an Edit is.
+      { at: 'ctx', text: 'const a = 1;' },
+      { at: 'del', text: 'const b = 2;' },
+      { at: 'add', text: 'const b = 20;' },
+      { at: 'add', text: 'const extra = 0;' },
+      { at: 'ctx', text: 'const c = 3;' },
+    ],
+  });
+});
+
+test('a Write is every line added, and any other tool has no diff at all', () => {
+  const written = toDiff('Write', { file_path: '/tmp/new.txt', content: 'one\ntwo' });
+  assert.deepEqual(written, {
+    path: '/tmp/new.txt',
+    lines: [
+      { at: 'add', text: 'one' },
+      { at: 'add', text: 'two' },
+    ],
+  });
+  // Nothing is guessed at: a card only draws a change when the input says one.
+  assert.equal(toDiff('Bash', { command: 'rm -rf ./build' }), null);
+  assert.equal(toDiff('Read', { file_path: '/etc/hosts' }), null);
+  // A string input that is not a patch is not one, however many `+` it holds.
+  assert.equal(toDiff('Task', 'add a line\n+ like this'), null);
+});
+
+test("Codex's apply_patch is read as the patch it already is", () => {
+  // Byte-for-byte the shape in the 0.145.0 rollout fixture.
+  const diff = toDiff(
+    'apply_patch',
+    '*** Begin Patch\n*** Update File: /home/tester/work/probe.txt\n@@\n-HELLO\n+WORLD\n*** End Patch\n',
+  );
+  assert.deepEqual(diff, {
+    path: '/home/tester/work/probe.txt',
+    lines: [
+      { at: 'meta', text: '*** Update File: /home/tester/work/probe.txt' },
+      { at: 'meta', text: '@@' },
+      { at: 'del', text: 'HELLO' },
+      { at: 'add', text: 'WORLD' },
+    ],
+  });
+});
+
+test('a failed call says whether it is fixing itself or waiting for a human', () => {
+  // The distinction is the whole feature: one of these means put the phone
+  // down, the other means open the terminal.
+  const limited = errorAdvice(
+    'API Error: 429 {"type":"error","error":{"type":"rate_limit_error"}}',
+  );
+  assert.equal(limited?.act, false);
+  assert.equal(errorAdvice('API Error: 401 {"type":"authentication_error"}')?.act, true);
+  assert.equal(
+    errorAdvice('approval policy is UnlessTrusted; reject command — rm -rf /')?.act,
+    true,
+  );
+
+  // Anchored at the start, so a command whose own output talks about rate
+  // limits is not reported as the provider rate-limiting.
+  assert.equal(errorAdvice('grep: nginx.log: 3 hits for API Error: 429'), null);
+  assert.equal(errorAdvice('cc: error: no such file'), null);
+
+  // And the collapsed row carries it, because that is what a glance gets.
+  const failed = (result: string): ToolRow =>
+    toRows(
+      stream(
+        { kind: 'tool_call', id: 'a#0', at: AT, tool: 'Bash', input: {}, callId: 'c' },
+        { kind: 'tool_result', id: 'u#0', at: AT, callId: 'c', output: result, isError: true },
+      ),
+    )[0] as ToolRow;
+  assert.equal(toolState(failed('API Error: 429 {}')), 'retrying');
+  assert.equal(toolState(failed('API Error: 401 {}')), 'needs you');
+  assert.equal(toolState(failed('boom')), 'error');
+});
+
+test('the turn stopwatch says nothing until a turn is long enough to be news', () => {
+  // The number appearing *is* the signal, so a fast turn shows nothing — a
+  // counter that runs on every turn is furniture nobody reads by the next day.
+  assert.equal(elapsedLabel(AT, AT + 59_000), null);
+  assert.equal(elapsedLabel(AT, AT + SLOW_TURN_MS), '1m 00s');
+  assert.equal(elapsedLabel(AT, AT + 125_000), '2m 05s');
+  // No turn running is no number, whatever the clock says.
+  assert.equal(elapsedLabel(null, AT + 10 * SLOW_TURN_MS), null);
 });
 
 test('a status event is left to the header badge, not rendered as a message', () => {
@@ -296,7 +411,10 @@ test('a composed message shows at once and is replaced, not duplicated, by its r
   // The transcript catches up. One message, from the record — never two.
   state = addEvents(state, stream({ kind: 'user', id: 'u1', at: AT, text: sent }));
   assert.deepEqual(texts(state), []);
-  assert.deepEqual(state.rows, [{ key: '1', row: 'message', who: 'user', text: sent }]);
+  assert.deepEqual(
+    state.rows.map((row) => row.row === 'message' && row.text),
+    [sent],
+  );
 });
 
 test('the record retires an echo even when the provider recorded it differently', () => {

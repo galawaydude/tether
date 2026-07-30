@@ -27,10 +27,19 @@ import type {
 } from '@tether/shared';
 
 import { MAX_TEXT } from './keys.ts';
+import { markdown, type Block } from './markdown.ts';
 import type { Status } from './terminal.tsx';
 
 /** An event with its position in the session's stream, as the server sends it. */
 export type SeqEvent = { seq: number; e: ConversationEvent };
+
+/**
+ * One line of a change, as the card draws it. A *content kind* rather than
+ * prose about one: an Edit's input is the old text and the new text, and a
+ * paragraph saying so is the thing that is unreadable at 360px.
+ */
+export type DiffLine = { at: 'add' | 'del' | 'ctx' | 'meta'; text: string };
+export type Diff = { path: string | null; lines: readonly DiffLine[] };
 
 export type ToolRow = {
   key: string;
@@ -42,6 +51,12 @@ export type ToolRow = {
   /** Expanded: the call's input and what came back. `null` until it returns. */
   input: unknown;
   result: string | null;
+  /**
+   * The change this call makes, when the input describes one. Computed once,
+   * where the row is built, rather than per render: a card is re-rendered on
+   * every event in the session and an `apply_patch` input runs to the 16k cap.
+   */
+  diff: Diff | null;
   /**
    * The card was built from the provider's pre-tool hook and the transcript has
    * not caught up. It is the same card either way — this only lets the view say
@@ -64,7 +79,15 @@ export type ToolRow = {
 };
 
 export type Row =
-  | { key: string; row: 'message'; who: 'user' | 'assistant'; text: string }
+  | {
+      key: string;
+      row: 'message';
+      who: 'user' | 'assistant';
+      /** What was written, verbatim. What Copy copies, and never rendered raw. */
+      text: string;
+      /** The same text as markdown; see `markdown.ts` for why it is data. */
+      blocks: readonly Block[];
+    }
   | { key: string; row: 'thinking' }
   | { key: string; row: 'compaction' }
   /** An event this build does not understand. Deliberately says nothing else. */
@@ -118,6 +141,102 @@ export function summarise(input: unknown): string {
 
 function oneLine(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
+}
+
+/** Unchanged lines kept either side of a change, as a unified diff keeps them. */
+const CONTEXT = 3;
+
+/**
+ * A tool call's input → the change it makes, or `null` if it does not make one.
+ *
+ * Only the two shapes both providers actually write are read, and each is read
+ * from the **input** rather than from the result: an Edit's result is a prose
+ * sentence plus a `cat -n` excerpt, while the input is the change itself.
+ *
+ *  - Claude Code's `Edit` (`old_string`/`new_string`) and `Write` (`content`,
+ *    which is every line added).
+ *  - Codex's `apply_patch`, whose input already *is* a patch — so it is read
+ *    rather than recomputed, and its own `+`/`-` are believed.
+ *
+ * Anything else is `null` and the card keeps the input view it has always had.
+ * A third provider's shape is another branch here, not a redesign: the row
+ * carries a `Diff`, and the view knows nothing about where one came from.
+ */
+export function toDiff(tool: string, input: unknown): Diff | null {
+  if (typeof input === 'string') return parsePatch(input);
+  if (typeof input !== 'object' || input === null) return null;
+  const fields = input as Record<string, unknown>;
+  const path = typeof fields['file_path'] === 'string' ? fields['file_path'] : null;
+  const before = fields['old_string'];
+  const after = fields['new_string'];
+  if (typeof before === 'string' && typeof after === 'string') {
+    return { path, lines: lineDiff(before, after) };
+  }
+  const content = fields['content'];
+  if (tool === 'Write' && typeof content === 'string') {
+    return { path, lines: content.split('\n').map((text) => ({ at: 'add', text })) };
+  }
+  return null;
+}
+
+/**
+ * Two texts → the lines that differ, by trimming the identical head and tail
+ * and calling everything between them changed.
+ *
+ * ponytail: not an LCS. An `Edit` replaces one contiguous run — that is what
+ * the tool is for — so the cheap answer is the right answer for the shape that
+ * actually arrives, and where it is not (two separate hunks in one string) it
+ * over-reports the middle rather than mis-attributing a line. A real diff
+ * algorithm is the upgrade if `MultiEdit`-shaped inputs ever reach a card.
+ */
+function lineDiff(before: string, after: string): DiffLine[] {
+  const a = before.split('\n');
+  const b = after.split('\n');
+  let head = 0;
+  while (head < a.length && head < b.length && a[head] === b[head]) head += 1;
+  let tail = 0;
+  while (
+    tail < a.length - head &&
+    tail < b.length - head &&
+    a[a.length - 1 - tail] === b[b.length - 1 - tail]
+  ) {
+    tail += 1;
+  }
+  const cut = (text: string, at: DiffLine['at']): DiffLine => ({ at, text });
+  return [
+    ...a.slice(Math.max(0, head - CONTEXT), head).map((text) => cut(text, 'ctx')),
+    ...a.slice(head, a.length - tail).map((text) => cut(text, 'del')),
+    ...b.slice(head, b.length - tail).map((text) => cut(text, 'add')),
+    ...a.slice(a.length - tail, a.length - tail + CONTEXT).map((text) => cut(text, 'ctx')),
+  ];
+}
+
+/** `*** Update File: <path>`, and the two siblings that add and delete one. */
+const PATCH_FILE = /^\*\*\* (?:Update|Add|Delete) File: (.+)$/;
+
+/**
+ * Codex's `apply_patch` input. Verified against the 0.145.0 rollout fixture:
+ * `*** Begin Patch` / `*** Update File: <path>` / `@@` / `-old` / `+new` /
+ * `*** End Patch`. The marker is required rather than sniffed for `+`/`-`,
+ * because a string input to some other tool is not a patch and guessing that it
+ * is would draw a change that nobody proposed.
+ */
+function parsePatch(text: string): Diff | null {
+  if (!text.includes('*** Begin Patch')) return null;
+  let path: string | null = null;
+  const lines: DiffLine[] = [];
+  for (const line of text.replace(/\n+$/, '').split('\n')) {
+    const file = PATCH_FILE.exec(line);
+    if (file !== null) {
+      path ??= file[1] ?? null;
+      lines.push({ at: 'meta', text: line });
+    } else if (line.startsWith('*** ')) continue;
+    else if (line.startsWith('@@')) lines.push({ at: 'meta', text: line });
+    else if (line.startsWith('+')) lines.push({ at: 'add', text: line.slice(1) });
+    else if (line.startsWith('-')) lines.push({ at: 'del', text: line.slice(1) });
+    else lines.push({ at: 'ctx', text: line.startsWith(' ') ? line.slice(1) : line });
+  }
+  return { path, lines };
 }
 
 /**
@@ -298,6 +417,7 @@ export function addPending(state: Rows, e: ToolCallEvent, deadline?: Timestamp):
     failed: false,
     input: e.input,
     result: null,
+    diff: toDiff(e.tool, e.input),
     pending: true,
     answerable: deadline === undefined ? null : { callId: e.callId, deadline },
     outcome: null,
@@ -401,7 +521,7 @@ function toRow(key: string, e: ConversationEvent, byCall: Map<string, ToolRow>):
   switch (e.kind) {
     case 'user':
     case 'assistant':
-      return { key, row: 'message', who: e.kind, text: e.text };
+      return { key, row: 'message', who: e.kind, text: e.text, blocks: markdown(e.text) };
     case 'thinking':
       // Presence only. The transcript carries an empty `thinking` string, so
       // anything more specific than "it thought here" would be invented.
@@ -426,6 +546,7 @@ function toRow(key: string, e: ConversationEvent, byCall: Map<string, ToolRow>):
         failed: false,
         input: e.input,
         result: null,
+        diff: toDiff(e.tool, e.input),
         pending: false,
         answerable: null,
         outcome: null,
@@ -450,6 +571,7 @@ function toRow(key: string, e: ConversationEvent, byCall: Map<string, ToolRow>):
         failed: e.isError,
         input: undefined,
         result: e.output,
+        diff: null,
         pending: false,
         answerable: null,
         outcome: null,
@@ -463,6 +585,61 @@ function toRow(key: string, e: ConversationEvent, byCall: Map<string, ToolRow>):
       // build has never compiled against.
       return { key, row: 'note', text: `Unsupported event: ${kindOf(e)}` };
   }
+}
+
+/**
+ * What a failed call means for the person holding the phone: whether it is
+ * fixing itself or whether it wants them.
+ *
+ * That distinction is the whole of this — not a catalogue of provider errors.
+ * A user who glances at a screen and reads *retrying* puts the phone down; one
+ * who reads *needs you* opens the terminal, and getting those two the wrong way
+ * round wastes either an agent's turn or a user's afternoon.
+ *
+ * **Cases are added one at a time as they are actually met**, and each is
+ * anchored to the start of the output rather than matched anywhere in it: tool
+ * output is arbitrary text, and a `grep` that finds the words "rate limit" in a
+ * log must not be reported as the provider rate-limiting. `null` — no claim at
+ * all — is the right answer for everything not yet recognised, and the card
+ * still shows the output.
+ */
+export type Advice = {
+  /** True: nothing will happen until the user does something. */
+  act: boolean;
+  text: string;
+};
+
+/** Anchored at the start of the output, or on a line of its own. See above. */
+const ADVICE: readonly { when: RegExp; advice: Advice }[] = [
+  {
+    // Claude Code writes the API's own error through: `API Error: 429 {"type":
+    // "error","error":{"type":"rate_limit_error",…}}`.
+    when: /^\s*API Error: (?:429|529)\b|^\s*(?:"?type"?:\s*"?)?(?:rate_limit|overloaded)_error\b/,
+    advice: {
+      act: false,
+      text: 'The provider is rate-limited or overloaded. The agent retries this itself.',
+    },
+  },
+  {
+    when: /^\s*API Error: 40[13]\b|^\s*(?:"?type"?:\s*"?)?(?:authentication|permission)_error\b|^\s*Credit balance is too low\b/,
+    advice: {
+      act: true,
+      text: 'The provider refused the credentials. Sign in again in the terminal — nothing retries this.',
+    },
+  },
+  {
+    // Codex, verified in the 0.145.0 fixtures: a sandbox refusal is prose with
+    // no exit code in it at all.
+    when: /^\s*approval policy is \w+; reject command\b/,
+    advice: {
+      act: true,
+      text: 'Codex refused this under its own sandbox policy. Answer it in the terminal to let it run.',
+    },
+  },
+];
+
+export function errorAdvice(output: string): Advice | null {
+  return ADVICE.find(({ when }) => when.test(output))?.advice ?? null;
 }
 
 /**
@@ -480,7 +657,12 @@ export function toolState(row: ToolRow): string {
   if (row.outcome === 'allow' && row.result === null) return '…';
   if (row.pending) return 'asking';
   if (row.result === null) return '…';
-  return row.failed ? 'error' : '✓';
+  if (!row.failed) return '✓';
+  // The collapsed row is what a glance gets, so the retry-vs-act answer belongs
+  // in it rather than only inside a card nobody has opened.
+  const advice = errorAdvice(row.result);
+  if (advice === null) return 'error';
+  return advice.act ? 'needs you' : 'retrying';
 }
 
 export function toolResult(row: ToolRow): string {
@@ -498,6 +680,32 @@ export function toolResult(row: ToolRow): string {
     default:
       return row.pending ? 'Waiting for you to answer in the terminal.' : 'Still running.';
   }
+}
+
+/**
+ * How long a turn has been running, but **only once it is long enough to be
+ * news**. A fast turn shows nothing at all, so the number appearing is itself
+ * the signal — which is the point, and why this is not a timer that is always
+ * on: a phone has no other sense of progress, and a counter that runs on every
+ * turn is furniture that stops being read within a day.
+ *
+ * Counted from when this client first saw the turn start. A page opened mid-turn
+ * therefore under-reports, which delays the signal rather than inventing one.
+ */
+export const SLOW_TURN_MS = 60_000;
+
+export function elapsedLabel(
+  startedAt: number | null,
+  now: number,
+  threshold = SLOW_TURN_MS,
+): string | null {
+  if (startedAt === null) return null;
+  const ms = now - startedAt;
+  if (ms < threshold) return null;
+  const seconds = Math.floor(ms / 1000);
+  // Padded, so the width does not change every second: the chip sits on the
+  // session bar, and nothing on that bar may reflow while a session runs.
+  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`;
 }
 
 function kindOf(e: unknown): string {

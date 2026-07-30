@@ -16,6 +16,7 @@ import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 
 import * as api from './api.ts';
 import { ApiError } from './api.ts';
+import { elapsedLabel } from './conversation.ts';
 import { ConversationView } from './conversation.tsx';
 import { CODEX, DEFAULT_PROVIDER, PROVIDERS, providerLabel, unresumableNote } from './providers.ts';
 import { crumbs, groupSessions } from './sessions.ts';
@@ -46,6 +47,33 @@ function useWide(): boolean {
     return () => query.removeEventListener('change', update);
   }, []);
   return wide;
+}
+
+/**
+ * How long the current turn has been running, once that is news — `null` the
+ * rest of the time, which is nearly all of it. The clock starts when the turn
+ * does and stops when it ends, so a session sitting idle costs no timer at all.
+ *
+ * The tick is 1s and unconditional while a turn runs, which is one re-render of
+ * the session header per second. That is the cheapest thing on this screen (the
+ * panes below it are memo-free but re-render from their own state, not this),
+ * and the alternative — a timer that only starts at the threshold — needs a
+ * second timer to arm it.
+ */
+function useElapsed(running: boolean): string | null {
+  const [now, setNow] = useState(() => Date.now());
+  const startedAt = useRef<number | null>(null);
+  if (running && startedAt.current === null) startedAt.current = Date.now();
+  if (!running) startedAt.current = null;
+
+  useEffect(() => {
+    if (!running) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [running]);
+
+  return running ? elapsedLabel(startedAt.current, now) : null;
 }
 
 /**
@@ -174,6 +202,7 @@ function SessionScreen({
   // summoned it is exactly the thing that says why, and the banner under it is
   // what sends a user to the terminal in the first place.
   const [agent, setAgent] = useState<{ state: SessionState; detail?: string }>({ state: 'idle' });
+  const elapsed = useElapsed(agent.state === 'busy');
 
   // The one thing the two panes do share, and only because the wire says so: a
   // composed message is an `input` frame on the terminal channel, which is where
@@ -236,7 +265,14 @@ function SessionScreen({
             a bar that changes height as a status word changes resizes the tmux
             pane underneath it. */}
         <div class="bar-chips">
-          <span class={`chip chip-agent-${agent.state}`}>{STATE_TEXT[agent.state]}</span>
+          <span class={`chip chip-agent-${agent.state}`}>
+            {STATE_TEXT[agent.state]}
+            {/* Nothing at all until the turn is long enough to be worth
+                saying — see `elapsedLabel`. Mono, because it is the machine
+                reporting, and its width is fixed by the padded seconds so the
+                bar cannot reflow under a running terminal. */}
+            {elapsed !== null && <span class="chip-elapsed">{elapsed}</span>}
+          </span>
           <span class={`chip chip-${status[front]}`} role="status">
             {STATUS_TEXT[status[front]]}
           </span>
