@@ -76,3 +76,34 @@ test('a multi-byte glyph split across two writes survives', async (t) => {
   await until(() => lines.length === 1, 'the completed line');
   assert.equal(lines[0], 'héllo… 🌍');
 });
+
+test('catchUp delivers what is on disk now, without waiting for a watch or a poll', async (t) => {
+  const dir = await temp(t);
+  const path = join(dir, 'session.jsonl');
+  await writeFile(path, '{"n":1}\n');
+
+  const lines: string[] = [];
+  // A poll far longer than this test, and no reliance on `fs.watch` firing: the
+  // point is that the read happens because it was asked for. The Codex
+  // permission hook needs exactly this — the `PreToolUse` it has to correlate
+  // against is certainly on disk, and it is blocking an agent's turn while it
+  // waits, so "the watcher will get to it" is a race it cannot afford.
+  const tail = await tailLines(path, (batch) => lines.push(...batch), { pollMs: 60_000 });
+  t.after(() => tail.stop());
+  assert.deepEqual(lines, ['{"n":1}']);
+
+  await appendFile(path, '{"n":2}\n{"n":3}\n');
+  await tail.catchUp();
+  assert.deepEqual(
+    lines,
+    ['{"n":1}', '{"n":2}', '{"n":3}'],
+    'read to the end, by the time it returns',
+  );
+
+  // And it means "to the end" even with a read already in flight: reads are
+  // serialised, so awaiting one cannot return while another is still going.
+  await appendFile(path, '{"n":4}\n');
+  await Promise.all([tail.catchUp(), tail.catchUp(), tail.catchUp()]);
+  assert.deepEqual(lines.at(-1), '{"n":4}');
+  assert.equal(lines.length, 4, 'and nothing was delivered twice');
+});

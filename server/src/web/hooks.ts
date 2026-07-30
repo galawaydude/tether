@@ -1,5 +1,5 @@
 /**
- * `POST /internal/hook` — where tether's Claude Code shim delivers a hook.
+ * `POST /internal/hook` — where either provider's shim delivers a hook.
  *
  * This is the only route besides `/api/login` and the two static ones that opts
  * out of the session cookie, and it is worth being explicit about why that is
@@ -26,13 +26,16 @@
  * before any of this, so they cover this route too — a cross-origin page's POST
  * is refused there and never reaches the secret comparison.
  *
- * The reply is empty except for one case: a `PreToolUse` tether decided to hold,
- * where the request stays open until the user taps Approve or Deny in the
- * conversation view and the answer comes back as `{"decision":"allow"|"deny"}`.
- * On `PreToolUse` a hook's **stdout** is how it allows or denies a tool call, so
- * an empty reply is not a neutral default that happens to be safe — it is the
- * deliberate statement "tether has nothing to say about this call", which leaves
- * the provider's own permission rules in charge.
+ * The reply is empty except for one case: a call tether decided to hold — a
+ * Claude Code `PreToolUse` or a Codex `PermissionRequest` — where the request
+ * stays open until the user taps Approve or Deny in the conversation view and the
+ * answer comes back as `{"decision":"allow"|"deny"}`. On both of those a hook's
+ * **stdout** is how it allows or denies a tool call, so an empty reply is not a
+ * neutral default that happens to be safe — it is the deliberate statement
+ * "tether has nothing to say about this call", which leaves the provider's own
+ * permission rules in charge. Which vocabulary a payload is read in is the
+ * session row's `provider`, decided in `Conversations.hook`; this route reads
+ * only `session_id`.
  *
  * Note what authorises that decision, because it is not this route. The secret
  * authenticates the *hook*; what authenticates the *answer* is the session
@@ -48,12 +51,13 @@ import type { FastifyInstance } from 'fastify';
 import { stateDir as defaultStateDir } from '../db.ts';
 import type { Conversations } from '../machine/conversations.ts';
 import { getSessionByProviderSessionId } from '../machine/registry.ts';
-import { readHookSecret } from '../providers/claude-code/hooks.ts';
+import { readHookSecret } from '../providers/permission.ts';
 
 /**
- * The payload is Claude Code's, not tether's, and it ships weekly. Only that it
- * is an object is asserted here; `mapHook` reads the fields it knows and warns
- * about the rest, by the same tolerant rule as the transcript mapper.
+ * The payload is the provider's, not tether's, and both ship weekly. Only that it
+ * is an object is asserted here; each provider's `mapHook` reads the fields it
+ * knows and warns about the rest, by the same tolerant rule as the transcript
+ * mappers.
  */
 const HOOK_SCHEMA = { body: { type: 'object' } } as const;
 
@@ -111,15 +115,16 @@ export function registerHookRoute(
       const session =
         getSessionByProviderSessionId(db, providerSessionId) ??
         (await conversations.bindProviderSession(providerSessionId));
-      // A hook for a session tether does not know is not an error. Claude Code
-      // is commonly run by hand in a directory tether once managed, and the shim
-      // stays installed in that project afterwards.
+      // A hook for a session tether does not know is not an error. Either agent
+      // is commonly run by hand — Claude Code in a directory tether once managed
+      // with the shim still installed in that project, Codex anywhere at all,
+      // since its hook is installed once per machine.
       if (session === undefined) return reply.code(204).send();
 
       // This is where the agent's turn waits. `hook` resolves as soon as the
       // user taps, and otherwise when its own hold expires — never later, so
-      // the shim's abort and Claude Code's `timeout` stay nets rather than
-      // mechanisms (`providers/claude-code/hooks.ts`).
+      // the shim's abort and the provider's own `timeout` stay nets rather than
+      // mechanisms (`providers/permission.ts`).
       const decision = await conversations.hook(session, payload);
       if (decision === undefined) return reply.code(204).send();
       return reply.code(200).send({ decision });

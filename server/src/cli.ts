@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 
 import { databasePath, stateDir } from './db.ts';
-import { writeHookEndpoint } from './providers/claude-code/hooks.ts';
+import { writeHookEndpoint } from './providers/permission.ts';
 import {
   DEFAULT_PROVIDER,
   type Session,
@@ -80,16 +80,22 @@ function codexHookExplanation(hooksPath: string, shimPath: string): string {
     `  events:  ${HOOK_EVENTS.join(', ')}`,
     '',
     'That command is a script tether writes. On each of those events Codex runs it,',
-    'and it appends one JSON line to a log under tether’s own state directory. It',
-    'writes nothing else, reads nothing else, and talks to no network.',
+    'and it appends one JSON line to a log under tether’s own state directory.',
     '',
-    'tether needs it for exactly one thing: to know that a session is *waiting for',
-    'you* to answer a permission prompt. Everything else — the conversation, the',
-    'terminal, working and idle — is read from files Codex already writes.',
+    'On PermissionRequest — and on no other event — it also asks tether, over',
+    'loopback, whether you have answered the prompt in tether yet, and waits for',
+    'you for as long as tether is configured to wait. It talks to nothing else and',
+    'to nowhere else.',
+    '',
+    'tether needs it for exactly two things: to know that a session is *waiting for',
+    'you*, and to let you answer that prompt from tether instead of the terminal.',
+    'Everything else — the conversation, the terminal, working and idle — is read',
+    'from files Codex already writes.',
     '',
     'The next time you start Codex it will ask you to review and trust this hook.',
     'Declining is a perfectly good answer: you lose the live “waiting” badge and',
-    'nothing else, and tether will not ask you again.',
+    'the Approve/Deny buttons, the prompt is still there in the terminal where it',
+    'has always been, and tether will not ask you again.',
     '',
     'Your existing hooks file is backed up first, and existing entries are kept.',
     'Undo any time with `tether codex-hook remove`.',
@@ -132,8 +138,9 @@ async function codexHookCommand(argv: readonly string[]): Promise<number> {
         `features.hooks: ${before.featureEnabled ? 'true' : 'false — Codex will not run any hook until this is set'}`,
         '',
         'Without the hook tether still shows the conversation, the terminal, and',
-        'whether a session is working or idle. The hook adds the live “waiting for',
-        'you” badge, and nothing else.',
+        'whether a session is working or idle, and a permission prompt is still',
+        'answered in the terminal. The hook adds the live “waiting for you” badge',
+        'and the Approve/Deny buttons, and nothing else.',
       ].join('\n') + '\n',
     );
     return 0;
@@ -147,9 +154,23 @@ async function codexHookCommand(argv: readonly string[]): Promise<number> {
     if (result.backupPath !== undefined) {
       process.stdout.write(`Backed up ${result.hooksPath} to ${result.backupPath}\n`);
     }
-    process.stdout.write(
-      `Added tether’s hook to ${result.hooksPath} (${result.added.join(', ')}).\n`,
-    );
+    if (result.added.length > 0) {
+      process.stdout.write(
+        `Added tether’s hook to ${result.hooksPath} (${result.added.join(', ')}).\n`,
+      );
+    }
+    // Said out loud because it costs the user something: Codex hashes each entry,
+    // so an entry tether corrected is one Codex will ask them to review again.
+    if (result.updated.length > 0) {
+      process.stdout.write(
+        [
+          `Corrected the timeout on tether’s existing entry (${result.updated.join(', ')}).`,
+          'Codex will ask you to review that entry once more, because its contents',
+          'changed. This is a one-off: the values tether writes are fixed, so nothing',
+          'here follows a setting and nothing will ask you again.',
+        ].join('\n') + '\n',
+      );
+    }
   }
   if (!before.featureEnabled) {
     process.stdout.write(

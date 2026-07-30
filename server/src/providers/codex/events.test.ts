@@ -12,7 +12,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { MAX_OUTPUT } from '../cap.ts';
-import { isErrorOutput, mapLines, mapRecord } from './events.ts';
+import { isErrorOutput, mapHook, mapLines, mapRecord } from './events.ts';
 import { CAPTURED_VERSION } from './spawn.ts';
 
 function fixture(name: string): string[] {
@@ -21,6 +21,19 @@ function fixture(name: string): string[] {
 }
 
 const SESSION = fixture(`rollout-${CAPTURED_VERSION}.jsonl`);
+
+const HOOKS = fixture(`hooks-${CAPTURED_VERSION}.ndjson`).map(
+  (line) => JSON.parse(line) as Record<string, unknown>,
+);
+
+/** The captured `PermissionRequest` for a shell command, as the shim POSTs it. */
+function permissionRequest(): Record<string, unknown> {
+  const found = HOOKS.find(
+    (record) => record['hook_event_name'] === 'PermissionRequest' && record['tool_name'] === 'Bash',
+  );
+  assert.ok(found !== undefined, 'the capture has one');
+  return found;
+}
 
 function kinds(events: readonly ConversationEvent[]): string[] {
   return events.map((e) => e.kind);
@@ -247,4 +260,74 @@ test('a huge tool result is capped rather than replayed in full', () => {
   assert.ok(result?.kind === 'tool_result');
   assert.ok(result.output.length < MAX_OUTPUT * 1.1);
   assert.ok(result.output.endsWith('[truncated by tether]'));
+});
+
+// ── the hook that is answered, not just read ─────────────────────────────────
+//
+// `PermissionRequest` is the one Codex event with a decision channel, so it is
+// the one that arrives over HTTP rather than in the log. These are about what a
+// card built from it may claim: a hold and a pair of buttons, or neither.
+
+test('a real PermissionRequest becomes an answerable card', () => {
+  const warnings: string[] = [];
+  const signal = mapHook(
+    permissionRequest(),
+    'call_LNqehXWH97jZ5YJI1FphTgBz',
+    (message) => warnings.push(message),
+    1234,
+  );
+
+  assert.deepEqual(warnings, []);
+  assert.deepEqual(signal, {
+    signal: 'pending',
+    // `prompting`, not `perhaps`: Codex has said it is asking the user right
+    // now, which is also why the caller must not drop this for a call the
+    // rollout already carries — it always does, by the time the dialog is up.
+    hold: 'prompting',
+    e: {
+      kind: 'tool_call',
+      id: 'pending:call_LNqehXWH97jZ5YJI1FphTgBz',
+      at: 1234,
+      tool: 'Bash',
+      input: { command: "printf 'HELLO' > probe.txt" },
+      callId: 'call_LNqehXWH97jZ5YJI1FphTgBz',
+    },
+  });
+});
+
+test('a prompt tether could not correlate is reported, never answered', () => {
+  // `PermissionRequest` carries no `tool_use_id` (verified against 0.145.0's own
+  // hook schema), so the `callId` is a correlation the caller made and may fail
+  // to make — a user who trusted this entry in Codex's review and declined the
+  // `PreToolUse` one has no pending calls to correlate against at all.
+  //
+  // The degradation is the badge and the tool's name: exactly what a Codex
+  // session showed before any of this. What must not happen is a card keyed by
+  // some nearby call, which is a pair of live buttons aimed at the wrong prompt.
+  const warnings: string[] = [];
+  const signal = mapHook(permissionRequest(), undefined, (message) => warnings.push(message));
+  assert.deepEqual(signal, { signal: 'waiting', detail: 'Bash' });
+  assert.deepEqual(warnings, [], 'and it is not a fault, so it is not warned about');
+});
+
+test('no other codex hook event is answerable, and each says so once', () => {
+  // The other four go to the log and are folded by `status.ts`. Reaching here
+  // means the shim POSTed something it should not have, which is worth a line.
+  for (const record of HOOKS) {
+    if (record['hook_event_name'] === 'PermissionRequest') continue;
+    const warnings: string[] = [];
+    assert.equal(
+      mapHook(record, 'call_x', (message) => warnings.push(message)),
+      undefined,
+    );
+    assert.equal(warnings.length, 1, String(record['hook_event_name']));
+  }
+});
+
+test('nothing that arrives on the hook channel can make the mapper throw', () => {
+  for (const payload of [null, 42, 'text', [], {}, { hook_event_name: 'PermissionRequest' }]) {
+    let signal;
+    assert.doesNotThrow(() => (signal = mapHook(payload, 'call_x')));
+    assert.equal(signal, undefined, JSON.stringify(payload));
+  }
 });

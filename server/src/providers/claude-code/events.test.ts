@@ -230,7 +230,7 @@ test('a real PreToolUse becomes the tool card the transcript has not written yet
     signal: 'pending',
     // A `Write` is not on the skip list, so tether may block the agent on it
     // while the user decides.
-    holdable: true,
+    hold: 'perhaps',
     e: {
       kind: 'tool_call',
       // Not a transcript uuid, and it must not look like one: this event never
@@ -255,7 +255,8 @@ test('a read-only tool is proposed but not worth stopping the agent for', () => 
   // that opens a dialog). Holding a burst of reads is how a phone in hand would
   // make the agent crawl.
   const bash = mapHook({ ...(preToolUse('Bash') as object) });
-  assert.equal(bash?.signal === 'pending' && bash.holdable, true);
+  // `perhaps`, not `prompting`: Claude Code has not said it is about to ask.
+  assert.equal(bash?.signal === 'pending' && bash.hold, 'perhaps');
 
   for (const tool of NEVER_HELD) {
     const signal = mapHook({
@@ -264,7 +265,7 @@ test('a read-only tool is proposed but not worth stopping the agent for', () => 
       tool_use_id: 'toolu_read',
       tool_input: {},
     });
-    assert.equal(signal?.signal === 'pending' && signal.holdable, false, tool);
+    assert.equal(signal?.signal === 'pending' && signal.hold, 'never', tool);
   }
 
   // A tool this build has never heard of — an MCP server's, or next month's — is
@@ -276,7 +277,7 @@ test('a read-only tool is proposed but not worth stopping the agent for', () => 
     tool_use_id: 'toolu_mcp',
     tool_input: {},
   });
-  assert.equal(unknown?.signal === 'pending' && unknown.holdable, true);
+  assert.equal(unknown?.signal === 'pending' && unknown.hold, 'perhaps');
 });
 
 test('a real Notification is the waiting state, in Claude Code’s own words', () => {

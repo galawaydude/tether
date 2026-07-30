@@ -25,7 +25,7 @@ import {
 import type { Terminals } from '../machine/terminal.ts';
 import { createAuthStore } from './auth.ts';
 import { defaultAllowedHosts } from './guards.ts';
-import { ensureHookSecret } from '../providers/claude-code/hooks.ts';
+import { ensureHookSecret } from '../providers/permission.ts';
 import { buildServer } from './server.ts';
 
 const HOST = 'localhost:8787';

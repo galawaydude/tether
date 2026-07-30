@@ -31,6 +31,25 @@ function str(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
+/**
+ * A `tool_input` reduced to what the two events actually agree on.
+ *
+ * A byte comparison is not available, and finding that out cost a real feature:
+ * verified in the 0.145.0 fixtures, an `apply_patch` reaches `PreToolUse` with
+ * its `command` ending in a newline and `PermissionRequest` with that newline
+ * stripped. An exact match therefore never correlates a patch — which is half
+ * of what a Codex user is ever asked to approve — and does so silently.
+ *
+ * Every string value is trimmed at its ends and nothing else is touched, so two
+ * genuinely different commands still differ. Key order is not normalised: both
+ * payloads are serialised by the same Codex, from the same value.
+ */
+function inputKey(input: unknown): string {
+  return JSON.stringify(input ?? null, (_key, value: unknown) =>
+    typeof value === 'string' ? value.trim() : value,
+  );
+}
+
 type PendingCall = {
   sessionId: string | undefined;
   turnId: string | undefined;
@@ -62,6 +81,19 @@ export class CodexStatus {
   /** The tool being waited on, while `state` is `waiting`. */
   get detail(): string | undefined {
     return this.#detail;
+  }
+
+  /**
+   * Which pending call the current `PermissionRequest` was correlated to, while
+   * `state` is `waiting` — `undefined` when it could not be worked out.
+   *
+   * Read by `machine/conversations.ts` to key the answerable card. It is a
+   * correlation and not a key (see {@link CodexStatus.#correlate}), so a caller
+   * must treat `undefined` as "report the prompt, offer no buttons" rather than
+   * reach for a nearby call.
+   */
+  get waitingOn(): string | undefined {
+    return this.#waitingOn;
   }
 
   /**
@@ -144,11 +176,15 @@ export class CodexStatus {
         return;
       case 'PreToolUse': {
         const callId = str(record['tool_use_id']);
-        if (callId !== undefined) {
+        // Deduplicated by `tool_use_id`, because this fold is fed from more
+        // than one place: the hook log tailer, and — for the record a blocked
+        // `PermissionRequest` needs — a `catchUp` that reads the same lines
+        // again if the tailer had already delivered them.
+        if (callId !== undefined && !this.#recent.some((call) => call.callId === callId)) {
           this.#recent.push({
             sessionId: str(record['session_id']),
             turnId: str(record['turn_id']),
-            input: JSON.stringify(record['tool_input'] ?? null),
+            input: inputKey(record['tool_input']),
             callId,
           });
           if (this.#recent.length > RECENT_CALLS) this.#recent.shift();
@@ -181,19 +217,31 @@ export class CodexStatus {
    * **This is a correlation, not a key.** `PermissionRequest` carries no
    * `tool_use_id` (verified against Codex 0.145.0), so the only join available
    * is the most recent `PreToolUse` on the same `(session_id, turn_id)` with the
-   * same `tool_input` — and in a real capture that is genuinely ambiguous: a
-   * sandbox-denied first attempt and the retry that raises the prompt carry
-   * byte-identical `tool_input` under different `tool_use_id`s. Most-recent-wins
-   * is right for that case and is not provably right for every case, which is
-   * why nothing downstream treats the answer as an identity: it only decides
-   * which `PostToolUse` clears the badge, and `task_complete` clears it anyway.
+   * same `tool_input` (up to {@link inputKey}) — and in a real capture that is
+   * genuinely ambiguous: a sandbox-denied first attempt and the retry that
+   * raises the prompt carry byte-identical `tool_input` under different
+   * `tool_use_id`s. Most-recent-wins is right for that case and is not provably
+   * right for every case, so **nothing downstream may treat the answer as an
+   * identity.**
+   *
+   * Two things read it, and neither does. It decides which `PostToolUse` clears
+   * the badge, and `task_complete` clears it anyway; and it decides which card
+   * an answerable permission prompt is drawn on. Not *whether* the user's answer
+   * reaches the prompt: the hold is the HTTP request the hook is blocked on, so
+   * a tap always answers the call Codex is actually asking about, however this
+   * guessed at its id. A `undefined` is honest and its cost is one card's
+   * buttons; a wrong id is one card's buttons on the wrong card.
+   *
+   * `undefined` is also the ordinary answer in a supported configuration: a user
+   * who trusted tether's `PermissionRequest` entry in Codex's review and
+   * declined its `PreToolUse` one has no pending calls here at all.
    *
    * Worth an upstream issue against Codex.
    */
   #correlate(record: Record<string, unknown>): string | undefined {
     const sessionId = str(record['session_id']);
     const turnId = str(record['turn_id']);
-    const input = JSON.stringify(record['tool_input'] ?? null);
+    const input = inputKey(record['tool_input']);
     for (let i = this.#recent.length - 1; i >= 0; i -= 1) {
       const call = this.#recent[i]!;
       if (call.sessionId === sessionId && call.turnId === turnId && call.input === input) {

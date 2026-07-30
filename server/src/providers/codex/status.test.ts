@@ -74,6 +74,11 @@ test('the answered prompt clears the badge, and only the answered one', () => {
 
   for (const record of turn.slice(0, 3)) status.apply(record);
   assert.equal(status.state, 'waiting');
+  assert.equal(
+    status.waitingOn,
+    promptedPre?.['tool_use_id'],
+    'the retry that raised the prompt, not the attempt the sandbox refused',
+  );
 
   // The completion of the *denied* call must not clear a prompt about the other
   // one — most-recent-wins is what picks the right `PreToolUse` to correlate to.
@@ -99,9 +104,50 @@ test('a PermissionRequest that correlates to nothing still shows, and still clea
   });
   assert.equal(status.state, 'waiting');
   assert.equal(status.detail, 'Bash');
+  // And it says so: `undefined` is what makes the card downstream report the
+  // prompt with no buttons, rather than putting them on a call tether guessed at.
+  assert.equal(status.waitingOn, undefined);
 
   status.apply({ hook_event_name: 'PostToolUse', tool_use_id: 'call_unrelated' });
   assert.equal(status.state, 'busy');
+});
+
+test('an apply_patch prompt correlates, though Codex changes its bytes on the way', () => {
+  // Straight from the capture, and it cost a whole feature to find: the
+  // `apply_patch` command reaches `PreToolUse` ending in a newline and
+  // `PermissionRequest` with that newline gone. A byte comparison therefore
+  // never correlates a patch — silently, and for half of everything a Codex user
+  // is asked to approve. `inputKey` trims string values, and this is the proof.
+  const patch = HOOKS.filter((r) => r['tool_name'] === 'apply_patch');
+  const [pre, request] = patch;
+  assert.equal(patch.length, 3, 'PreToolUse, PermissionRequest, PostToolUse');
+  assert.notDeepEqual(pre?.['tool_input'], request?.['tool_input'], 'the bytes really do differ');
+
+  const status = new CodexStatus();
+  status.apply(pre);
+  status.apply(request);
+  assert.equal(status.state, 'waiting');
+  assert.equal(status.waitingOn, pre?.['tool_use_id']);
+});
+
+test('the same PreToolUse arriving twice is one pending call, not two', () => {
+  // `Conversations` feeds this fold from the hook log tailer and, when a blocked
+  // `PermissionRequest` needs the record now, from a `catchUp` that re-reads the
+  // same lines. Both paths are the same bytes, so the correlation must not care
+  // how many times it saw them.
+  const status = new CodexStatus();
+  const [, pre] = HOOKS;
+  status.apply(pre);
+  status.apply(pre);
+  status.apply({
+    hook_event_name: 'PermissionRequest',
+    session_id: pre?.['session_id'],
+    turn_id: pre?.['turn_id'],
+    tool_name: 'Bash',
+    tool_input: pre?.['tool_input'],
+    at: Date.now(),
+  });
+  assert.equal(status.waitingOn, pre?.['tool_use_id']);
 });
 
 test('a turn finishing clears a prompt nothing else answered', () => {

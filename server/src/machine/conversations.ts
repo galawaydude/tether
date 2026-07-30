@@ -26,15 +26,18 @@ import { dirname } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 
 import { stateDir as defaultStateDir } from '../db.ts';
-import { mapHook, mapLines as mapClaudeLines } from '../providers/claude-code/events.ts';
-import { permissionTimeoutMs } from '../providers/claude-code/hooks.ts';
+import {
+  mapHook as mapClaudeHook,
+  mapLines as mapClaudeLines,
+} from '../providers/claude-code/events.ts';
 import { readSession, readSessionId } from '../providers/claude-code/status.ts';
 import { findTranscript, type StartMemo } from '../providers/claude-code/transcript.ts';
-import { mapLines as mapCodexLines } from '../providers/codex/events.ts';
-import { hookLogPath } from '../providers/codex/hooks.ts';
+import { mapHook as mapCodexHook, mapLines as mapCodexLines } from '../providers/codex/events.ts';
+import { hookLogPath, MAX_HOLD_MS } from '../providers/codex/hooks.ts';
 import { findRollout } from '../providers/codex/rollout.ts';
 import { CODEX, codexHome } from '../providers/codex/spawn.ts';
 import { CodexStatus } from '../providers/codex/status.ts';
+import { type HoldBasis, type HookSignal, permissionTimeoutMs } from '../providers/permission.ts';
 import { tailLines, type Tail } from '../providers/tail.ts';
 import {
   claimedProviderSessionIds,
@@ -566,8 +569,14 @@ export class Conversations {
 
   /**
    * A hook payload for a session — the low-latency edge the transcript cannot
-   * match (report §4). `PreToolUse` is the tool card during a permission prompt;
-   * `Notification` is the *waiting for you* state.
+   * match (report §4), and the channel a permission prompt is answered on.
+   *
+   * One method for two providers, and the split is one `await`, because what
+   * each provider's hooks *mean* differs while what tether does with the meaning
+   * does not. Claude Code sends `PreToolUse` (a proposal, superseded by the
+   * transcript) and `Notification` (*waiting for you*); Codex sends only
+   * `PermissionRequest`, and sends it because it has already put a dialog on
+   * screen. See `#codexSignal` for the one thing Codex needs first.
    *
    * Resolves to a decision only when tether held the agent on this call and the
    * user answered it. Everything else — an unrecognised payload, a call tether
@@ -579,9 +588,12 @@ export class Conversations {
    * agent's own turn is blocked on.
    */
   async hook(session: Session, payload: unknown): Promise<PermissionDecision | undefined> {
-    const signal = mapHook(payload, (message) => this.#warn(message));
-    if (signal === undefined) return undefined;
     const live = this.#live.get(session.id);
+    const signal =
+      session.provider === CODEX
+        ? await this.#codexSignal(live, payload)
+        : mapClaudeHook(payload, (message) => this.#warn(message));
+    if (signal === undefined) return undefined;
 
     if (signal.signal === 'waiting') {
       if (live === undefined) return undefined;
@@ -592,7 +604,14 @@ export class Conversations {
     // The transcript can win this race — measured at ~150ms behind the hook on
     // Claude Code 2.1.220, but nothing guarantees the order — and a proposal for
     // a call that is already a real event is not a proposal.
-    if (live?.seen.has(signal.e.callId) === true) return undefined;
+    //
+    // `prompting` is exempt, and not as an edge case: Codex flushes its
+    // `function_call` *before* the dialog goes up, so for it "the transcript
+    // already has this call" is the normal state of affairs rather than a lost
+    // race. The frame below is not proposing a card there — it is putting
+    // buttons on the one the client already drew, which is what the `pending`
+    // channel does when a `callId` is already on screen.
+    if (signal.hold !== 'prompting' && live?.seen.has(signal.e.callId) === true) return undefined;
     const calls = this.#pending.get(session.id) ?? new Map<string, Proposal>();
     this.#pending.set(session.id, calls);
     const entry: Proposal = { at: Date.now(), e: signal.e };
@@ -604,7 +623,7 @@ export class Conversations {
       calls.delete(oldest);
     }
 
-    const holdMs = this.#holdFor(signal.holdable, live);
+    const holdMs = this.#holdFor(signal.hold, live);
     if (holdMs === 0) {
       // No `deadline`, so the card offers no buttons: tether is reporting this
       // call, not answering it.
@@ -639,6 +658,36 @@ export class Conversations {
   }
 
   /**
+   * A Codex hook payload → a signal, once the correlation it needs is a fact.
+   *
+   * `PermissionRequest` carries no `tool_use_id` (verified against 0.145.0's own
+   * hook schema), so the call it is about has to be correlated from the
+   * `PreToolUse` before it — and that record arrives on the hook *log*, not
+   * here. The log is followed by a tailer whose `fs.watch` fires within
+   * milliseconds and whose poll fires within a second, and the prompt is 20ms
+   * behind the `PreToolUse` it belongs to, so waiting for either would be
+   * racing. `catchUp` is the answer: the shim appended both lines before it
+   * POSTed, so a read to the file's end here makes the correlation certain
+   * rather than likely.
+   *
+   * It also folds this session's own `PermissionRequest`, which is what
+   * announces `waiting` — so a declined correlation still leaves the user with
+   * the badge and the tool's name.
+   *
+   * The correlation is not an identity and nothing here treats it as one; the
+   * limits are in `CodexStatus#correlate`, and the reason a wrong guess cannot
+   * answer the wrong call is there too.
+   */
+  async #codexSignal(live: Live | undefined, payload: unknown): Promise<HookSignal | undefined> {
+    await live?.hookTailer?.catchUp();
+    // Only a fold that is actually reporting a prompt may name the call it is
+    // about: a stale `#waitingOn` from an earlier turn is not evidence about
+    // this one, and holding on it would put buttons on a finished card.
+    const callId = live?.codex?.state === 'waiting' ? live.codex.waitingOn : undefined;
+    return mapCodexHook(payload, callId, (message) => this.#warn(message));
+  }
+
+  /**
    * Answer a held proposal. `false` means there was nothing to answer — the
    * call is unknown, was never held, or has already been settled by the timer
    * or by somebody else's tap.
@@ -669,15 +718,23 @@ export class Conversations {
    *   the terminal has one that says it is not watching, and does not pause
    *   either. Which pane is in front is all the client reports and all this
    *   knows — not whether the screen is even on.
-   * - **The tool is holdable.** `PreToolUse` fires for every call and says
-   *   nothing about whether Claude Code was going to prompt (verified: see
+   * - **The tool is holdable.** Claude Code's `PreToolUse` fires for every call
+   *   and says nothing about whether it was going to prompt (verified: see
    *   `NEVER_HELD`), so the read-only burst tools are skipped by name. Without
    *   this an agent reading twenty files with a phone open would stall twenty
-   *   times over.
+   *   times over. Codex needs no such list, because `PermissionRequest` only
+   *   fires when it really is asking — that is what `prompting` means.
+   *
+   * The one provider-specific number is the ceiling. Codex's own hook `timeout`
+   * is a constant that tether may not rewrite without re-prompting a trust
+   * review the user already gave, so the hold is clamped under it here rather
+   * than reconciled onto disk there (`providers/codex/hooks.ts`). Only an
+   * operator asking for a hold of minutes ever meets it.
    */
-  #holdFor(holdable: boolean, live: Live | undefined): number {
-    if (!holdable || live === undefined || live.watching.size === 0) return 0;
-    return Math.max(0, this.#options.permissionTimeoutMs ?? permissionTimeoutMs());
+  #holdFor(hold: HoldBasis, live: Live | undefined): number {
+    if (hold === 'never' || live === undefined || live.watching.size === 0) return 0;
+    const holdMs = Math.max(0, this.#options.permissionTimeoutMs ?? permissionTimeoutMs());
+    return live.session.provider === CODEX ? Math.min(holdMs, MAX_HOLD_MS) : holdMs;
   }
 
   #send(live: Live | undefined, frame: ServerFrame): void {
@@ -685,7 +742,18 @@ export class Conversations {
     for (const send of live.subscribers) send(frame);
   }
 
-  /** Live proposals for a session: not yet in the transcript, not yet stale. */
+  /**
+   * Live proposals for a session: not yet in the transcript, not yet stale.
+   *
+   * Note the Codex consequence of retiring on `seen`, because it looks like a bug
+   * and is not one: a Codex call is in the transcript before the prompt goes up,
+   * so the moment its hold settles the entry goes, and a client that reconnects
+   * *after* that is not replayed the `answer`. It has nothing to clear — the card
+   * it rebuilds from the transcript carries no buttons — and Codex records the
+   * refusal in the rollout itself, so the card still tells the story. Keeping
+   * settled entries alive to carry the note would put them past every retirement
+   * rule this has.
+   */
   #pendingFor(id: string, live: Live): Proposal[] {
     const calls = this.#pending.get(id);
     if (calls === undefined) return [];

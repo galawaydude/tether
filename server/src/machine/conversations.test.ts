@@ -17,6 +17,7 @@ import { mapLines as mapClaudeLines } from '../providers/claude-code/events.ts';
 import { sessionStatusPath } from '../providers/claude-code/status.ts';
 import { projectDir } from '../providers/claude-code/transcript.ts';
 import { mapLines as mapCodexLines } from '../providers/codex/events.ts';
+import { MAX_HOLD_MS } from '../providers/codex/hooks.ts';
 import { Conversations, mapperFor, stderrWarn, TAIL_EVENTS } from './conversations.ts';
 import { applyRegistrySchema, createSession, getSession, type Session } from './registry.ts';
 import { killServer, listPanes, newSession } from './tmux.ts';
@@ -332,7 +333,7 @@ function rolloutPath(codexHome: string, at: number): { day: string; path: string
   return { day, path: join(day, `rollout-${y}-${m}-${d}T${clock}-${CODEX_SESSION}.jsonl`) };
 }
 
-async function codexHarness(t: TestContext) {
+async function codexHarness(t: TestContext, options: { permissionTimeoutMs?: number } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'tether-conv-codex-')));
   t.after(() => rm(root, { recursive: true, force: true }));
   const codexHome = join(root, 'codex');
@@ -371,7 +372,7 @@ async function codexHarness(t: TestContext) {
     })}\n`,
   );
 
-  const conversations = new Conversations(db, { codexHome, stateDir, pollMs: POLL });
+  const conversations = new Conversations(db, { codexHome, stateDir, pollMs: POLL, ...options });
   t.after(() => conversations.closeAll());
   return { db, session, conversations, rollout, hookLog };
 }
@@ -1031,4 +1032,169 @@ test('a session id that changes mid-session is re-bound, and the view refetches'
     SECOND_SESSION,
     'and the row follows the pane, so `resume` and the history route agree with it',
   );
+});
+
+// ── answering a Codex prompt ─────────────────────────────────────────────────
+//
+// The other half of "one interface, full stop". The hold, the deadline, the
+// single settle and the release-rather-than-deny policy above are the same code
+// for both providers; what is new here is the two things Codex does differently.
+//
+// It writes the `function_call` to the rollout *before* it puts the dialog up
+// (report risk #2 does not exist for Codex), so the card is already on the
+// client's screen and the `pending` frame's job is to put buttons on it — which
+// is why "the transcript already has this call" cannot mean "drop it".
+//
+// And its `PermissionRequest` carries no `tool_use_id`, so which card that is has
+// to be correlated from the `PreToolUse` before it. That correlation can fail,
+// and a failure must cost the buttons rather than answer somebody else's call.
+
+const CODEX_TURN = '019fac91-dcc4-7492-9d4a-6d796117fa13';
+const CODEX_CALL = 'call_LNqehXWH97jZ5YJI1FphTgBz';
+const CODEX_COMMAND = { command: 'rm -rf ./build' };
+
+/** A hook log line, as tether's own shim writes it: the payload plus `at`/`ppid`. */
+function hookLine(payload: Record<string, unknown>): string {
+  return `${JSON.stringify({ ...payload, at: Date.now(), ppid: 1 })}\n`;
+}
+
+function codexPreToolUse(turnId = CODEX_TURN, callId = CODEX_CALL): Record<string, unknown> {
+  return {
+    session_id: CODEX_SESSION,
+    turn_id: turnId,
+    hook_event_name: 'PreToolUse',
+    tool_name: 'Bash',
+    tool_input: CODEX_COMMAND,
+    tool_use_id: callId,
+  };
+}
+
+/** As Codex delivers it, and as the shim POSTs it: no `tool_use_id` anywhere. */
+function codexPermissionRequest(turnId = CODEX_TURN): Record<string, unknown> {
+  return {
+    session_id: CODEX_SESSION,
+    turn_id: turnId,
+    hook_event_name: 'PermissionRequest',
+    tool_name: 'Bash',
+    tool_input: CODEX_COMMAND,
+  };
+}
+
+/**
+ * A Codex session at a permission prompt, arranged exactly as one really is: the
+ * `function_call` already in the rollout and delivered to the client, and the
+ * `PreToolUse` and `PermissionRequest` lines already in the hook log — because
+ * the shim appends its line before it POSTs, which is what makes the correlation
+ * a fact rather than a race with the tailer.
+ */
+async function codexHeld(t: TestContext, options: { permissionTimeoutMs?: number } = {}) {
+  const h = await codexHarness(t, options);
+  const client = sink();
+  const leave = await h.conversations.subscribe(h.session, 0, client.send);
+  t.after(leave);
+
+  await appendFile(
+    h.rollout,
+    `${JSON.stringify({
+      timestamp: new Date().toISOString(),
+      type: 'response_item',
+      payload: {
+        type: 'function_call',
+        call_id: CODEX_CALL,
+        name: 'exec_command',
+        arguments: '{}',
+      },
+    })}\n`,
+  );
+  await client.waitFor(1);
+  assert.equal(client.frames[0]?.c === 'conv' && client.frames[0].e.kind, 'tool_call');
+  return { ...h, client, leave };
+}
+
+test('a codex prompt puts buttons on the card the rollout has already written', async (t) => {
+  const h = await codexHeld(t, { permissionTimeoutMs: 60_000 });
+  await appendFile(h.hookLog, hookLine(codexPreToolUse()) + hookLine(codexPermissionRequest()));
+
+  const decision = h.conversations.hook(h.session, codexPermissionRequest());
+  await h.client.waitForOther(h.client.pendings, 1);
+
+  // The same `callId` the `tool_call` event carries, so the client replaces its
+  // own card rather than drawing a second one — and a `deadline`, which is what
+  // puts Approve and Deny on it.
+  const pending = h.client.pendings[0];
+  assert.equal(pending?.e.callId, CODEX_CALL);
+  assert.ok((pending?.deadline ?? 0) > Date.now(), 'held, so answerable');
+  assert.equal(pending?.e.tool, 'Bash');
+  assert.deepEqual(pending?.e.input, CODEX_COMMAND, 'the command, in full, at the right edge');
+
+  assert.equal(h.conversations.answer(h.session.id, CODEX_CALL, 'allow'), true);
+  assert.equal(await decision, 'allow', 'and the hook the agent is blocked on carries it back');
+  await h.client.waitForOther(h.client.answers, 1);
+  assert.deepEqual(h.client.answers[0], { c: 'answer', callId: CODEX_CALL, outcome: 'allow' });
+});
+
+test('Deny is the answer too, and it reaches the same blocked hook', async (t) => {
+  const h = await codexHeld(t, { permissionTimeoutMs: 60_000 });
+  await appendFile(h.hookLog, hookLine(codexPreToolUse()) + hookLine(codexPermissionRequest()));
+
+  const decision = h.conversations.hook(h.session, codexPermissionRequest());
+  await h.client.waitForOther(h.client.pendings, 1);
+  h.conversations.answer(h.session.id, CODEX_CALL, 'deny');
+
+  assert.equal(await decision, 'deny');
+  assert.equal(h.client.answers[0]?.outcome, 'deny');
+});
+
+test('a codex hold nobody answers hands the question back to Codex', async (t) => {
+  const h = await codexHeld(t, { permissionTimeoutMs: 60 });
+  await appendFile(h.hookLog, hookLine(codexPreToolUse()) + hookLine(codexPermissionRequest()));
+
+  // `undefined` is the whole policy, and it is the same policy as Claude Code's:
+  // the hook says nothing, so Codex's own approval prompt decides — which is
+  // where the question started and where the user can still answer it.
+  assert.equal(await h.conversations.hook(h.session, codexPermissionRequest()), undefined);
+  await h.client.waitForOther(h.client.answers, 1);
+  assert.equal(h.client.answers[0]?.outcome, 'timeout', 'and the expiry is observable');
+});
+
+test('a prompt tether could not correlate does not answer the wrong call', async (t) => {
+  const h = await codexHeld(t, { permissionTimeoutMs: 60_000 });
+  // A real, supported configuration: the user trusted tether's
+  // `PermissionRequest` entry in Codex's review and declined its `PreToolUse`
+  // one, so there is no pending call to correlate against. A prompt from a turn
+  // tether never saw the calls of looks exactly the same.
+  await appendFile(h.hookLog, hookLine(codexPreToolUse()));
+  await appendFile(h.hookLog, hookLine(codexPermissionRequest('some-other-turn')));
+
+  assert.equal(
+    await h.conversations.hook(h.session, codexPermissionRequest('some-other-turn')),
+    undefined,
+  );
+
+  // Reported: the badge and the tool's name, which is what a Codex session
+  // showed before any of this. Not answered: no deadline anywhere, so no card
+  // wears buttons, and nothing is holding the call that *did* correlate before.
+  assert.deepEqual(h.client.pendings, []);
+  assert.equal(h.client.states.at(-1)?.state, 'waiting');
+  assert.equal(h.client.states.at(-1)?.detail, 'Bash');
+  assert.equal(
+    h.conversations.answer(h.session.id, CODEX_CALL, 'allow'),
+    false,
+    'and a tap aimed at the call it might have guessed answers nothing at all',
+  );
+});
+
+test('a codex hold is clamped under the timeout Codex was asked to trust', async (t) => {
+  // Codex hashes its hooks.json entries, so tether may not move that `timeout`
+  // without re-prompting a review the user already gave. The hold is clamped
+  // beneath the fixed one instead — an operator asking for ten minutes gets the
+  // longest hold that still returns before Codex stops waiting.
+  const h = await codexHeld(t, { permissionTimeoutMs: 10 * 60_000 });
+  await appendFile(h.hookLog, hookLine(codexPreToolUse()) + hookLine(codexPermissionRequest()));
+
+  void h.conversations.hook(h.session, codexPermissionRequest());
+  await h.client.waitForOther(h.client.pendings, 1);
+  const holdMs = (h.client.pendings[0]?.deadline ?? 0) - Date.now();
+  assert.ok(holdMs > 0 && holdMs <= MAX_HOLD_MS, `held for ${holdMs}ms`);
+  assert.ok(MAX_HOLD_MS < 10 * 60_000, 'the clamp really is the binding constraint here');
 });
