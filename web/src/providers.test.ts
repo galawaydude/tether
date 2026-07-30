@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  AUTH_TERMINAL_LABEL,
   CODEX,
   copyLabel,
   DEFAULT_PROVIDER,
@@ -46,6 +47,33 @@ test('a Copy button says what it copies, and never says “message”', () => {
       assert.doesNotMatch(copyLabel(who, provider), /message/i);
     }
   }
+});
+
+test('no two controls that summon the terminal share a name, even partly', () => {
+  // Three distinct buttons, all of which can be on screen at once: this one on a
+  // failed turn's row, the composer's command note, and the waiting banner. They
+  // are compared here rather than at their call sites because this is the one
+  // place all three are written down together.
+  const names = [AUTH_TERMINAL_LABEL, 'Show the terminal', 'Open the terminal'];
+  const why =
+    'these are three distinct controls that can be on screen together, so one ' +
+    'accessible name containing another makes `getByRole({ name })` ambiguous ' +
+    'for the specs that locate the other two, and makes the control ambiguous ' +
+    'for a screen reader — rename it to something neither contains';
+  for (const a of names) {
+    for (const b of names) {
+      if (a === b) continue;
+      // Playwright's name matching is case-insensitive substring matching, so
+      // the containment has to be checked the same way.
+      assert.equal(
+        b.toLowerCase().includes(a.toLowerCase()),
+        false,
+        `“${a}” is inside “${b}”: ${why}`,
+      );
+    }
+  }
+  // And they are genuinely three, not two written twice.
+  assert.equal(new Set(names).size, names.length, `duplicate terminal control name: ${why}`);
 });
 
 test('a dead session says it cannot be resumed only when it genuinely cannot', () => {

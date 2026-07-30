@@ -55,7 +55,7 @@ import {
   type Axis,
   type Choice,
 } from './options.ts';
-import { copyLabel, providerLabel, whoLabel } from './providers.ts';
+import { AUTH_TERMINAL_LABEL, copyLabel, providerLabel, whoLabel } from './providers.ts';
 import type { Send, Status } from './terminal.tsx';
 
 /** Same shape of backoff as the terminal channel, and for the same phone. */
@@ -888,7 +888,12 @@ function RowView({
       // and this is one: its CLI wrote it, the model did not. Tether's own line
       // goes underneath and only for the case it can stand behind.
       return (
-        <aside class={`turn-error${row.auth ? ' turn-error-act' : ''}`}>
+        // A plain `<div>`, not an `<aside>`: this row is part of the
+        // conversation's own flow rather than complementary to it, and an
+        // `<aside>` here has no sectioning ancestor, so it would map to an
+        // unnamed `complementary` landmark — one per failed turn, in the same
+        // landmark list as the rail's named one.
+        <div class={`turn-error${row.auth ? ' turn-error-act' : ''}`}>
           <p class="turn-error-text">{row.text}</p>
           {row.auth && (
             <p class="turn-error-advice">
@@ -902,10 +907,11 @@ function RowView({
                   command note offers for the same reason: an answer that lives
                   on a screen this pane cannot show.
 
-                  **Not** "Show the terminal" or "Open the terminal": those are
-                  the composer note's and the waiting banner's, both of which can
-                  be on screen beside this one, and `getByRole({ name })` matches
-                  on a substring.
+                  Its wording lives in `providers.ts` with the rest of the
+                  accessible names, held apart from the composer note's "Show the
+                  terminal" and the waiting banner's "Open the terminal" by a
+                  test there: all three can be on screen together and
+                  `getByRole({ name })` matches on a substring.
 
                   ponytail: it summons and does not also send `/login`. That
                   would land a Claude Code user directly on the login chooser —
@@ -914,11 +920,11 @@ function RowView({
                   composer), so it is a per-provider table entry for one step.
                   Add it when someone signs in often enough to mind. */}
               <button type="button" class="link" onClick={onSummon}>
-                Go to the terminal
+                {AUTH_TERMINAL_LABEL}
               </button>
             </p>
           )}
-        </aside>
+        </div>
       );
     case 'note':
       return <p class="note">{row.text}</p>;

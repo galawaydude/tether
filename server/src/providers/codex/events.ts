@@ -272,7 +272,8 @@ export function mapRecord(record: unknown, index = 0, warn: Warn = () => {}): Ma
     case 'task_complete': {
       // Every turn ends with one of these; only a failed turn carries `error`.
       const error = payload['error'];
-      const text = isObject(error) ? (str(error['message']) ?? '') : '';
+      if (!isObject(error)) return NONE;
+      const text = str(error['message']) ?? '';
       if (text.trim() === '') return NONE;
       return {
         events: [
@@ -281,9 +282,7 @@ export function mapRecord(record: unknown, index = 0, warn: Warn = () => {}): Ma
             id,
             at,
             text: capOutput(text),
-            ...(isObject(error) && error['codex_error_info'] === AUTH_ERROR
-              ? { auth: true as const }
-              : {}),
+            ...(error['codex_error_info'] === AUTH_ERROR ? { auth: true as const } : {}),
           },
         ],
       };

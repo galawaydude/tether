@@ -56,6 +56,19 @@ export function copyLabel(who: 'user' | 'assistant', provider: string): string {
 }
 
 /**
+ * The accessible name of the way into the terminal from a failed turn's row.
+ *
+ * Here for the same reason `copyLabel` is: it is the wording of a control's
+ * accessible name, and it is load-bearing against the other two controls that
+ * offer the same escape hatch — the composer's command note says "Show the
+ * terminal" and the waiting banner says "Open the terminal". All three can be on
+ * screen together, and `getByRole({ name })` matches on a case-insensitive
+ * substring, so one name containing another is an ambiguity for a screen reader
+ * and for the specs that locate the other two. `providers.test.ts` is the guard.
+ */
+export const AUTH_TERMINAL_LABEL = 'Go to the terminal';
+
+/**
  * What the New session sheet says about folder trust, before the agent starts.
  *
  * Here rather than in the `.tsx` for the usual reason — the tests cannot compile
