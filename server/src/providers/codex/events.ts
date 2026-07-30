@@ -49,6 +49,7 @@
 import type { ConversationEvent } from '@tether/shared';
 
 import { capInput, capOutput } from '../cap.ts';
+import type { HookSignal } from '../permission.ts';
 
 export type Mapped = {
   events: ConversationEvent[];
@@ -252,6 +253,76 @@ export function mapRecord(record: unknown, index = 0, warn: Warn = () => {}): Ma
       warn(`unknown codex ${type} payload type ${kind}`);
       return NONE;
   }
+}
+
+/**
+ * A Codex hook payload → the one signal tether answers on.
+ *
+ * Only `PermissionRequest` is mapped, and that is not a subset of what the
+ * installer registers — it is the only Codex event that *needs* an answer.
+ * Everything else tether asks Codex for goes to the hook log and is folded into
+ * the session state by `status.ts`; only this one arrives over HTTP, because
+ * only this one has a decision to write back (`hooks.ts`).
+ *
+ * Note what this is not, and how it differs from Claude Code's `mapHook`.
+ * `PreToolUse` there is a *proposal*: Claude Code writes nothing to its
+ * transcript during a prompt, so the card has to be invented from the hook and
+ * is superseded later. Codex flushes its `function_call` before the dialog goes
+ * up (the Codex spike: report risk #2 does not exist for Codex), so the card is
+ * already on screen and what this adds to it is the buttons — which is why the
+ * signal is `prompting` rather than `perhaps`, and why the caller must not treat
+ * "the transcript already has this call" as a reason to drop it.
+ *
+ * `callId` is supplied by the caller because Codex does not supply it: verified
+ * against 0.145.0's own hook schema, `PermissionRequest` carries `session_id`,
+ * `turn_id`, `tool_name` and `tool_input` and **no `tool_use_id`**. It is a
+ * correlation, made in `CodexStatus#correlate` and limited in the ways set out
+ * there. `undefined` is a normal answer and the only safe response to it is to
+ * report the prompt without buttons — hence `waiting` rather than a `pending`
+ * keyed by a call tether guessed at.
+ */
+export function mapHook(
+  payload: unknown,
+  callId: string | undefined,
+  warn: Warn = () => {},
+  now = Date.now(),
+): HookSignal | undefined {
+  if (!isObject(payload)) {
+    warn('codex hook payload is not an object');
+    return undefined;
+  }
+  const event = str(payload['hook_event_name']);
+  if (event !== 'PermissionRequest') {
+    warn(`unanswerable codex hook event ${String(event)}`);
+    return undefined;
+  }
+  const tool = str(payload['tool_name']);
+  if (tool === undefined) {
+    warn('codex PermissionRequest hook without tool_name');
+    return undefined;
+  }
+  // The badge and the tool's name, and nothing that could put a live button on
+  // a card. `status.ts` will have said the same thing off the hook log; saying
+  // it here too costs one `#setState` that changes nothing.
+  if (callId === undefined) return { signal: 'waiting', detail: tool };
+  return {
+    signal: 'pending',
+    hold: 'prompting',
+    // `id` is not a rollout id and must not look like one: this event never
+    // enters the `seq` stream, and the client keys it by `callId`.
+    e: {
+      kind: 'tool_call',
+      id: `pending:${callId}`,
+      at: now,
+      // Claude Code's vocabulary already: the hooks say `Bash` where the
+      // rollout says `exec_command`, so the card and the record agree without
+      // `toolName` being asked. Asked anyway — it is a no-op for a name that is
+      // already normalised, and the alternative is two rules for one thing.
+      tool: toolName(tool),
+      input: capInput(payload['tool_input']),
+      callId,
+    },
+  };
 }
 
 /**

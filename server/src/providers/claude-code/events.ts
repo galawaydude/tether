@@ -27,9 +27,10 @@
  *   complains, and fix it by walking back from the last leaf.
  */
 
-import type { ConversationEvent, ToolCallEvent } from '@tether/shared';
+import type { ConversationEvent } from '@tether/shared';
 
 import { capInput, capOutput } from '../cap.ts';
+import type { HookSignal } from '../permission.ts';
 
 export type Mapped = {
   events: ConversationEvent[];
@@ -232,26 +233,6 @@ export function mapRecord(record: unknown, warn: Warn = () => {}): Mapped {
 }
 
 /**
- * What a hook payload means to tether, if anything.
- *
- * Only the two events `installHook` registers produce one. Everything else —
- * including an event a future Claude Code adds and a payload whose fields have
- * moved — is `undefined` and one warning, by the same rule the transcript mapper
- * follows: the hook is an accelerator, and losing one costs a card a moment of
- * lateness, never the session.
- */
-export type HookSignal =
-  /**
-   * A tool call proposed but not yet in the transcript. Superseded by `callId`.
-   *
-   * `holdable` is whether tether may block the agent on this one while it waits
-   * for the user to tap — see {@link NEVER_HELD}.
-   */
-  | { signal: 'pending'; e: ToolCallEvent; holdable: boolean }
-  /** The agent has stopped and is waiting on the user. */
-  | { signal: 'waiting'; detail?: string };
-
-/**
  * Tools tether will never hold the agent on, whatever the user has open.
  *
  * `PreToolUse` fires for **every** tool call, and nothing in its payload says
@@ -307,7 +288,9 @@ export function mapHook(
       }
       return {
         signal: 'pending',
-        holdable: !NEVER_HELD.has(tool),
+        // `perhaps`, never `prompting`: a `PreToolUse` says nothing about
+        // whether Claude Code was going to ask. See `HoldBasis`.
+        hold: NEVER_HELD.has(tool) ? 'never' : 'perhaps',
         // `id` is not a transcript uuid and must not look like one: this event
         // never enters the `seq` stream, and the client keys it by `callId`.
         e: {

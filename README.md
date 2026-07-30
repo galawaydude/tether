@@ -52,11 +52,12 @@ live **Terminal**, with a bar for the keys a phone keyboard has not got (Esc, Ta
 arrows, Ctrl-C). A live session shows what its agent is doing — _Working_, _Idle_
 or _Waiting for you_ — in the session list and above both views, and just **live**
 where the provider is not saying rather than a badge that would be a guess. A
-Claude Code permission prompt puts the tool call it is asking about in the
-conversation before the transcript has it — with **Approve** and **Deny** on the
-card, so a yes/no does not mean switching into a terminal on a phone (see
-[the hook](#the-claude-code-hook-and-the-file-it-writes-in-your-project)). The
-terminal is still an answering surface and still always correct.
+permission prompt from either agent puts the tool call it is asking about on the
+card it is asking about — with **Approve** and **Deny** on it, so a yes/no does
+not mean switching into a terminal on a phone (see
+[the hook](#the-claude-code-hook-and-the-file-it-writes-in-your-project), and
+[Codex's](#codex-and-its-optional-hook), which you install once). The terminal is
+still an answering surface and still always correct.
 
 You reply in the conversation tab's **composer**: a real text box, so the message
 is composed on the phone and sent as one unit rather than a round trip per
@@ -100,9 +101,10 @@ deliberately have no `seq` — a sequence number is a position in the transcript
 and none of these comes from it.
 `{"c":"state","state":"busy"|"idle"|"waiting"}` is the session's current state,
 from the agent's own status file and its hooks. `{"c":"pending","e":…}` is a tool
-call the agent has proposed but not yet written down; the transcript's own record
+call the agent has named as the one it is asking about; the transcript's own record
 for the same call carries the same `callId` and replaces that card rather than
-adding a second one. A `pending` with a `deadline` is one tether is holding the
+adding a second one — in either order, which matters because Claude Code writes
+its record _after_ the prompt and Codex writes it _before_. A `pending` with a `deadline` is one tether is holding the
 agent on until then, so that card is the one that gets Approve and Deny; without
 it tether is only reporting the proposal.
 `{"c":"answer","callId":…,"outcome":"allow"|"deny"|"timeout"}` says a hold is
@@ -169,32 +171,40 @@ payload naming a session tether is actually running.
 ### Answering from the conversation view
 
 A hook allows or denies a tool call by what it writes on standard output, and
-tether uses that: when Claude Code proposes a call, the card gets **Approve** and
-**Deny**, and Claude Code waits on your tap. The card opens itself and shows the
+tether uses that: when the agent proposes a call, the card gets **Approve** and
+**Deny**, and the agent waits on your tap. The card opens itself and shows the
 whole input — the command, the path, the diff — because a button that says
 "Approve?" over a clipped line is worse than no button.
+
+**This works for both providers.** Claude Code needs no setup; Codex needs its
+hook installed once (below), and then behaves identically. What differs is only
+what each one tells tether: Claude Code fires one hook before every call and says
+nothing about whether it was going to ask, while Codex has a dedicated event that
+fires only when it really is asking.
 
 The three things worth knowing, because each of them is a moment where you need
 to know what tether will do:
 
 - **It only holds calls worth stopping for, and only while you are watching.**
-  Claude Code runs the hook for _every_ tool call and tells it nothing about
-  whether it was going to ask you, so tether skips the read-only ones (`Read`,
-  `Grep`, `Glob`, …) and holds nothing at all for a session no browser has open.
-  An agent reading twenty files does not slow down because your phone is unlocked.
+  Claude Code runs its hook for _every_ tool call, so tether skips the read-only
+  ones (`Read`, `Grep`, `Glob`, …); Codex needs no such list. Neither holds
+  anything at all for a session no browser has open, so an agent reading twenty
+  files does not slow down because your phone is unlocked.
 - **Nobody answering is not a denial.** After 20 seconds tether stops holding,
-  says so on the card, and Claude Code asks you in the terminal exactly as it
-  would have. `TETHER_PERMISSION_TIMEOUT` is that number in seconds; `0` turns
-  holding off entirely and leaves tether reporting prompts without answering
-  them, which is a supported way to run it.
+  says so on the card, and the agent asks you in the terminal exactly as it would
+  have. `TETHER_PERMISSION_TIMEOUT` is that number in seconds; `0` turns holding
+  off entirely and leaves tether reporting prompts without answering them, which
+  is a supported way to run it. A Codex hold is capped just under five minutes
+  however high you set it, because the timeout in its hooks file is a fixed one —
+  changing that value would put its trust prompt in front of you again.
 - **If tether cannot be reached, nothing is decided for you.** The hook says
-  nothing and Claude Code's own permission rules apply — never an automatic
+  nothing and the agent's own permission rules apply — never an automatic
   _allow_, because a server that is down must not be able to approve anything,
   and never an automatic _deny_, because a tether outage must not break every
   session on the machine. If tether was reachable and then failed, it says so in
   your session rather than falling back silently.
 
-Whichever surface answers first wins. Approving on your phone means Claude Code
+Whichever surface answers first wins. Approving on your phone means the agent
 never shows the dialog, so a reflex keystroke in the terminal afterwards is
 ordinary typing and approves nothing; answering in the terminal after a hold has
 expired updates the card. There is no second answer either way.
@@ -210,9 +220,11 @@ picking **Codex** in the browser's New session sheet. Everything
 works: the conversation view, the terminal, session state while it is working and
 when it is done, and resume after a reboot.
 
-One thing needs your permission. tether cannot tell that a Codex session is
-**waiting for you** to answer a permission prompt, because Codex does not write
-that anywhere — the only way to know is a hook, and Codex trust-gates hooks. So:
+Two things need your permission, and they are the same thing. tether cannot tell
+that a Codex session is **waiting for you** to answer a permission prompt, and
+cannot offer you **Approve** and **Deny** for it, because Codex does not write
+that anywhere — the only way to reach it is a hook, and Codex trust-gates hooks.
+So:
 
 ```sh
 npx tether codex-hook            # what is registered right now; changes nothing
@@ -224,8 +236,18 @@ npx tether codex-hook remove     # takes it back out
 anything — so that when Codex asks you to trust the hook, you are answering a
 question you already understand. It adds one entry, appended after your existing
 ones, backs up your `hooks.json` first, and never changes anything else in it.
-The hook it registers is a script under `~/.local/state/tether/`; it appends one
-JSON line per event to a log under that same directory and does nothing else.
+The hook it registers is a script under `~/.local/state/tether/`. It appends one
+JSON line per event to a log under that same directory, and on the one event that
+has an answer to return it asks tether over loopback whether you have answered
+yet — the same secret-in-a-`0600`-file arrangement described above, and the same
+fallback if tether is not running. It talks to nothing else.
+
+Run `install` again after upgrading tether: it corrects its own entry if an older
+tether wrote a different one, and Codex then asks you to review that entry once
+more — a one-off, because the values tether writes are fixed rather than
+following a setting. `npx tether codex-hook` is what tells you an installation
+has gone stale; a stale one still reports _waiting for you_, but gets no Approve
+and Deny, and its prompts are answered in the terminal as before.
 
 The New session sheet says the same thing, next to the moment you pick Codex, so
 the browser is not the one place you would meet the trust prompt unprepared. It
@@ -233,8 +255,9 @@ says it there and nowhere else: no banner on the session list, and no warning
 beside a Codex session running happily without the hook.
 
 **Declining is a supported answer, not a broken setup.** You lose the live
-_waiting for you_ badge for Codex sessions and nothing else, and tether will
-neither nag you nor retry. Codex also needs `hooks = true` under `[features]` in
+_waiting for you_ badge and the Approve/Deny buttons for Codex sessions — the
+prompt is still there in the terminal, where it has always been — and nothing
+else changes. tether will neither nag you nor retry. Codex also needs `hooks = true` under `[features]` in
 `~/.codex/config.toml` before it runs any hook at all; tether tells you so and
 leaves that file to you, since it is also where Codex records what you have
 trusted.
@@ -474,8 +497,10 @@ one rule is what makes the eventual remote-agent split a split rather than a
 rewrite.
 
 `providers/` holds one directory per provider — `claude-code/` and `codex/` —
-plus the two files they genuinely share (`tail.ts`, which follows an append-only
-file, and `cap.ts`, which bounds what a card may carry). There is no `Provider`
+plus the three files they genuinely share (`tail.ts`, which follows an
+append-only file, `cap.ts`, which bounds what a card may carry, and
+`permission.ts`, which is the one place the permission timeouts, the hook secret
+and the signals both hooks speak are decided). There is no `Provider`
 interface, registry or plugin loader: adding the second provider cost two
 directories and one `switch`, which is smaller than the abstraction that would
 have been designed to avoid it and cannot be wrong about a provider nobody has

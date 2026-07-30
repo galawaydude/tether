@@ -25,7 +25,7 @@ import {
 import type { Terminals } from '../machine/terminal.ts';
 import { createAuthStore } from './auth.ts';
 import { defaultAllowedHosts } from './guards.ts';
-import { ensureHookSecret } from '../providers/claude-code/hooks.ts';
+import { ensureHookSecret } from '../providers/permission.ts';
 import { buildServer } from './server.ts';
 
 const HOST = 'localhost:8787';
@@ -60,7 +60,15 @@ async function harness(t: { after: (fn: () => unknown) => void }) {
   const auth = createAuthStore(db);
   await auth.setPassword('correct horse battery staple');
 
-  const seen: { sessionId: string; payload: unknown }[] = [];
+  const seen: { sessionId: string; payload: unknown; gone: AbortSignal | undefined }[] = [];
+  /**
+   * Turns the stub into a hold: `hook` does not resolve until the test releases
+   * it or the route abandons it, which is what a real `PreToolUse` or
+   * `PermissionRequest` does while the user is deciding.
+   */
+  const hold: { blocking: boolean; release?: (decision?: 'allow' | 'deny') => void } = {
+    blocking: false,
+  };
   /**
    * Which session each of tether's own panes is running, by tmux name — what
    * Claude Code's per-pid registry file says, and the exact join the real
@@ -73,9 +81,16 @@ async function harness(t: { after: (fn: () => unknown) => void }) {
   /** What the user tapped, where a test is about the decision coming back. */
   const answer: { decision?: 'allow' | 'deny' } = {};
   const conversations = {
-    async hook(session: { id: string }, payload: unknown) {
-      seen.push({ sessionId: session.id, payload });
-      return answer.decision;
+    async hook(session: { id: string }, payload: unknown, gone?: AbortSignal) {
+      seen.push({ sessionId: session.id, payload, gone });
+      if (!hold.blocking) return answer.decision;
+      return await new Promise<'allow' | 'deny' | undefined>((resolve) => {
+        hold.release = resolve;
+        // The real `Conversations.hook` settles its hold as `timeout` here and
+        // so returns `undefined`; this only has to stop waiting.
+        gone?.addEventListener('abort', () => resolve(undefined), { once: true });
+        if (gone?.aborted === true) resolve(undefined);
+      });
     },
     async bindProviderSession(providerSessionId: string) {
       const session = listSessions(db).find(
@@ -100,7 +115,25 @@ async function harness(t: { after: (fn: () => unknown) => void }) {
   t.after(() => app.close());
 
   const secret = await ensureHookSecret(stateDir);
-  return { app, db, stateDir, secret, seen, pane, answer };
+  /**
+   * A real loopback socket, which `app.inject` is not — and the abort tests need
+   * one, because what is under test is the request dying underneath the handler.
+   */
+  const listen = async (): Promise<string> => {
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const address = app.server.address();
+    return `http://127.0.0.1:${typeof address === 'object' && address !== null ? address.port : 0}`;
+  };
+  return { app, db, stateDir, secret, seen, pane, answer, hold, listen };
+}
+
+/** Poll until `ready`, so nothing here depends on a fixed sleep. */
+async function until(ready: () => boolean, what: string): Promise<void> {
+  for (let i = 0; i < 200; i++) {
+    if (ready()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail(`timed out waiting for ${what}`);
 }
 
 function preToolUse(overrides: Record<string, unknown> = {}) {
@@ -379,4 +412,63 @@ test('a decision the user tapped is what the hook is answered with', async (t) =
     assert.equal(res.statusCode, 200);
     assert.deepEqual(res.json(), { decision });
   }
+});
+
+/**
+ * A hold whose caller leaves.
+ *
+ * These are the two tests that need a real socket rather than `app.inject`: what
+ * is under test is the request dying underneath a handler that is still waiting.
+ * A shim a provider killed at its own `timeout` is indistinguishable from here
+ * — same dead socket, same nothing to reply to — so an abandoned `fetch` is a
+ * faithful stand-in and needs no subprocess.
+ */
+async function askAndAbandon(h: Harness, url: string) {
+  const gone = new AbortController();
+  const request = fetch(`${url}/internal/hook`, {
+    method: 'POST',
+    headers: { host: HOST, 'content-type': 'application/json', 'x-tether-hook': h.secret },
+    body: JSON.stringify(preToolUse()),
+    signal: gone.signal,
+  }).then(
+    () => 'answered',
+    () => 'abandoned',
+  );
+  await until(() => h.seen.length > 0, 'the hook to reach the conversation');
+  gone.abort();
+  return await request;
+}
+
+test('a hook whose caller goes away is told so, rather than waited on', async (t) => {
+  const h = await harness(t);
+  liveSession(h.db);
+  h.hold.blocking = true;
+  const url = await h.listen();
+
+  assert.equal(await askAndAbandon(h, url), 'abandoned');
+  // The signal is the whole of what the route contributes: `Conversations.hook`
+  // settles the hold on it, so no card is left wearing buttons for a decision
+  // that can no longer land.
+  await until(() => h.seen[0]?.gone?.aborted === true, 'the hold to be abandoned');
+});
+
+test('an ordinary reply is not mistaken for a caller that went away', async (t) => {
+  const h = await harness(t);
+  liveSession(h.db);
+  h.answer.decision = 'allow';
+  const url = await h.listen();
+
+  const res = await fetch(`${url}/internal/hook`, {
+    method: 'POST',
+    headers: { host: HOST, 'content-type': 'application/json', 'x-tether-hook': h.secret },
+    body: JSON.stringify(preToolUse()),
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { decision: 'allow' });
+
+  // `close` fires on every finished reply too, which is the regression the
+  // `writableFinished` guard exists to prevent: a decision the user really made
+  // must not be followed by an abort that would settle a hold behind it.
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(h.seen[0]?.gone?.aborted, false, 'a completed hook was never abandoned');
 });

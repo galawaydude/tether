@@ -8,13 +8,17 @@
  */
 
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { mkdtemp, readFile, readdir, stat, utimes, writeFile } from 'node:fs/promises';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 
 import { appendFile, mkdir, rm } from 'node:fs/promises';
+import { hookSecretPath, KILL_MARGIN_MS, writeHookEndpoint } from '../permission.ts';
 import {
   HOOK_EVENTS,
   HooksFileError,
@@ -22,7 +26,10 @@ import {
   hookShimPath,
   hookStatus,
   hooksJsonPath,
+  installedPermissionTimeout,
   installHook,
+  MAX_HOLD_MS,
+  PERMISSION_TIMEOUT_SECONDS,
   removeHook,
   sessionStarts,
 } from './hooks.ts';
@@ -30,6 +37,27 @@ import {
 /** The shim reads stdin to EOF, so it is fed one and waited for. */
 function runShim(shim: string, input: string): void {
   execFileSync(process.execPath, [shim], { input, timeout: 10_000 });
+}
+
+/**
+ * The same thing, without blocking this process — which the tests below need,
+ * because the tether the shim POSTs to is a stub server on this very event loop.
+ * A synchronous spawn deadlocks against it: the child waits for a reply nobody
+ * is left running to send.
+ */
+async function askShim(
+  shim: string,
+  payload: unknown,
+): Promise<{ stdout: string; code: number | null }> {
+  return await new Promise((resolve, reject) => {
+    const child = execFile(shim, (error) => {
+      if (error !== null && error.code === undefined) reject(error);
+    });
+    let stdout = '';
+    child.stdout?.on('data', (chunk: string) => (stdout += chunk));
+    child.on('close', (code) => resolve({ stdout, code }));
+    child.stdin?.end(JSON.stringify(payload));
+  });
 }
 
 async function lab(t: TestContext): Promise<{ codexHome: string; stateDir: string }> {
@@ -217,6 +245,66 @@ test('status reports what is registered and whether Codex will run it at all', a
   assert.equal((await hookStatus({ codexHome, stateDir })).featureEnabled, false);
 });
 
+test('status can tell a current installation from one an older tether wrote', async (t) => {
+  const { codexHome, stateDir } = await lab(t);
+  const { shimPath, hooksPath } = await installHook({ codexHome, stateDir });
+
+  const fresh = await hookStatus({ codexHome, stateDir });
+  assert.equal(fresh.shimCurrent, true);
+  assert.equal(fresh.permissionTimeout, PERMISSION_TIMEOUT_SECONDS);
+  assert.equal(
+    await installedPermissionTimeout({ codexHome, stateDir }),
+    PERMISSION_TIMEOUT_SECONDS,
+    'one reader, and the gate in `machine/conversations.ts` uses this one',
+  );
+
+  // Exactly what an upgrade leaves behind: nothing rewrites a Codex installation
+  // on its own, so the log-only shim and the 3s `timeout` an older tether wrote
+  // are still there and `installed` still lists all five events. Both halves are
+  // reported, because either one alone means the buttons cannot work.
+  await writeFile(shimPath, '#!/usr/bin/env node\n// an older tether\n', { mode: 0o700 });
+  const oldShim = await hookStatus({ codexHome, stateDir });
+  assert.deepEqual(oldShim.installed, [...HOOK_EVENTS], 'registered, and still not answerable');
+  assert.equal(oldShim.shimCurrent, false);
+
+  await installHook({ codexHome, stateDir });
+  const file = JSON.parse(await readFile(hooksPath, 'utf8')) as {
+    hooks: Record<string, { hooks: Record<string, unknown>[] }[]>;
+  };
+  for (const group of file.hooks['PermissionRequest'] ?? []) {
+    for (const handler of group.hooks) handler['timeout'] = 3;
+  }
+  await writeFile(hooksPath, `${JSON.stringify(file, null, 2)}\n`);
+  const oldTimeout = await hookStatus({ codexHome, stateDir });
+  assert.equal(oldTimeout.shimCurrent, true, 're-installing rewrote the shim');
+  assert.equal(oldTimeout.permissionTimeout, 3);
+
+  // A correction the user is told about, because Codex re-hashes the entry.
+  const corrected = await installHook({ codexHome, stateDir });
+  assert.deepEqual(corrected.updated, ['PermissionRequest']);
+  assert.equal(
+    (await hookStatus({ codexHome, stateDir })).permissionTimeout,
+    PERMISSION_TIMEOUT_SECONDS,
+  );
+});
+
+test('there is no timeout to read where tether has no entry', async (t) => {
+  const { codexHome, stateDir } = await lab(t);
+  assert.equal(await installedPermissionTimeout({ codexHome, stateDir }), undefined, 'no file');
+  await withExisting(codexHome);
+  assert.equal(
+    await installedPermissionTimeout({ codexHome, stateDir }),
+    undefined,
+    'a hooks.json that is somebody else’s entirely',
+  );
+  await writeFile(hooksJsonPath(codexHome), '{ not json');
+  assert.equal(
+    await installedPermissionTimeout({ codexHome, stateDir }),
+    undefined,
+    'and a file tether refuses to read is a timeout tether cannot say — never a hold',
+  );
+});
+
 test('the shim records what it is given, and cannot be talked out of its directory', async (t) => {
   const { codexHome, stateDir } = await lab(t);
   const { shimPath } = await installHook({ codexHome, stateDir });
@@ -287,4 +375,265 @@ test('the SessionStart join reads back what the shim wrote', async (t) => {
     [ids[1]],
     'the stale log is stat’d and never opened',
   );
+});
+
+// ── the one event that answers ───────────────────────────────────────────────
+//
+// `PermissionRequest` is the only Codex hook with a decision channel, and on it
+// **stdout is a security boundary**: a stray write silently allows or blocks a
+// tool call on the user's machine. Nothing short of executing the installed file
+// and reading its bytes proves what it says, so these do exactly that.
+
+/**
+ * The `PermissionRequest` payload as Codex delivers it — no `tool_use_id`,
+ * because 0.145.0's own hook schema does not have one.
+ */
+const PERMISSION_REQUEST = {
+  session_id: '019fac90-fbcb-7121-a9dc-5b4e866eb680',
+  turn_id: '019fac91-dcc4-7492-9d4a-6d796117fa13',
+  transcript_path: '/home/tester/rollout.jsonl',
+  cwd: '/home/tester/work',
+  hook_event_name: 'PermissionRequest',
+  model: 'gpt-5.6-sol',
+  permission_mode: 'default',
+  tool_name: 'Bash',
+  tool_input: { command: 'rm -rf ./build' },
+};
+
+async function stubTether(
+  t: TestContext,
+  handler: (request: IncomingMessage, response: ServerResponse) => void,
+): Promise<{ url: string; seen: string[]; close: () => Promise<void> }> {
+  const seen: string[] = [];
+  const server = createServer((request, response) => {
+    const chunks: Buffer[] = [];
+    request.on('data', (chunk: Buffer) => chunks.push(chunk));
+    request.on('end', () => {
+      seen.push(Buffer.concat(chunks).toString('utf8'));
+      handler(request, response);
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const close = () => new Promise<void>((resolve) => server.close(() => resolve()));
+  t.after(close);
+  return {
+    url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/internal/hook`,
+    seen,
+    close,
+  };
+}
+
+test('only the answerable event carries a hold-length timeout', async (t) => {
+  const { codexHome, stateDir } = await lab(t);
+  const result = await installHook({ codexHome, stateDir });
+  const hooks = (await readJson(result.hooksPath))['hooks'] as Record<
+    string,
+    { hooks: { timeout?: number }[] }[]
+  >;
+
+  // Three seconds is right for a hook that appends one line, and would be a net
+  // that fires before the user can reach for their phone on the one that waits.
+  for (const event of HOOK_EVENTS) {
+    assert.equal(
+      hooks[event]![0]!.hooks[0]!.timeout,
+      event === 'PermissionRequest' ? PERMISSION_TIMEOUT_SECONDS : 3,
+      event,
+    );
+  }
+  // A constant, and the reason it is one: Codex hashes the entry, so a timeout
+  // that followed `TETHER_PERMISSION_TIMEOUT` would put a trust prompt in front
+  // of the user every time an operator changed an environment variable.
+  assert.equal(MAX_HOLD_MS, PERMISSION_TIMEOUT_SECONDS * 1000 - KILL_MARGIN_MS);
+  assert.ok(
+    MAX_HOLD_MS < PERMISSION_TIMEOUT_SECONDS * 1000,
+    'the hold settles before Codex gives up',
+  );
+
+  // The shim POSTs, so it needs the secret — created here, `0600`, and shared
+  // with the Claude Code shim on purpose (`../permission.ts`).
+  assert.equal(((await stat(hookSecretPath(stateDir))).mode & 0o777).toString(8), '600');
+});
+
+test('an entry an older tether wrote is corrected, and only that one field', async (t) => {
+  const { codexHome, stateDir } = await lab(t);
+  await withExisting(codexHome);
+  await installHook({ codexHome, stateDir });
+
+  // What a tether from before `PermissionRequest` could answer left behind.
+  const path = hooksJsonPath(codexHome);
+  const file = await readJson(path);
+  const hooks = file['hooks'] as Record<
+    string,
+    { matcher?: string; hooks: Record<string, unknown>[] }[]
+  >;
+  hooks['PermissionRequest']![0]!.hooks[0]!['timeout'] = 3;
+  await writeFile(path, `${JSON.stringify(file, null, 2)}\n`);
+
+  const result = await installHook({ codexHome, stateDir });
+  assert.deepEqual(result.added, [], 'nothing to add');
+  assert.deepEqual(result.updated, ['PermissionRequest']);
+  assert.equal(result.alreadyInstalled, false);
+
+  const after = (await readJson(path))['hooks'] as Record<
+    string,
+    { hooks: { command?: string; timeout?: number }[] }[]
+  >;
+  assert.equal(after['PermissionRequest']![0]!.hooks[0]!.timeout, PERMISSION_TIMEOUT_SECONDS);
+  assert.deepEqual(
+    after['SessionStart']!.map((g) => g.hooks[0]?.command),
+    ['gh-axi', 'chrome-devtools-axi', 'lavish-axi', hookShimPath(stateDir)],
+    'the user’s own entries are still there, still in order',
+  );
+
+  // And it settles: the values tether writes are constants, so a third install
+  // rewrites nothing and Codex is never asked to re-review a trusted entry again.
+  const bytes = await readFile(path, 'utf8');
+  const third = await installHook({ codexHome, stateDir });
+  assert.equal(third.alreadyInstalled, true);
+  assert.deepEqual(third.updated, []);
+  assert.equal(await readFile(path, 'utf8'), bytes);
+});
+
+test('a decision tether sends comes back on stdout in Codex’s own shape', async (t) => {
+  const { codexHome, stateDir } = await lab(t);
+  const { shimPath } = await installHook({ codexHome, stateDir });
+
+  for (const decision of ['allow', 'deny'] as const) {
+    const tether = await stubTether(t, (_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ decision }));
+    });
+    await writeHookEndpoint(stateDir, tether.url);
+
+    const { stdout, code } = await askShim(shimPath, PERMISSION_REQUEST);
+    assert.equal(code, 0, 'Codex reads exit code 2 as a denial, so never one of these');
+    assert.deepEqual(JSON.parse(stdout), {
+      hookSpecificOutput: {
+        hookEventName: 'PermissionRequest',
+        decision: {
+          behavior: decision,
+          message: decision === 'allow' ? 'Approved in tether.' : 'Denied in tether.',
+        },
+      },
+    });
+    assert.deepEqual(JSON.parse(tether.seen[0]!), PERMISSION_REQUEST, 'the payload arrived whole');
+    await tether.close();
+  }
+});
+
+test('the log line is written before tether is asked, not after', async (t) => {
+  const { codexHome, stateDir } = await lab(t);
+  const { shimPath } = await installHook({ codexHome, stateDir });
+  const log = hookLogPath(stateDir, PERMISSION_REQUEST.session_id);
+
+  // The order matters twice over: that line is what sets the `waiting` badge if
+  // tether is not listening, and the `PreToolUse` before it is what the server
+  // correlates this prompt against — so it has to be on disk by the time the
+  // request lands, not once the answer comes back.
+  let onDisk: string | undefined;
+  const tether = await stubTether(t, (_request, response) => {
+    onDisk = readFileSync(log, 'utf8');
+    response.writeHead(204).end();
+  });
+  await writeHookEndpoint(stateDir, tether.url);
+  await askShim(shimPath, PERMISSION_REQUEST);
+
+  assert.equal(
+    (JSON.parse(onDisk ?? 'null') as Record<string, unknown>)['hook_event_name'],
+    'PermissionRequest',
+  );
+});
+
+test('the four log-only events never ask tether anything', async (t) => {
+  const { codexHome, stateDir } = await lab(t);
+  const { shimPath } = await installHook({ codexHome, stateDir });
+  const tether = await stubTether(t, (_request, response) => response.writeHead(204).end());
+  await writeHookEndpoint(stateDir, tether.url);
+
+  for (const event of HOOK_EVENTS) {
+    if (event === 'PermissionRequest') continue;
+    const { stdout } = await askShim(shimPath, { ...PERMISSION_REQUEST, hook_event_name: event });
+    assert.equal(stdout, '', event);
+  }
+  // A round trip per tool call is a cost with nothing to buy: the log is the
+  // transport for everything that has no answer to return.
+  assert.deepEqual(tether.seen, []);
+});
+
+test('the ordinary answer is 204, and it says nothing at all', async (t) => {
+  const { codexHome, stateDir } = await lab(t);
+  const { shimPath } = await installHook({ codexHome, stateDir });
+  const tether = await stubTether(t, (_request, response) => response.writeHead(204).end());
+  await writeHookEndpoint(stateDir, tether.url);
+
+  // Not "safely empty" — deliberately empty. Saying nothing is what leaves
+  // Codex's own approval prompt in charge of the call.
+  assert.equal((await askShim(shimPath, PERMISSION_REQUEST)).stdout, '');
+});
+
+test('a reply tether should never send cannot become a decision', async (t) => {
+  const { codexHome, stateDir } = await lab(t);
+  const { shimPath } = await installHook({ codexHome, stateDir });
+
+  // The shim rebuilds the decision rather than echoing the body, so nothing that
+  // arrives on this socket can put arbitrary bytes on the decision channel.
+  for (const body of ['{"decision":"maybe"}', '{"decision":{"nested":true}}', 'not json at all']) {
+    const tether = await stubTether(t, (_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' }).end(body);
+    });
+    await writeHookEndpoint(stateDir, tether.url);
+    const { stdout, code } = await askShim(shimPath, PERMISSION_REQUEST);
+    await tether.close();
+    assert.equal(code, 0, body);
+
+    const said = stdout.trim() === '' ? {} : (JSON.parse(stdout) as Record<string, unknown>);
+    assert.equal(said['hookSpecificOutput'], undefined, body);
+  }
+});
+
+test('a tether that cannot be reached falls through, and does so silently', async (t) => {
+  const { codexHome, stateDir } = await lab(t);
+  const { shimPath } = await installHook({ codexHome, stateDir });
+  // Nothing listening: the endpoint names a port that was bound and released.
+  const tether = await stubTether(t, (_request, response) => response.writeHead(204).end());
+  await writeHookEndpoint(stateDir, tether.url);
+  await tether.close();
+
+  // Neither allow nor deny: the question goes back to Codex's own prompt. And
+  // silent, because tether not running is ordinary, the browser cannot be
+  // showing a card either, and the captain's decision forbids nagging by name.
+  assert.equal((await askShim(shimPath, PERMISSION_REQUEST)).stdout, '');
+});
+
+test('a tether that answers with a refusal says so, without deciding', async (t) => {
+  const { codexHome, stateDir } = await lab(t);
+  const { shimPath } = await installHook({ codexHome, stateDir });
+  const tether = await stubTether(t, (_request, response) => response.writeHead(401).end());
+  await writeHookEndpoint(stateDir, tether.url);
+
+  // A note, not a decision. This is the case where somebody may be looking at a
+  // card whose buttons are dead, so it must not be silent — and it must still
+  // not touch the permission decision.
+  const said = JSON.parse((await askShim(shimPath, PERMISSION_REQUEST)).stdout) as Record<
+    string,
+    unknown
+  >;
+  assert.match(String(said['systemMessage']), /tether could not answer/);
+  assert.equal(said['hookSpecificOutput'], undefined);
+});
+
+test('a session whose user declined the hook has no shim to run at all', async (t) => {
+  // The whole of "declining is supported", stated where it can be checked:
+  // nothing tether writes to `hooks.json` is required by anything else, so a
+  // `hooks.json` tether never touched leaves a working session — conversation,
+  // terminal, busy and idle — minus the badge and the buttons.
+  const { codexHome, stateDir } = await lab(t);
+  await withExisting(codexHome);
+  const before = await readFile(hooksJsonPath(codexHome), 'utf8');
+
+  const status = await hookStatus({ codexHome, stateDir });
+  assert.deepEqual(status.installed, []);
+  assert.equal(status.unreadable, undefined, 'not installed is not a fault');
+  assert.equal(await readFile(hooksJsonPath(codexHome), 'utf8'), before, 'and nothing was written');
+  await assert.rejects(() => stat(hookShimPath(stateDir)), 'no shim either');
 });

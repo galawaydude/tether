@@ -1,5 +1,5 @@
 /**
- * `POST /internal/hook` — where tether's Claude Code shim delivers a hook.
+ * `POST /internal/hook` — where either provider's shim delivers a hook.
  *
  * This is the only route besides `/api/login` and the two static ones that opts
  * out of the session cookie, and it is worth being explicit about why that is
@@ -26,13 +26,16 @@
  * before any of this, so they cover this route too — a cross-origin page's POST
  * is refused there and never reaches the secret comparison.
  *
- * The reply is empty except for one case: a `PreToolUse` tether decided to hold,
- * where the request stays open until the user taps Approve or Deny in the
- * conversation view and the answer comes back as `{"decision":"allow"|"deny"}`.
- * On `PreToolUse` a hook's **stdout** is how it allows or denies a tool call, so
- * an empty reply is not a neutral default that happens to be safe — it is the
- * deliberate statement "tether has nothing to say about this call", which leaves
- * the provider's own permission rules in charge.
+ * The reply is empty except for one case: a call tether decided to hold — a
+ * Claude Code `PreToolUse` or a Codex `PermissionRequest` — where the request
+ * stays open until the user taps Approve or Deny in the conversation view and the
+ * answer comes back as `{"decision":"allow"|"deny"}`. On both of those a hook's
+ * **stdout** is how it allows or denies a tool call, so an empty reply is not a
+ * neutral default that happens to be safe — it is the deliberate statement
+ * "tether has nothing to say about this call", which leaves the provider's own
+ * permission rules in charge. Which vocabulary a payload is read in is the
+ * session row's `provider`, decided in `Conversations.hook`; this route reads
+ * only `session_id`.
  *
  * Note what authorises that decision, because it is not this route. The secret
  * authenticates the *hook*; what authenticates the *answer* is the session
@@ -48,12 +51,13 @@ import type { FastifyInstance } from 'fastify';
 import { stateDir as defaultStateDir } from '../db.ts';
 import type { Conversations } from '../machine/conversations.ts';
 import { getSessionByProviderSessionId } from '../machine/registry.ts';
-import { readHookSecret } from '../providers/claude-code/hooks.ts';
+import { readHookSecret } from '../providers/permission.ts';
 
 /**
- * The payload is Claude Code's, not tether's, and it ships weekly. Only that it
- * is an object is asserted here; `mapHook` reads the fields it knows and warns
- * about the rest, by the same tolerant rule as the transcript mapper.
+ * The payload is the provider's, not tether's, and both ship weekly. Only that it
+ * is an object is asserted here; each provider's `mapHook` reads the fields it
+ * knows and warns about the rest, by the same tolerant rule as the transcript
+ * mappers.
  */
 const HOOK_SCHEMA = { body: { type: 'object' } } as const;
 
@@ -111,16 +115,43 @@ export function registerHookRoute(
       const session =
         getSessionByProviderSessionId(db, providerSessionId) ??
         (await conversations.bindProviderSession(providerSessionId));
-      // A hook for a session tether does not know is not an error. Claude Code
-      // is commonly run by hand in a directory tether once managed, and the shim
-      // stays installed in that project afterwards.
+      // A hook for a session tether does not know is not an error. Either agent
+      // is commonly run by hand — Claude Code in a directory tether once managed
+      // with the shim still installed in that project, Codex anywhere at all,
+      // since its hook is installed once per machine.
       if (session === undefined) return reply.code(204).send();
 
       // This is where the agent's turn waits. `hook` resolves as soon as the
       // user taps, and otherwise when its own hold expires — never later, so
-      // the shim's abort and Claude Code's `timeout` stay nets rather than
-      // mechanisms (`providers/claude-code/hooks.ts`).
-      const decision = await conversations.hook(session, payload);
+      // the shim's abort and the provider's own `timeout` stay nets rather than
+      // mechanisms (`providers/permission.ts`).
+      //
+      // Unless the caller leaves first, which is the other half of what an empty
+      // reply means: tether must never show an answerable card for a decision
+      // that cannot land. A shim killed by a provider timeout tether never
+      // enumerated, a Ctrl-C'd pane, a killed agent and a provider tether has
+      // not met are all one thing from here — the request dying — and that is
+      // knowable without knowing whose timeout it was. The alternative is the
+      // worst sentence this surface can say: *approved*, for a decision nothing
+      // received. Shared on purpose, so it covers Claude Code's `PreToolUse`
+      // hold as well as Codex's `PermissionRequest`; leaving the other provider
+      // with the same hole because a task was scoped to one of them would be the
+      // wrong kind of discipline.
+      //
+      // Watched on the *reply*, not the request, and that is not a style
+      // preference: Fastify parses the body before the handler runs, so by here
+      // `request.raw` is already destroyed and has already emitted its own
+      // `close` — a listener added now would never fire, and the guard would
+      // read as working while catching nothing. `reply.raw` emits `close` in
+      // both cases, and `writableFinished` is what tells them apart: false when
+      // the socket went before the reply was written, true after an ordinary
+      // one. (`aborted` on the request is the deprecated spelling of an event
+      // that is no use here anyway.)
+      const gone = new AbortController();
+      reply.raw.on('close', () => {
+        if (!reply.raw.writableFinished) gone.abort();
+      });
+      const decision = await conversations.hook(session, payload, gone.signal);
       if (decision === undefined) return reply.code(204).send();
       return reply.code(200).send({ decision });
     },

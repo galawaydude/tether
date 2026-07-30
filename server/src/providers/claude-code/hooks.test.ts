@@ -18,18 +18,20 @@ import { promisify } from 'node:util';
 
 import {
   DEFAULT_PERMISSION_TIMEOUT_MS,
-  HOOK_EVENTS,
-  SettingsFileError,
   ensureHookSecret,
   hookSecretPath,
-  hookShimPath,
   hookTimeoutSeconds,
-  installHook,
   permissionTimeoutMs,
   readHookSecret,
+  writeHookEndpoint,
+} from '../permission.ts';
+import {
+  HOOK_EVENTS,
+  SettingsFileError,
+  hookShimPath,
+  installHook,
   settingsBackupPath,
   settingsPath,
-  writeHookEndpoint,
 } from './hooks.ts';
 
 async function dirs() {

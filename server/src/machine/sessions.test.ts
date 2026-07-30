@@ -25,7 +25,7 @@ import {
   reconcileWithTmux,
   setProviderSessionId,
 } from './registry.ts';
-import { hookTimeoutSeconds } from '../providers/claude-code/hooks.ts';
+import { hookTimeoutSeconds } from '../providers/permission.ts';
 import {
   NoProviderSessionError,
   reconcileProviderHooks,

@@ -192,7 +192,10 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   offset (never re-reads the file) and its carry is **bytes**, because a flush
   lands mid-line and mid-glyph routinely. `fs.watch` is only the fast path; the 1s
   stat poll is what makes it work on filesystems where the watcher silently
-  delivers nothing. Fixtures in each `fixtures/` directory are captured from a
+  delivers nothing. Its reads are serialised through one promise chain rather than
+  dropped while another is in flight, which is what lets `catchUp` promise "read to
+  the end" rather than "a read happened" — see the Codex `PermissionRequest` entry
+  for its one caller. Fixtures in each `fixtures/` directory are captured from a
   real session with the version recorded — **CI must never run a live agent**
   (real credentials, money per run). Verified while capturing them: Claude Code's
   `thinking` blocks reach disk with an **empty** `thinking` string and Codex's
@@ -201,8 +204,9 @@ CI runs exactly those (`.github/workflows/ci.yml`).
 
 - **Two providers, one `switch`, and no `Provider` interface.** `providers/` has
   one directory each (`claude-code/`, `codex/`) plus what they genuinely share —
-  `tail.ts` and `cap.ts`. `machine/sessions.ts` holds the argv per provider and
-  `machine/conversations.ts` picks the mapper; that is the whole seam, and report
+  `tail.ts`, `cap.ts` and `permission.ts` (the permission policy entry below).
+  `machine/sessions.ts` holds the argv per provider and `machine/conversations.ts`
+  picks the mapper; that is the whole seam, and report
   §4 chose it over an abstraction on purpose. Adding a third provider is a third
   directory, not a refactor. Codex specifics worth not rediscovering: it writes
   **nothing at all** until the first user message (hence the nullable
@@ -226,27 +230,86 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   rather than rewriting a `hooks.json` whose shape it does not recognise.
   `--dangerously-bypass-hook-trust` must appear nowhere — not in code, not in
   docs, not as a fallback; that is a captain's decision, not a preference. The
-  hook buys exactly one thing, the live `waiting` badge: `busy` and `idle` come
-  from the rollout, so **declining is a supported configuration** and nothing may
+  hook buys the live `waiting` badge and the Approve/Deny buttons: `busy` and
+  `idle` come from the rollout and the prompt is always answerable in the pane, so
+  **declining is a supported configuration** and nothing may
   warn, retry or nag about it. Explaining the prompt before it appears binds the
   UI as much as the CLI: `cli.ts`'s `codexHookExplanation` and `app.tsx`'s
   `CodexHookNote` are the only two places that say it, and the second says it
   only while Codex is the selected provider in the New session sheet. Neither may
   grow into a banner on the session list or a warning beside a Codex session
   running happily without the hook. Installing stays a CLI command on purpose —
-  it writes to a file tether does not own. `PermissionRequest` carries no `tool_use_id`, so
-  `status.ts` correlates it to the preceding `PreToolUse` — a correlation, not a
-  key, and the fixtures contain the case that proves it (two attempts, identical
-  `tool_input`, different ids).
+  it writes to a file tether does not own.
+  **The hooks.json `timeout` tether writes is a constant, and must stay one.**
+  Claude Code's settings entry is _reconciled_ to the current hold; doing that here
+  would re-hash a trusted entry and put a security prompt in front of the user
+  every time an operator changed `TETHER_PERMISSION_TIMEOUT`. So
+  `PERMISSION_TIMEOUT_SECONDS` and the shim's abort are fixed, the hold is clamped
+  under them by `MAX_HOLD_MS` in `#holdFor`, and `reconcileProviderHooks` does not
+  touch `hooks.json` at all. Verified: moving the hold from 20s to 180s leaves the
+  file byte-identical. The price is that a Codex installation can go stale — no
+  upgrade path rewrites it — so the invariant both providers are held to is stated
+  once in `providers/permission.ts`: **tether may hold a turn only while the
+  provider's own on-disk hook configuration carries the timeout that hold is sized
+  against.** Claude Code satisfies it by reconciling the file; Codex satisfies it
+  by reading it (`installedPermissionTimeout`, gated in `#codexCeiling` — a gate
+  and not a clamp, because an older entry says `timeout: 3` and 3s minus
+  `KILL_MARGIN_MS` is negative). A provider that can do neither may not hold. The
+  only place a stale installation is ever mentioned to the user is
+  `tether codex-hook status`, which the user typed; `not installed` stays neutral.
+- **Codex's `PermissionRequest` is the whole of its answering path, and it is not
+  a second copy of Claude Code's.** Four of the five registered events are
+  fire-and-forget into the hook log; only this one POSTs to `/internal/hook` and
+  writes a decision (`hookSpecificOutput.decision.behavior`, from Codex's own
+  embedded `permission-request.command.output` schema — the shape is not in the
+  fixtures, so `fixtures/README.md` records where it came from). It logs its line
+  **before** it POSTs, and that ordering is load-bearing twice: the line is what
+  sets the badge when tether is not listening, and the `PreToolUse` line before it
+  is what the correlation reads. `PermissionRequest` carries no `tool_use_id`
+  (Codex's own schema says so), so `CodexStatus#correlate` joins it to the
+  preceding `PreToolUse` on `(session_id, turn_id, tool_input)` — a **correlation,
+  not a key**, and the fixtures hold both hard cases: two attempts with identical
+  `tool_input` under different ids, and an `apply_patch` whose `tool_input`
+  differs from its `PreToolUse`'s by a trailing newline, which is why the
+  comparison is `inputKey` (trimmed strings) rather than bytes. A failed
+  correlation is _normal_ — a user may trust this entry and decline `PreToolUse` —
+  and degrades to `waiting` plus the tool's name: the badge and no buttons, never
+  a card keyed by a call tether guessed at. A **denied** call fires no
+  `PostToolUse` at all, so nothing there clears the badge after a Deny;
+  `task_complete` does, because Codex ends the turn on a denial (verified live
+  against 0.145.0, twice: _Waiting for you_ → _Idle_ within 3s). Do not add a
+  `busy` announcement on a settled decision to fill the apparent hole — it would
+  publish a state tether never read. What keeps a wrong guess from being
+  dangerous is that the hold **is** the blocked HTTP request, so a tap always
+  answers the call Codex is really asking about; the correlation only decides which
+  card wears the buttons. The two things the shared machinery had to learn for it:
+  `HoldBasis` (`providers/permission.ts`) distinguishes Claude Code's `perhaps`
+  from Codex's `prompting`, and only `prompting` is exempt from the
+  "already in the transcript" check — Codex flushes its `function_call` _before_
+  the dialog (report risk #2 does not exist for Codex), so a `pending` there adds
+  buttons to a card the client already drew rather than proposing a new one. And
+  `Tail.catchUp` exists for one caller: the blocked hook reads the log to its end
+  itself, because the `PreToolUse` it needs is certainly on disk and waiting for
+  `fs.watch` would be a race an agent's turn is blocked on.
+- **The permission _policy_ is shared and the _plumbing_ is not.**
+  `providers/permission.ts` holds what both providers must be held to identically:
+  the three nested timeouts, `permissionTimeoutMs`, the `0600` secret and the
+  endpoint file both shims read (still named `claude-hook.*` on disk, historically),
+  and `HookSignal`. It is not a `Provider` interface — there is no behaviour in it
+  either provider implements — it is the place a second hold length or a second
+  fallback rule cannot be invented. Installing, where the hook goes, and what it
+  may say when it runs stay in each provider's own `hooks.ts`.
 
-- **The two providers' hooks share a purpose and no code, deliberately.**
+- **The two providers' hooks share a purpose and almost no code, deliberately.**
   `providers/claude-code/hooks.ts` installs into `<cwd>/.claude/settings.local.json`
-  — a file in the **user's own repo** — per project at spawn, with no trust gate,
-  and its shim POSTs to `/internal/hook`. Codex's is one global trust-gated
-  entry whose shim appends to a log tether tails. Report §4 chose the seam;
-  do not abstract over two examples. The transport differs because a `PreToolUse`
-  hook answers a permission prompt on **stdout**, so answering needs
-  request/response, which a log file could never become.
+  — a file in the **user's own repo** — per project at spawn, with no trust gate.
+  Codex's is one global trust-gated entry, installed once by a CLI command.
+  Report §4 chose the seam; do not abstract over two examples beyond the policy
+  that is genuinely one thing (`providers/permission.ts`, above). Both shims POST
+  to `/internal/hook`, because a hook answers a permission prompt on **stdout** and
+  answering needs request/response, which a log file could never become — but only
+  Claude Code's POSTs on _every_ tool call; Codex's log carries the other four
+  events and the POST is reserved for `PermissionRequest`.
 - **The `PreToolUse` shim's stdout is a security boundary, and the hold is what
   makes it one.** `/internal/hook` keeps the request open while the user taps
   Approve or Deny; `Conversations.hook` returns the decision and the shim writes
@@ -292,6 +355,22 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   ordinary typing. What authorises a decision is the **session cookie** on
   `POST /api/sessions/:id/permission`, never the hook secret — an unauthenticated
   approve is an unauthenticated tool execution.
+  **(5) A hold ends when its request does.** The third timeout lives in a file,
+  and a _running_ agent enforces the one it loaded at startup, not the one on
+  disk — verified against codex-cli 0.145.0 with a probe hook: moving
+  `hooks.json` from `timeout: 3` to `300` under a running Codex still killed the
+  probe at ~3s, and still ran it although the edit had changed its trust hash.
+  So no amount of reading a config closes the window, and the wider invariant
+  (stated in `providers/permission.ts`) is that **tether must never show an
+  answerable card for a decision that cannot land** — a provider timeout tether
+  never enumerated, a Ctrl-C'd pane, a killed agent, a provider tether has not
+  met. `web/hooks.ts` watches **`reply.raw`** for `close` — never `request.raw`,
+  which Fastify has already destroyed by the time the handler runs, so a listener
+  there never fires — and tells an abandoned request from an ordinary reply by
+  `writableFinished`, because `close` follows both. `Conversations.hook` then
+  settles the hold as `timeout` on the `AbortSignal` it is handed. Shared by both
+  providers on purpose: a false _approved_ is the worst thing this surface can
+  say on either.
 - **`{c:'pending'}`'s `deadline` is what puts buttons on a card, not `pending`.**
   tether reports far more proposals than it holds, and `{c:'answer'}` is how
   every viewer learns a hold is over — so neither frame carries a `seq`, for the
@@ -305,7 +384,13 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   the `.tsx` leaves the test suite. An answerable card is the one card that opens
   itself and wraps rather than scrolls sideways: `rm -rf ./build` and `rm -rf /`
   differ at the right edge, and a clipped command is the "approving blind" the
-  surface exists to prevent.
+  surface exists to prevent. One string there is still not
+  provider-neutral: the expired-hold sentence hard-codes "Claude Code is asking
+  in the terminal instead", so it names the wrong agent on a Codex card, while
+  everything else on that card reads the same either way. The fix is to take the
+  name from `providerLabel` in `web/src/providers.ts` — where the rest of the web
+  app already reads a provider's name from, so it is the existing seam and not a
+  new one — and it belongs to whoever next owns `web/src/conversation.ts`.
 - **The hook secret is a `0600` file read at hook execution time, and the
   settings file gets only a path.** `settings.local.json` lives in the user's
   repository, so a token in it is one `git add` from being published (report

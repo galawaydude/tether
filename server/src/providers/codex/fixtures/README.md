@@ -62,3 +62,38 @@ forever, at its composer, doing nothing.
 **`tool_name` is only partly Claude Code's vocabulary.** The hooks say `Bash`
 where the rollout says `exec_command`, but both say `apply_patch`. That is one
 rename, not a table — `events.ts` has it as one entry, deliberately.
+
+## One thing the capture settles that was found later
+
+**A `PermissionRequest`'s `tool_input` is not byte-identical to its
+`PreToolUse`'s.** The `apply_patch` pair in `hooks-0.145.0.ndjson` differs by a
+single trailing newline on `command`: `PreToolUse` has it, `PermissionRequest`
+does not. A correlation that compares bytes therefore never matches a patch —
+silently, and for half of everything a Codex user is asked to approve. `inputKey`
+in `../status.ts` trims string values for exactly this, and
+`status.test.ts` asserts it off these two records. Nothing was re-captured to find
+it; it was in the fixture all along.
+
+## What is _not_ in these files, and where it came from instead
+
+The **shape tether writes back** on `PermissionRequest` — a
+`hookSpecificOutput.decision.behavior` of `allow` or `deny` — is not a payload and
+so is not captured here. It comes from Codex's own
+`permission-request.command.output` JSON Schema, which 0.145.0 embeds in its
+binary:
+
+```sh
+strings -n 4 "$(readlink -f "$(command -v codex)")" | grep -A60 'permission-request.command.output'
+```
+
+That schema is also where "no `tool_use_id`" stops being an observation and
+becomes a statement by Codex: `permission-request.command.input` lists nine
+required fields and that is not one of them.
+
+Verified live against codex-cli 0.145.0 on 2026-07-30, in a private `CODEX_HOME`
+with the hook trust prompt accepted in the TUI the way a user accepts it:
+**Approve** in the conversation view ran the command with no dialog ever shown in
+the pane, and **Deny** left the file unwritten and printed
+`PermissionRequest hook (blocked) / feedback: Denied in tether.` in the pane. A
+hold left to expire fell through to Codex's own prompt. `--dangerously-bypass-hook-trust`
+was not used, here or anywhere.
