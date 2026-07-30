@@ -125,7 +125,33 @@ export function registerHookRoute(
       // user taps, and otherwise when its own hold expires — never later, so
       // the shim's abort and the provider's own `timeout` stay nets rather than
       // mechanisms (`providers/permission.ts`).
-      const decision = await conversations.hook(session, payload);
+      //
+      // Unless the caller leaves first, which is the other half of what an empty
+      // reply means: tether must never show an answerable card for a decision
+      // that cannot land. A shim killed by a provider timeout tether never
+      // enumerated, a Ctrl-C'd pane, a killed agent and a provider tether has
+      // not met are all one thing from here — the request dying — and that is
+      // knowable without knowing whose timeout it was. The alternative is the
+      // worst sentence this surface can say: *approved*, for a decision nothing
+      // received. Shared on purpose, so it covers Claude Code's `PreToolUse`
+      // hold as well as Codex's `PermissionRequest`; leaving the other provider
+      // with the same hole because a task was scoped to one of them would be the
+      // wrong kind of discipline.
+      //
+      // Watched on the *reply*, not the request, and that is not a style
+      // preference: Fastify parses the body before the handler runs, so by here
+      // `request.raw` is already destroyed and has already emitted its own
+      // `close` — a listener added now would never fire, and the guard would
+      // read as working while catching nothing. `reply.raw` emits `close` in
+      // both cases, and `writableFinished` is what tells them apart: false when
+      // the socket went before the reply was written, true after an ordinary
+      // one. (`aborted` on the request is the deprecated spelling of an event
+      // that is no use here anyway.)
+      const gone = new AbortController();
+      reply.raw.on('close', () => {
+        if (!reply.raw.writableFinished) gone.abort();
+      });
+      const decision = await conversations.hook(session, payload, gone.signal);
       if (decision === undefined) return reply.code(204).send();
       return reply.code(200).send({ decision });
     },

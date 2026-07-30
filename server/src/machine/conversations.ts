@@ -589,10 +589,23 @@ export class Conversations {
    * route turns into a hook that says nothing and so leaves the question to the
    * provider's own permission rules.
    *
+   * `gone` is the route saying its caller has left — see `web/hooks.ts`. A hold
+   * outstanding when it fires settles as `timeout`, through the same single-shot
+   * `settle` a tap uses, so the card stops being answerable and `answer` starts
+   * refusing. That is the general invariant, and it is stated as one in
+   * `providers/permission.ts`: tether must never show an answerable card for a
+   * decision that cannot land. The hook's own request dying is the earliest
+   * point at which that is knowable, and knowing it takes no knowledge of what
+   * timeout anybody is really enforcing.
+   *
    * Never throws and never rejects: this is called from an HTTP route that the
    * agent's own turn is blocked on.
    */
-  async hook(session: Session, payload: unknown): Promise<PermissionDecision | undefined> {
+  async hook(
+    session: Session,
+    payload: unknown,
+    gone?: AbortSignal,
+  ): Promise<PermissionDecision | undefined> {
     const live = this.#live.get(session.id);
     const signal =
       session.provider === CODEX
@@ -628,11 +641,22 @@ export class Conversations {
       calls.delete(oldest);
     }
 
+    // Two questions that make a hold's *length* moot, asked before it is read:
+    // nobody is watching, and the caller has already gone. The second can have
+    // happened during `catchUp` above. Asking first also keeps `hooks.json` off
+    // the path of every background prompt on the machine.
+    const watched = live !== undefined && live.watching.size > 0;
     // Codex is the provider whose hook `timeout` tether may not reconcile, so
     // it is the provider whose hook `timeout` tether has to read. Once per
     // prompt: only `PermissionRequest` ever reaches here for Codex.
-    const ceilingMs = session.provider === CODEX ? await this.#codexCeiling() : Infinity;
-    const holdMs = this.#holdFor(signal.hold, live, ceilingMs);
+    const ceilingMs =
+      watched && gone?.aborted !== true && session.provider === CODEX
+        ? await this.#codexCeiling()
+        : Infinity;
+    // Asked again after that read, because the read is an `await` the caller can
+    // die inside — and a listener added to a signal that has already fired never
+    // runs, so a hold created past this point would never be released by one.
+    const holdMs = gone?.aborted === true ? 0 : this.#holdFor(signal.hold, live, ceilingMs);
     if (holdMs === 0) {
       // No `deadline`, so the card offers no buttons: tether is reporting this
       // call, not answering it.
@@ -644,6 +668,9 @@ export class Conversations {
     const outcome = await new Promise<PermissionOutcome>((resolve) => {
       const timer = setTimeout(() => entry.hold?.settle('timeout'), holdMs);
       timer.unref();
+      // Not a denial: the caller leaving is the hold ending, and the question
+      // goes back to the provider's own prompt exactly as an expiry does.
+      const abandon = (): void => entry.hold?.settle('timeout');
       entry.hold = {
         deadline,
         settle: (result) => {
@@ -651,6 +678,9 @@ export class Conversations {
           entry.hold = undefined;
           entry.outcome = result;
           clearTimeout(timer);
+          // However this ended, so a long-lived server does not accumulate one
+          // listener per prompt on a signal that outlives the hold.
+          gone?.removeEventListener('abort', abandon);
           this.#send(this.#live.get(session.id), {
             c: 'answer',
             callId: signal.e.callId,
@@ -659,6 +689,7 @@ export class Conversations {
           resolve(result);
         },
       };
+      gone?.addEventListener('abort', abandon, { once: true });
       this.#send(live, { c: 'pending', e: signal.e, deadline });
     });
     // A hold nobody answered is not a denial. Saying nothing hands the question

@@ -172,11 +172,24 @@ async function codexHookCommand(argv: readonly string[]): Promise<number> {
         ...(outdated(before)
           ? [
               '',
-              'This installation is from an older tether. It still reports that a session',
-              'is waiting for you, but it has no way to carry an answer back, so tether',
-              'will not offer Approve/Deny on it — you answer in the terminal, as before.',
-              'Run `tether codex-hook install` to update it. The conversation, the',
-              'terminal and working/idle are unaffected either way.',
+              'This installation is out of date, in a way tether can see:',
+              // Two different facts, and only the first is about the script. The
+              // second is tether declining to hold a turn the entry it can read
+              // is not sized for — the script would carry an answer back fine.
+              ...(before.shimCurrent
+                ? []
+                : ['  the hook script is one an older tether wrote, which cannot answer at all']),
+              ...(before.permissionTimeout === PERMISSION_TIMEOUT_SECONDS
+                ? []
+                : [
+                    `  its PermissionRequest entry says timeout ${before.permissionTimeout ?? 'nothing'}, not ${PERMISSION_TIMEOUT_SECONDS},`,
+                    '  so tether will not hold a turn behind it',
+                  ]),
+              '',
+              'It still reports that a session is waiting for you; tether will not offer',
+              'Approve/Deny on it, and you answer in the terminal as before. Run',
+              '`tether codex-hook install` to update it. The conversation, the terminal',
+              'and working/idle are unaffected either way.',
             ]
           : []),
       ].join('\n') + '\n',

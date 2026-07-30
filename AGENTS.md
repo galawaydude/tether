@@ -354,6 +354,20 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   ordinary typing. What authorises a decision is the **session cookie** on
   `POST /api/sessions/:id/permission`, never the hook secret — an unauthenticated
   approve is an unauthenticated tool execution.
+  **(5) A hold ends when its request does.** The third timeout lives in a file,
+  and a _running_ agent enforces the one it loaded at startup, not the one on
+  disk — verified against codex-cli 0.145.0 with a probe hook: moving
+  `hooks.json` from `timeout: 3` to `300` under a running Codex still killed the
+  probe at ~3s, and still ran it although the edit had changed its trust hash.
+  So no amount of reading a config closes the window, and the wider invariant
+  (stated in `providers/permission.ts`) is that **tether must never show an
+  answerable card for a decision that cannot land** — a provider timeout tether
+  never enumerated, a Ctrl-C'd pane, a killed agent, a provider tether has not
+  met. `web/hooks.ts` watches `request.raw` for `close`, guarded by a flag
+  because `close` follows every ordinary reply too, and `Conversations.hook`
+  settles the hold as `timeout` on the `AbortSignal` it is handed. Shared by both
+  providers on purpose: a false _approved_ is the worst thing this surface can
+  say on either.
 - **`{c:'pending'}`'s `deadline` is what puts buttons on a card, not `pending`.**
   tether reports far more proposals than it holds, and `{c:'answer'}` is how
   every viewer learns a hold is over — so neither frame carries a `seq`, for the

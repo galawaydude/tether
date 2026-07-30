@@ -672,6 +672,64 @@ test('an answer for a call that was never held is refused, not invented', async 
   assert.equal(h.conversations.answer(h.session.id, 'toolu_never_seen', 'allow'), false);
 });
 
+test('a hook whose caller has gone stops being answerable at once', async (t) => {
+  // The general invariant (`providers/permission.ts`): tether must never show an
+  // answerable card for a decision that cannot land. The hook's request dying is
+  // the earliest thing that says so, and it says so without tether knowing whose
+  // timeout — a provider's, a Ctrl-C, a kill — ended it.
+  const h = await held(t, { permissionTimeoutMs: 60_000 });
+  const gone = new AbortController();
+  const decision = h.conversations.hook(h.session, preToolUse(), gone.signal);
+  await h.client.waitForOther(h.client.pendings, 1);
+  assert.ok(
+    (h.client.pendings[0]?.deadline ?? 0) > Date.now(),
+    'answerable while the caller waits',
+  );
+
+  const before = Date.now();
+  gone.abort();
+  assert.equal(await decision, undefined, 'released, and never a denial');
+  // The hold was a minute long, so anything but "at once" means the timer ended
+  // it and the abort did nothing.
+  assert.ok(Date.now() - before < 1000, 'the abort is what released it');
+  await h.client.waitForOther(h.client.answers, 1);
+  assert.deepEqual(h.client.answers[0], { c: 'answer', callId: CALL_ID, outcome: 'timeout' });
+  assert.equal(
+    h.conversations.answer(h.session.id, CALL_ID, 'allow'),
+    false,
+    'and this is the property: nothing can report an approval nobody received',
+  );
+});
+
+test('a caller already gone is reported and never held', async (t) => {
+  const h = await held(t, { permissionTimeoutMs: 60_000 });
+  const gone = new AbortController();
+  gone.abort();
+
+  const before = Date.now();
+  assert.equal(await h.conversations.hook(h.session, preToolUse(), gone.signal), undefined);
+  assert.ok(Date.now() - before < 1000, 'it did not wait out a hold nobody could answer');
+  await h.client.waitForOther(h.client.pendings, 1);
+  assert.equal(h.client.pendings[0]?.deadline, undefined, 'reported, with no button to offer');
+  assert.equal(h.conversations.answer(h.session.id, CALL_ID, 'allow'), false);
+});
+
+test('a hook that is answered leaves nothing listening on its signal', async (t) => {
+  const h = await held(t, { permissionTimeoutMs: 60_000 });
+  const gone = new AbortController();
+  const decision = h.conversations.hook(h.session, preToolUse(), gone.signal);
+  await h.client.waitForOther(h.client.pendings, 1);
+  h.conversations.answer(h.session.id, CALL_ID, 'allow');
+  assert.equal(await decision, 'allow');
+
+  // A `close` follows every ordinary reply too, so the settled hold must not
+  // hear it — one `answer` frame, and no listener left over per prompt.
+  gone.abort();
+  await new Promise((resolve) => setTimeout(resolve, POLL * 2));
+  assert.equal(h.client.answers.length, 1, 'no second answer for a call already settled');
+  assert.equal(h.client.answers[0]?.outcome, 'allow');
+});
+
 test('the last viewer leaving releases the agent rather than stranding it', async (t) => {
   // A long hold, so that only the leaving can be what ends it.
   const h = await held(t, { permissionTimeoutMs: 60_000 });
@@ -1207,6 +1265,32 @@ test('a codex hold is clamped under the timeout Codex was asked to trust', async
   const holdMs = (h.client.pendings[0]?.deadline ?? 0) - Date.now();
   assert.ok(holdMs > 0 && holdMs <= MAX_HOLD_MS, `held for ${holdMs}ms`);
   assert.ok(MAX_HOLD_MS < 10 * 60_000, 'the clamp really is the binding constraint here');
+});
+
+test('a Codex hook Codex killed leaves no live buttons behind', async (t) => {
+  // The case the on-disk gate cannot close: a Codex that loaded `timeout: 3` at
+  // startup kills the shim at 3s whatever `hooks.json` says now (verified
+  // against 0.145.0 with a probe hook). From tether's side a killed shim is a
+  // caller that left, and that is what is watched instead of a number.
+  const h = await codexHeld(t, { permissionTimeoutMs: 60_000 });
+  await appendFile(h.hookLog, hookLine(codexPreToolUse()) + hookLine(codexPermissionRequest()));
+  const gone = new AbortController();
+
+  const decision = h.conversations.hook(h.session, codexPermissionRequest(), gone.signal);
+  await h.client.waitForOther(h.client.pendings, 1);
+  assert.ok((h.client.pendings[0]?.deadline ?? 0) > Date.now());
+
+  const before = Date.now();
+  gone.abort();
+  assert.equal(await decision, undefined, 'Codex’s own dialog has the question now');
+  assert.ok(Date.now() - before < 1000, 'the abort released it, not the minute-long timer');
+  await h.client.waitForOther(h.client.answers, 1);
+  assert.deepEqual(h.client.answers[0], { c: 'answer', callId: CODEX_CALL, outcome: 'timeout' });
+  assert.equal(
+    h.conversations.answer(h.session.id, CODEX_CALL, 'allow'),
+    false,
+    'so a tap cannot report an approval the agent never received',
+  );
 });
 
 /** The `timeout` on tether's own `PermissionRequest` entry, rewritten in place. */

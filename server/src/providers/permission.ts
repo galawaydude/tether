@@ -81,6 +81,25 @@ export function permissionTimeoutMs(env = process.env): number {
  * agent never received. Not holding is always available and always safe: the
  * prompt is reported without buttons and answered in the pane, which is what
  * every session did before it could be answered here.
+ *
+ * Reading the file is necessary and it is not sufficient, because the file is
+ * not what a *running* agent enforces. Verified against codex-cli 0.145.0 with a
+ * probe hook and no tether code in the loop: with `hooks.json` moved from
+ * `timeout: 3` to `300` under a running Codex, the probe was still killed at ~3s
+ * and the dialog still appeared — and it ran at all, though the edit had changed
+ * the entry's trust hash. A running provider enforces the timeout it loaded at
+ * startup. So the gate above closes the cases it can see and there is a second,
+ * wider invariant underneath it:
+ *
+ *   tether must never show an answerable card for a decision that cannot land,
+ *   regardless of *why* it cannot — a provider timeout tether never enumerated,
+ *   a Ctrl-C'd pane, a killed agent, a provider tether has not met.
+ *
+ * The hook's own request dying is the earliest point at which that is knowable,
+ * and knowing it requires no knowledge of anyone's timeout, which is precisely
+ * what makes it the better boundary. `web/hooks.ts` watches for it and
+ * `Conversations.hook` settles the hold on it, for both providers and for any
+ * third.
  */
 export const ABORT_MARGIN_MS = 3000;
 export const KILL_MARGIN_MS = 5000;
