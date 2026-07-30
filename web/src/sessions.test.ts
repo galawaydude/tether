@@ -44,6 +44,24 @@ test('a day heading is a calendar day, not a difference in hours', () => {
   assert.notEqual(dayLabel(NOW - 5 * DAY, NOW), 'Today');
 });
 
+test('a heading past this year carries the year, and one inside it does not', () => {
+  const thisJuly = new Date(2026, 6, 3).getTime();
+  const lastJuly = new Date(2025, 6, 3).getTime();
+  const inYear = dayLabel(thisJuly, NOW);
+  assert.equal(inYear.includes('2026'), false, 'the current year is not worth the width');
+  assert.notEqual(dayLabel(lastJuly, NOW), inYear, 'last July is not this July');
+  assert.equal(dayLabel(lastJuly, NOW).includes('2025'), true);
+  // Two sessions on the same day of different years are two groups, not one
+  // heading used twice — `app.tsx` keys a group by this string.
+  const days = groupSessions(
+    [session({ id: 'a', updatedAt: thisJuly }), session({ id: 'b', updatedAt: lastJuly })],
+    '',
+    NOW,
+  ).map((g) => g.day);
+  assert.equal(days.length, 2);
+  assert.equal(new Set(days).size, 2);
+});
+
 test('grouping keeps the server’s order and starts a new group only on a change', () => {
   const list = [
     session({ id: 'a', updatedAt: NOW }),

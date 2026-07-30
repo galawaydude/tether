@@ -418,8 +418,12 @@ button:disabled {
   color: var(--danger);
 }
 
+/* Mixed into `--wash` rather than into whatever it happens to lie on, by the
+   same rule as `.error` and `.chip`: tinted into `--panel` this reads 5.07:1 and
+   into the open row's `--raise` 4.54:1, both under the floor, while one fixed
+   tint is 5.87:1 wherever the row is. */
 .ghost.danger:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  background: color-mix(in srgb, var(--danger) 14%, var(--wash));
   color: var(--danger);
 }
 

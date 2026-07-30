@@ -394,17 +394,25 @@ function parse(data: unknown): ServerFrame | undefined {
  * front of it, guarded on being defined rather than on the context.
  */
 function copyText(text: string): void {
+  // Where focus was, because removing the textarea drops it to `<body>`: the
+  // actions are revealed by `:focus-within`, so a keyboard user who did not get
+  // their button back has lost both the row and their place in the tab order.
+  const was = document.activeElement;
   const box = document.createElement('textarea');
   box.value = text;
   // Off-screen but focusable: `display: none` cannot be selected from.
   box.setAttribute('aria-hidden', 'true');
   box.style.cssText = 'position:fixed;top:-1000px;opacity:0';
   document.body.append(box);
+  // Focused explicitly: where `select()` alone does not move focus, the copy
+  // takes the document's existing selection instead of this text.
+  box.focus();
   box.select();
   try {
     document.execCommand('copy');
   } finally {
     box.remove();
+    if (was instanceof HTMLElement) was.focus();
   }
 }
 

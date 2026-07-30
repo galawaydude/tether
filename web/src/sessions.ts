@@ -31,6 +31,13 @@ export function matches(session: Pick<Session, 'title' | 'cwd'>, query: string):
  * Both timestamps are compared as *local calendar days*, not as a difference in
  * milliseconds: a session updated at 23:50 and read at 00:10 is yesterday's, and
  * 20 minutes is not.
+ *
+ * The year is carried only when it is not the current one. Registry rows are
+ * marked dead and never deleted by design, so "older than a year" is every
+ * session's eventual fate rather than an edge case, and a heading that cannot
+ * tell this July from last July is a label that starts lying once the product
+ * has been used a while — while two of them are also one duplicate key, since
+ * `app.tsx` keys a group by this string.
  */
 export function dayLabel(at: number, now: number): string {
   const day = (ms: number): number => {
@@ -40,7 +47,13 @@ export function dayLabel(at: number, now: number): string {
   const days = Math.round((day(now) - day(at)) / 86_400_000);
   if (days <= 0) return 'Today';
   if (days === 1) return 'Yesterday';
-  return new Date(at).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+  const then = new Date(at);
+  const sameYear = then.getFullYear() === new Date(now).getFullYear();
+  return then.toLocaleDateString(undefined, {
+    day: 'numeric',
+    month: 'short',
+    ...(sameYear ? {} : { year: 'numeric' }),
+  });
 }
 
 /** A day heading and the sessions filed under it, newest group first. */
