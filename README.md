@@ -572,13 +572,13 @@ npm run test:e2e                  # the end-to-end specs
 
 `e2e/` is seven Playwright specs, and they are the only tests here that are not
 unit tests. Six of them run at a phone viewport, which is the client tether is
-designed for. One logs in, starts a session, watches it, types at
+designed for. One (`session.spec.ts`) logs in, starts a session, watches it, types at
 it, **reloads the page**, and asserts the conversation and the terminal come back
 intact and exactly once; it also summons the terminal over the conversation and
 dismisses it, asserting both keep their scroll position and that the terminal is
 not re-attached; and it opens the New session sheet at the shortest
 phone viewports and asserts the card and its **Agent** picker stay on screen,
-since the sheet is the one screen that grows with its copy. The second acts out
+since the sheet is the one screen that grows with its copy. The second (`permission.spec.ts`) drives the hook chain end to end: it acts out
 three permission prompts and answers them three ways: **Approve** on the card
 runs the command and the transcript's own record then replaces that card rather
 than adding a second one; **Deny** blocks it and the command never runs; and one
@@ -588,29 +588,31 @@ at the pane after a tap has already approved something, and asserts that
 approves nothing. It also asserts the watch rule the overlay decides: a tool
 call proposed while the terminal is summoned is **not** held — the agent's own
 prompt takes the question straight away — and the same session holds the next one
-once the terminal is put away. The third composes a message and asserts it reaches the agent
+once the terminal is put away. The third (`composer.spec.ts`) composes a message and asserts it reaches the agent
 and appears exactly once, that Enter in the box is a line break rather than a
 send, and that the composer leaves Send on screen with the keyboard up. It also
 sends **slash commands** from that box: that one is not drawn as a message, that a
 recorded one really arrives in the conversation, that a chooser's reaches the pane
 and is reported rather than claimed, and that the command list gives way rather
 than pushing Send off a 360×340 screen. The
-fourth starts two sessions in **one** directory and asserts each shows its own
+fourth (`identity.spec.ts`) starts two sessions in **one** directory and asserts each shows its own
 conversation and neither shows the other's, then acts out a `/resume` at one of
 their panes and asserts that view follows the agent to the conversation it
-resumed into. The fifth writes what an agent actually writes into the transcript
+resumed into. The fifth (`render.spec.ts`) writes what an agent actually writes into the transcript
 and asserts what the conversation makes of it: markdown rather than a wall of
 characters, a `<script>` in a fenced block that is text in the page rather than a
 node in it, an `Edit` drawn as a diff, a failed call that says _retrying_ or
 _needs you_ — and, on an **answerable** `Edit`, a diff that wraps with Approve
 still on screen, since nothing on a card the agent is blocked on may be off it.
-It checks at every step that the page itself has not moved sideways. The sixth
+It also drives the hook chain a second time, for the guard that holds **Approve**
+behind an acknowledgement when a command carries lookalike characters. It checks at
+every step that the page itself has not moved sideways. The sixth (`options.spec.ts`)
 drives the composer's option controls under both agents: that each provider is
 offered its own and only its own, that a keystroke axis really reaches the pane,
 that a bar-lowering choice does nothing until its sentence is confirmed and that
 a mode change tether could not confirm never claims one — and that at 360×340,
 with the warning up, Cancel, the confirm and Send are all still on screen. The
-seventh is the only one that runs at a laptop viewport
+seventh (`desktop.spec.ts`) is the only one that runs at a laptop viewport
 (1280×800), because past 900px the app is a different shape rather than a wider
 phone: it measures the rail's box against the open session's, asserts the back
 button is **gone** rather than merely invisible, that the page has exactly one

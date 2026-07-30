@@ -855,74 +855,48 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `coerceTypes` are on): `additionalProperties: false` strips instead of rejecting, and
   `{"password": 123}` arrives as `"123"`. `buildServer` turns both off. Do not remove that
   `ajv.customOptions` block, and do not assume stock Fastify behaviour when reading the tests.
-- **`e2e/` is seven Playwright specs and they assert counts and geometry, not presence.**
-  They drive the real `tether serve` (`e2e/serve.ts` calls the CLI's own `main`) inside a
-  scratch `HOME`/state dir/tmux socket, with `e2e/stub-agent.ts` on `PATH` as `claude` and
-  as `codex` (the composer-option entry above says why the second shim is there) — so
-  the session is created through the production path and **CI still never runs a live
-  agent**. What `session.spec.ts` checks that nothing else can is the reload and
-  the terminal overlay — that summoning and dismissing it keeps both scroll
-  positions and re-attaches nothing — what
-  `permission.spec.ts` checks is the hook chain end to end plus the watch/hold
-  rule that overlay decides, what `composer.spec.ts`
-  checks is the compose chain end to end plus the Enter rule the composer entry above
-  describes, which has no handler to unit-test — and, in its second test, the slash-command
-  chain: that a command is not drawn as a message, that a recorded one really arrives in
-  the conversation, and that a chooser's reaches the pane and is reported rather than
-  claimed. The stub acts out a slash command three ways for it, which is why its `/effort`
-  no longer shows up in the pane twice — and what `identity.spec.ts` checks is that
-  each session shows _its own_ conversation and keeps it — two sessions in one directory,
-  then a `/resume` typed at one pane (which the stub acts out by moving to a new session
-  id and a new transcript, announcing it only through its registry file). That last claim
-  is the one found in live use rather than by a test. What `render.spec.ts` checks is the
-  one claim the markdown entry above cannot make from a unit test — that the tree becomes
-  _elements_ and nothing else, so a `<script>` an agent wrote is text in the page rather
-  than a node in it — plus the answerable `Edit`, the combination the diff and permission
-  entries create together and neither covers alone; it appends its records to the
-  transcript the stub already opened rather than teaching the stub a new behaviour. Its
-  third test is the one place besides `permission.spec.ts` that drives the real hook chain
-  end to end, for the lookalike-character guard the confusables entry above describes.
-  `desktop.spec.ts` is the only spec
-  above the 900px breakpoint and the only test that renders the `.workspace` shape at
-  all: it measures the rail's box against the session's, counts the back button at **0**
-  rather than checking it is invisible (`display: none` is the point), counts exactly one
-  `<main>`, and checks the page cannot scroll sideways. What `options.spec.ts` checks
-  is in the composer-option entry above. Two Playwright projects carry
-  that, `phone` and `desktop`, each with a `testIgnore`/`testMatch` so neither runs the
-  other's spec at the wrong width — they still share the one server, so the directory
-  and by-name rules below apply to it too. `e2e/ui.ts` is the harness beside
-  `serve.ts`: the summon/dismiss recipe is spelled there once rather than in five
-  specs, and evidence screenshots are namespaced by spec, because the shared
-  `TETHER_E2E_SHOTS` directory plus one worker meant a number reused in a second
-  spec silently overwrote the first spec's image.
-  `toContainText` passes just as happily
-  on a view that replayed itself twice, on two cards for one tool call, and on an echo
-  still standing beside its own record.
-  `session.spec.ts` also measures the New session sheet's box against short viewports and
-  starts no session at all, because a control clipped out of a fixed overlay is still in
-  the DOM. Three things not to "strengthen" by accident: the locators are scoped to
-  `.conv` and `.xterm-rows` because both panes stay mounted; the terminal comparison is of
-  the **rendered screen** before versus after — the buffer above it legitimately holds the
-  capture _under_ tmux's repaint, and byte-exactness of the recipe is
-  `terminal.test.ts`'s job; and the specs share one server and one session list, so
-  each takes its own directory and reopens its session **by name**, never `.row-open` —
-  which is why `identity.spec.ts`, the one spec that deliberately puts two sessions in one
-  directory, gives both a title.
-  The stub knows nothing about where tether's shim, secret or endpoint are — it runs
-  whatever `.claude/settings.local.json` lists — so a broken installer fails the test
-  rather than quietly proving nothing. A typed ask only **arms** the stub and a
-  trigger file fires it, because the hold needs the conversation on screen and
-  typing needs the terminal over it; the stub fires when both have landed, in
-  either order, so nothing depends on which round-trip won. Writing the trigger
-  _without_ dismissing is how the watch/hold test gets the opposite case. For the
-  same reason the timeout case never summons the terminal — that would release
-  the hold it is watching expire — and reads `.xterm-rows` through the hidden
-  pane instead. A locator inside the conversation while the overlay is up must be
-  a CSS one: the pane is `inert`, so every role locator reads zero there and one
-  that did would prove nothing.
-  `retries: 0` is deliberate. `npm ci` does not
-  fetch the browser (npm 12 blocks playwright's postinstall);
-  `npx playwright install chromium` does, and CI runs it.
+- **`e2e/` asserts counts and geometry, not presence.** _What_ each spec covers is
+  listed once, in `README.md`'s Development section; this entry is only the rules a
+  spec must not break.
+  - They drive the real `tether serve` (`e2e/serve.ts` calls the CLI's own `main`)
+    inside a scratch `HOME`/state dir/tmux socket, with `e2e/stub-agent.ts` on `PATH`
+    as `claude` **and** as `codex` (the composer-option entry above says why the second
+    shim is there), so a session is created through the production path and **CI still
+    never runs a live agent**.
+  - `toContainText` passes just as happily on a view that replayed itself twice, on two
+    cards for one tool call, and on an echo still standing beside its own record — hence
+    counts and measured boxes. A control clipped out of a fixed overlay is still in the
+    DOM, and `display: none` is the point of the desktop back button, so that one is
+    counted at **0** rather than checked for invisibility.
+  - Three things not to "strengthen" by accident: locators are scoped to `.conv` and
+    `.xterm-rows`, because both panes stay mounted; the terminal comparison is of the
+    **rendered screen** before versus after — the buffer above it legitimately holds the
+    capture _under_ tmux's repaint, and byte-exactness of the recipe is
+    `terminal.test.ts`'s job; and the specs share one server and one session list, so
+    each takes its own directory and reopens its session **by name**, never `.row-open`
+    (which is why the one spec that deliberately puts two sessions in one directory
+    gives both a title).
+  - A locator inside the conversation while the terminal overlay is up must be a **CSS**
+    one: the pane is `inert`, so every role locator reads zero there and one that did
+    would prove nothing.
+  - The stub knows nothing about where tether's shim, secret or endpoint are — it runs
+    whatever `.claude/settings.local.json` lists — so a broken installer fails the test
+    rather than quietly proving nothing. A typed ask only **arms** it and a trigger file
+    fires it, because the hold needs the conversation on screen and typing needs the
+    terminal over it; it fires when both have landed, in either order, so nothing depends
+    on which round-trip won. Writing the trigger _without_ dismissing is how the
+    watch/hold test gets the opposite case, and the timeout case never summons the
+    terminal — that would release the hold it is watching expire — reading `.xterm-rows`
+    through the hidden pane instead. A spec that needs new agent behaviour appends to the
+    transcript the stub already opened rather than teaching the stub a new trick.
+  - Two Playwright projects, `phone` and `desktop`, each with a `testIgnore`/`testMatch`
+    so neither runs the other's spec at the wrong width. `e2e/ui.ts` is the harness beside
+    `serve.ts`: the summon/dismiss recipe is spelled there once rather than in five specs,
+    and evidence screenshots are namespaced by spec, because the shared
+    `TETHER_E2E_SHOTS` directory plus one worker meant a number reused in a second spec
+    silently overwrote the first spec's image.
+  - `retries: 0` is deliberate. `npm ci` does not fetch the browser (npm 12 blocks
+    playwright's postinstall); `npx playwright install chromium` does, and CI runs it.
 
 ## Maintaining this file
 
