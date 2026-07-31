@@ -98,10 +98,11 @@ behind leaves a credential behind. (`$XDG_STATE_HOME` or `$TETHER_STATE_DIR`
 move it, if you set either.)
 
 Everything else tether ever wrote is in a file that was already yours: the two
-hook entries in a project's `.claude/settings.local.json`, and in
+hook entries in a project's `.claude/settings.local.json`; in
 `~/.codex/config.toml` the Codex hook entry — `tether codex-hook remove` takes
 that one out — and any folder you told it to trust, which is marked with a
-comment so you can find it.
+comment so you can find it; and in `~/.claude.json` the folder trust for Claude
+Code, as `hasTrustDialogAccepted` on that directory's `projects` entry.
 
 ## First run
 
