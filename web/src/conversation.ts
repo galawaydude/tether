@@ -436,7 +436,7 @@ export function markUndelivered(state: Rows, terminal: Status): Rows {
  *    row for, or one whose attach threw — has nowhere for it to go, and the
  *    three are said apart because the user can act on the difference. Only the
  *    middle one may say the session is missing: saying it for the other two is
- *    the bug this file's `Status` comment is about.
+ *    the bug the `Status` comment in `status.ts` is about.
  *  - **`waiting`** means the pane is holding on a permission prompt. A message
  *    pasted into that is not a message — it answers the dialog with whatever
  *    option is selected, which can be *yes* to a command the user never read.

@@ -735,8 +735,8 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   not arrive — `waiting`, because a message pasted at a permission prompt answers
   the dialog; a message over `MAX_TEXT`, which `parseClientFrame` drops and never
   ACKs, so it would be resent on every reconnect under a permanent "Sending…";
-  and a terminal socket closed `ended` or `gone`, which is why those two closes
-  are separate `Status` values — and an echo already outstanding at either close
+  and a terminal socket closed `ended`, `gone` or `failed`, which is why those
+  three closes are separate `Status` values — and an echo outstanding at any of them
   is **marked with that close, never dropped and never retired**
   (`markUndelivered`), since the text is what the user would lose and a record
   that turns up anyway must still retire it exactly once. Its note says only
