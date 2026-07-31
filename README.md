@@ -52,12 +52,11 @@ bash install.sh
 It clones tether to `~/.local/share/tether` (`--dir` moves that), builds it, and
 puts `tether` on your PATH. Running it again updates that checkout in place.
 
-**It asks before it changes anything outside its own directory.** If it needs a
-system package or a `sudo`, it prints the exact commands first and waits for a
-yes; declining prints them for you to run yourself and stops. `--yes` accepts
-them up front for an unattended run. It never edits a shell startup file — if
-`tether` lands somewhere that is not on your PATH, it shows you the line to add
-and leaves the file alone.
+**It asks before it installs a system package or runs `sudo`.** It prints the
+exact commands first and waits for a yes; declining prints them for you to run
+yourself and stops. `--yes` accepts them up front for an unattended run. It
+never edits a shell startup file — if `tether` lands somewhere that is not on
+your PATH, it shows you the line to add and leaves the file alone.
 
 ### What it needs, and the one that surprises people
 
