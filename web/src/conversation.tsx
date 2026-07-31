@@ -63,7 +63,11 @@ import {
   turnErrorLabel,
   whoLabel,
 } from './providers.ts';
-import type { Send, Status } from './terminal.tsx';
+import type { Send } from './terminal.tsx';
+import type { Status } from './status.ts';
+
+/** From `server/src/web/conversation.ts`; this channel's only close code. */
+const CLOSE_NO_SESSION = 4404;
 
 /** Same shape of backoff as the terminal channel, and for the same phone. */
 const RECONNECT_MIN_MS = 1000;
@@ -232,10 +236,18 @@ export function ConversationView({
           return next;
         });
       };
-      ws.onclose = () => {
+      ws.onclose = (event: CloseEvent) => {
         socket = null;
         live.current = null;
         if (closed) return;
+        // `CLOSE_NO_SESSION` on *this* channel is the one honest use of it: the
+        // route sends it only where `getSession` found no row at all. Reporting
+        // that as "Reconnecting…" was a sentence about a session that is not
+        // coming back, and it retried against it for the life of the mount.
+        if (event.code === CLOSE_NO_SESSION) {
+          status.current('gone');
+          return;
+        }
         // Unlike the terminal channel this does not probe for an expired cookie:
         // both views are mounted together and the terminal already does it, so a
         // second probe on every drop would only double the requests.
@@ -940,7 +952,7 @@ function RowView({
     case 'note':
       return <p class="note">{row.text}</p>;
     case 'tool':
-      return <ToolCard row={row} sessionId={sessionId} />;
+      return <ToolCard row={row} sessionId={sessionId} provider={provider} />;
   }
 }
 
@@ -956,7 +968,15 @@ function RowView({
  * as worse than the terminal. Open, the card is the command, the path, the diff:
  * enough to decide on a phone.
  */
-function ToolCard({ row, sessionId }: { row: ToolRow; sessionId: string }) {
+function ToolCard({
+  row,
+  sessionId,
+  provider,
+}: {
+  row: ToolRow;
+  sessionId: string;
+  provider: string;
+}) {
   const answerable = row.answerable;
   const advice = row.failed && row.result !== null ? errorAdvice(row.result) : null;
   // What the diff does not itself say, on a card that is being approved.
@@ -998,7 +1018,7 @@ function ToolCard({ row, sessionId }: { row: ToolRow; sessionId: string }) {
       {advice !== null && (
         <p class={`tool-advice${advice.act ? ' tool-advice-act' : ''}`}>{advice.text}</p>
       )}
-      <pre class="tool-body">{toolResult(row)}</pre>
+      <pre class="tool-body">{toolResult(row, provider)}</pre>
       {/* On a card nobody is deciding on the same finding is a note and gates
           nothing: the call has run, and there is no answer to hold back. */}
       {answerable === null && warning !== null && <p class="tool-warn">{warning}</p>}

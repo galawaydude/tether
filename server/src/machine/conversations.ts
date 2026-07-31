@@ -150,9 +150,10 @@ const MAX_WARNINGS = 100;
 /**
  * Where a tolerant-parse warning goes when the caller names no sink. Ignoring an
  * unknown record is only half the rule — the other half is that the operator
- * finds out that Claude Code's on-disk format moved, and the server runs Fastify
- * with `logger: false`, so stderr is the only place left. Each distinct message
- * is written once: one unknown record type must not become one line per record.
+ * finds out that Claude Code's on-disk format moved. Fastify's own log is on
+ * stderr too (see `logLevel` in `web/server.ts`), so a caller that names no sink
+ * lands where the rest of the server's failures do. Each distinct message is
+ * written once: one unknown record type must not become one line per record.
  *
  * Going quiet at the cap is said out loud, once. A long-lived `tether serve`
  * with nothing to report and one that has stopped reporting must not look the

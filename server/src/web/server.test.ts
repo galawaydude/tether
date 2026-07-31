@@ -7,7 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { applyRegistrySchema } from '../machine/registry.ts';
+import { applyRegistrySchema, createSession, markDead } from '../machine/registry.ts';
 import { createTerminals } from '../machine/terminal.ts';
 import type { Terminals } from '../machine/terminal.ts';
 import {
@@ -24,7 +24,7 @@ import { createAuthStore } from './auth.ts';
 import { defaultAllowedHosts } from './guards.ts';
 import { SESSION_COOKIE, buildServer } from './server.ts';
 import type { ServerOptions } from './server.ts';
-import { CLOSE_SESSION_ENDED } from './term-socket.ts';
+import { CLOSE_NO_SESSION, CLOSE_SESSION_ENDED } from './term-socket.ts';
 
 const PASSWORD = 'correct horse battery staple';
 const HOST = 'localhost:8787';
@@ -94,7 +94,7 @@ async function harness(overrides: Partial<ServerOptions> = {}, refusedKey?: stri
     loginDelayMs: 0,
     ...overrides,
   });
-  return { auth, app, terminal: recorder };
+  return { auth, app, db, terminal: recorder };
 }
 
 function login(app: ReturnType<typeof buildServer>, password = PASSWORD, headers = {}) {
@@ -666,21 +666,46 @@ test('an out-of-range resize is one dropped frame, not a lost terminal', async (
   assert.deepEqual(terminal.calls, ['attach s1', 'key s1 phone 1 C-c'], 'no resize reached tmux');
 });
 
-test('a session that ends closes the socket with a defined code', async (t) => {
-  const { app, terminal } = await harness();
-  t.after(() => app.close());
-  await app.ready();
+/**
+ * An attach that exits mid-life asks the registry which failure that was, exactly
+ * as a failed attach does — it does not close with a constant.
+ *
+ * It used to say `CLOSE_SESSION_ENDED` for every PTY exit, and a PTY exits for
+ * reasons that are not the session ending: `Ctrl-B d` typed into the web terminal
+ * reaches tmux as a real prefix key, and `tmux detach-client` does the same from
+ * outside. So a live session told every viewer it had ended. Two rows, two
+ * different codes out of the one code path, is what a constant cannot do.
+ */
+for (const dead of [false, true]) {
+  test(`a terminal that ends asks the registry which close that is (dead row: ${dead})`, async (t) => {
+    // A socket no tmux server is listening on: the reconcile finds no panes, which
+    // is what a session that has really gone looks like, and touches nothing real.
+    const tmuxSocket = `tether-close-${randomUUID().slice(0, 8)}`;
+    const { app, db, terminal } = await harness({ socket: tmuxSocket });
+    t.after(() => app.close());
+    await app.ready();
+    if (dead) {
+      const row = createSession(db, {
+        id: randomUUID(),
+        provider: 'claude-code',
+        cwd: tmpdir(),
+        title: 's1',
+        tmuxName: 's1',
+      });
+      markDead(db, row.id);
+    }
 
-  const term = openTerm(app, { cookie: `${SESSION_COOKIE}=${await sessionToken(app)}` });
-  const socket = await term.socket;
-  await term.next();
+    const term = openTerm(app, { cookie: `${SESSION_COOKIE}=${await sessionToken(app)}` });
+    const socket = await term.socket;
+    await term.next();
 
-  // Without this the viewer sits forever on a terminal that will never receive
-  // another byte and never hears why.
-  const closed = new Promise<number>((resolve) => socket.on('close', resolve));
-  terminal.end();
-  assert.equal(await closed, CLOSE_SESSION_ENDED);
-});
+    // Without this the viewer sits forever on a terminal that will never receive
+    // another byte and never hears why.
+    const closed = new Promise<number>((resolve) => socket.on('close', resolve));
+    terminal.end();
+    assert.equal(await closed, dead ? CLOSE_SESSION_ENDED : CLOSE_NO_SESSION);
+  });
+}
 
 test('a socket that closes during the attach still detaches', async (t) => {
   const db = new DatabaseSync(':memory:');

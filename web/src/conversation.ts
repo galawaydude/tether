@@ -28,7 +28,8 @@ import type {
 
 import { MAX_TEXT } from './keys.ts';
 import { markdown, type Block } from './markdown.ts';
-import type { Status } from './terminal.tsx';
+import { providerLabel } from './providers.ts';
+import type { Status } from './status.ts';
 
 /** An event with its position in the session's stream, as the server sends it. */
 export type SeqEvent = { seq: number; e: ConversationEvent };
@@ -404,6 +405,10 @@ export function addEcho(state: Rows, text: string): Rows {
 const UNDELIVERED: Partial<Record<Status, string>> = {
   ended: 'This session ended before the agent recorded this message.',
   gone: 'The server no longer has this session, and the agent had not recorded this message.',
+  // Same rule as the other two, applied to the one close that has no cause in
+  // it: something stopped the terminal channel, this side never saw what, and
+  // the note says only that — the server's log is where the exception is.
+  failed: 'The terminal channel failed before the agent recorded this message.',
 };
 
 export function markUndelivered(state: Rows, terminal: Status): Rows {
@@ -427,9 +432,11 @@ export function markUndelivered(state: Rows, terminal: Status): Rows {
  * The three facts it knows, in the order it applies them:
  *
  *  - **The terminal channel is finished.** A composed message is an `input`
- *    frame on that socket, so a session that has ended — or one the server no
- *    longer has — has nowhere for it to go, and the two are said apart because
- *    the user can act on the difference.
+ *    frame on that socket, so a session that has ended — one the server has no
+ *    row for, or one whose attach threw — has nowhere for it to go, and the
+ *    three are said apart because the user can act on the difference. Only the
+ *    middle one may say the session is missing: saying it for the other two is
+ *    the bug the `Status` comment in `status.ts` is about.
  *  - **`waiting`** means the pane is holding on a permission prompt. A message
  *    pasted into that is not a message — it answers the dialog with whatever
  *    option is selected, which can be *yes* to a command the user never read.
@@ -453,6 +460,8 @@ export function sendBlocked(agent: SessionState, message: string, terminal: Stat
   if (terminal === 'ended') return 'This session has ended. Nothing can reach it now.';
   if (terminal === 'gone')
     return 'The server no longer has this session. Nothing can reach it now.';
+  if (terminal === 'failed')
+    return 'tether could not open a terminal for this session, so this has nowhere to go. The reason is in the server’s log.';
   if (agent === 'waiting') return 'Answer the prompt in the terminal first.';
   if (message.length > MAX_TEXT) {
     return `Too long to send: ${message.length} characters, and the limit is ${MAX_TEXT}.`;
@@ -1026,7 +1035,14 @@ export function toolState(row: ToolRow): string {
   return advice.act ? 'needs you' : 'retrying';
 }
 
-export function toolResult(row: ToolRow): string {
+/**
+ * `provider` for exactly one of these sentences, and it had to be taken from
+ * somewhere: the expired-hold line named Claude Code outright, so a Codex card
+ * told the user to go and answer an agent that was not running. `providerLabel`
+ * is where the rest of the web app already reads an agent's name from, so this
+ * is the existing seam rather than a new one.
+ */
+export function toolResult(row: ToolRow, provider: string): string {
   if (row.result !== null) return row.result;
   if (row.answerable !== null) return 'The agent is waiting on your answer.';
   switch (row.outcome) {
@@ -1037,7 +1053,7 @@ export function toolResult(row: ToolRow): string {
     case 'timeout':
       // Not a failure, and it must not read as one: tether stopped holding and
       // the agent's own prompt has the question, which the terminal shows.
-      return 'No answer here in time — Claude Code is asking in the terminal instead.';
+      return `No answer here in time — ${providerLabel(provider)} is asking in the terminal instead.`;
     default:
       return row.pending ? 'Waiting for you to answer in the terminal.' : 'Still running.';
   }

@@ -28,7 +28,8 @@ import {
   WAITING_TERMINAL_LABEL,
 } from './providers.ts';
 import { crumbs, groupSessions } from './sessions.ts';
-import { STATUS_TEXT, TerminalView, type Status } from './terminal.tsx';
+import { TerminalView } from './terminal.tsx';
+import { STATUS_TEXT, agentStateTrusted, type Status } from './status.ts';
 
 /** How often the list refreshes. tmux reconciliation happens server-side per read. */
 const POLL_MS = 5000;
@@ -226,6 +227,24 @@ function SessionScreen({
   /** Which channel the header's chip reports on: the one that is on screen. */
   const front: Pane = summoned ? 'terminal' : 'conversation';
 
+  /**
+   * Whether anything derived from the `state` frame may still be shown.
+   *
+   * One predicate everywhere the agent's own state reaches the screen — the
+   * chip, the banners and the live region — because the fault was never in any
+   * one of them: it was **Idle** printed beside **Session not found**, two
+   * sources contradicting each other with nothing saying which tether believed.
+   * A rule applied to some of them would just move that contradiction to the
+   * rest.
+   *
+   * Both channels and never `front`: the agent's state is one fact about one
+   * process, so which pane happens to be on screen cannot be part of the answer
+   * — and `ended` on either channel is the session being over for both, however
+   * live the other one still looks. `agentStateTrusted` is where that is
+   * decided, and where the reason for each state's side of the line is written.
+   */
+  const agentKnown = agentStateTrusted(status.conversation, status.terminal);
+
   // Closing from inside the sheet hides the button that was focused, and a
   // browser drops focus to `<body>` when that happens — so a keyboard user who
   // dismissed the terminal would be tabbing from the top of the page again. The
@@ -278,12 +297,25 @@ function SessionScreen({
             a bar that changes height as a status word changes resizes the tmux
             pane underneath it. */}
         <div class="bar-chips">
-          <span class={`chip chip-agent-${agent.state}`}>
-            {STATE_TEXT[agent.state]}
-            {/* Its own component, so the 1s tick re-renders this span and not
-                the conversation under it — see `ElapsedChip`. */}
-            <ElapsedChip running={agent.state === 'busy'} />
-          </span>
+          {/* Gone entirely once the channel has finished, rather than shown
+              stale beside it. "Idle" next to "Session not found" is tether
+              reporting the agent alive and the session missing at the same
+              time, which is what sent a captain looking for lost work — see
+              `agentStateTrusted`. Dropping a chip is a height change the `.bar`
+              rules forbid *inside* a row, not across one: `.bar-chips` is its
+              own row below 600px and one chip is no taller than two.
+
+              The same `agentKnown` as the banners and the live region: this is
+              the agent's fact wherever it is printed, and the chip beside it is
+              the channel's. */}
+          {agentKnown && (
+            <span class={`chip chip-agent-${agent.state}`}>
+              {STATE_TEXT[agent.state]}
+              {/* Its own component, so the 1s tick re-renders this span and not
+                  the conversation under it — see `ElapsedChip`. */}
+              <ElapsedChip running={agent.state === 'busy'} />
+            </span>
+          )}
           <span class={`chip chip-${status[front]}`} role="status">
             {STATUS_TEXT[status[front]]}
           </span>
@@ -325,7 +357,7 @@ function SessionScreen({
           — and separate from anything on screen, so what a blind user hears
           does not depend on whether the terminal happens to be summoned. */}
       <p class="sr-only" aria-live="polite" aria-atomic="true">
-        {agent.state === 'waiting' ? `Waiting for you. ${waitingDetail}` : ''}
+        {agentKnown && agent.state === 'waiting' ? `Waiting for you. ${waitingDetail}` : ''}
       </p>
 
       <div class="panes">
@@ -407,7 +439,7 @@ function SessionScreen({
                 out of flow it would cost nothing to leave mounted behind a
                 hidden sheet, but then it exists while nobody can see it and
                 every assertion about it passes over a closed overlay. */}
-            {agent.state === 'waiting' && summoned && (
+            {agentKnown && agent.state === 'waiting' && summoned && (
               <p class="termsheet-waiting">
                 <strong>Waiting for you.</strong> {waitingDetail}
               </p>
@@ -438,7 +470,7 @@ function SessionScreen({
          * conversation underneath stays live, because covering the top of a
          * list is not the same as disabling it.
          */}
-        {agent.state === 'waiting' && !summoned && (
+        {agentKnown && agent.state === 'waiting' && !summoned && (
           <p class="waiting">
             <strong>Waiting for you.</strong> {waitingDetail}{' '}
             <button class="link" onClick={summon}>

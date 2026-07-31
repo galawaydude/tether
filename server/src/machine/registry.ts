@@ -116,6 +116,14 @@ export function getSession(db: DatabaseSync, idOrPrefix: string): Session | unde
   return matches[0];
 }
 
+/**
+ * By tmux session name — which is what the `term` socket is keyed on, and the
+ * only handle it has when an attach fails and it has to say why.
+ */
+export function getSessionByTmuxName(db: DatabaseSync, tmuxName: string): Session | undefined {
+  return rows(db, `SELECT ${COLUMNS} FROM sessions WHERE tmux_name = ? LIMIT 1`, tmuxName)[0];
+}
+
 /** Back-fill the provider's own session id once the provider has created one. */
 export function setProviderSessionId(
   db: DatabaseSync,

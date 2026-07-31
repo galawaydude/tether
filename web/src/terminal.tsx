@@ -25,10 +25,25 @@ import { useEffect, useRef } from 'preact/hooks';
 import { ApiError, checkSession, termSocketUrl } from './api.ts';
 import { encodeInput, newClientId, withSeq } from './keys.ts';
 import type { InputFrame } from './keys.ts';
+import type { Status } from './status.ts';
 
-/** From `server/src/web/term-socket.ts`; the wire contract, not a guess. */
+/**
+ * From `server/src/web/term-socket.ts`; the wire contract, not a guess.
+ *
+ * Three, not two. The server used to close *every* failed attach as
+ * `CLOSE_NO_SESSION`, so a native module that would not spawn arrived here as
+ * "Session not found" — see `attachClose` there, and `STATUS_TEXT` for what each
+ * one is now allowed to say.
+ */
 const CLOSE_NO_SESSION = 4404;
 const CLOSE_SESSION_ENDED = 4410;
+const CLOSE_ATTACH_FAILED = 4500;
+
+const CLOSE_STATUS: Record<number, Status> = {
+  [CLOSE_NO_SESSION]: 'gone',
+  [CLOSE_SESSION_ENDED]: 'ended',
+  [CLOSE_ATTACH_FAILED]: 'failed',
+};
 
 /**
  * Backoff, not a fixed interval: this runs on a phone, and a server that is
@@ -39,26 +54,6 @@ const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 30_000;
 /** Long enough to coalesce an orientation change, short enough not to be felt. */
 const RESIZE_DEBOUNCE_MS = 120;
-
-/**
- * Shared with the conversation channel, which reaches a subset of these.
- *
- * `ended` and `gone` are one close each and are kept apart rather than merged
- * into "finished": a session that stopped is not a session the server cannot
- * find, and the user can act on the difference. The composer reads them too
- * (`sendBlocked`), because this socket is where a composed message goes — a
- * message accepted after either one could never leave.
- */
-export type Status = 'connecting' | 'live' | 'retrying' | 'ended' | 'gone' | 'signedOut';
-
-export const STATUS_TEXT: Record<Status, string> = {
-  connecting: 'Connecting…',
-  live: 'Live',
-  retrying: 'Reconnecting…',
-  ended: 'Session ended',
-  gone: 'Session not found',
-  signedOut: 'Signed out',
-};
 
 /**
  * The keys a phone keyboard does not have and the agent's TUI cannot be driven
@@ -209,8 +204,9 @@ export function TerminalView({
       ws.onclose = (event: CloseEvent) => {
         socket = null;
         if (closed) return;
-        if (event.code === CLOSE_NO_SESSION || event.code === CLOSE_SESSION_ENDED) {
-          setStatus.current(event.code === CLOSE_SESSION_ENDED ? 'ended' : 'gone');
+        const settled = CLOSE_STATUS[event.code];
+        if (settled !== undefined) {
+          setStatus.current(settled);
           return;
         }
         // A phone suspends its sockets the moment the screen locks, so a dropped

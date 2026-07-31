@@ -584,8 +584,9 @@ test('the composer refuses a message the wire would drop, and says how long it i
 
 test('the composer refuses a session that has ended, and says which kind of gone', () => {
   // The composed message leaves on the terminal socket, so once that socket is
-  // finished there is nowhere for it to go. Two closes, two facts: a session
-  // that stopped is not a session the server cannot find.
+  // finished there is nowhere for it to go. Three closes, three facts: a session
+  // that stopped is not a session the server cannot find, and neither of those
+  // is an attach that threw for a reason this side never saw.
   assert.equal(
     sendBlocked('idle', 'ship it', 'ended'),
     'This session has ended. Nothing can reach it now.',
@@ -593,6 +594,13 @@ test('the composer refuses a session that has ended, and says which kind of gone
   assert.equal(
     sendBlocked('idle', 'ship it', 'gone'),
     'The server no longer has this session. Nothing can reach it now.',
+  );
+  const failed = sendBlocked('idle', 'ship it', 'failed');
+  assert.match(failed ?? '', /could not open a terminal/);
+  assert.doesNotMatch(
+    failed ?? '',
+    /no longer has|not found/,
+    'it must not say the session is gone',
   );
 });
 
@@ -619,6 +627,10 @@ test('an echo outstanding when the socket closes for good is marked, not left se
   assert.equal(
     markUndelivered(sending, 'gone').echoes[0]?.undelivered,
     'The server no longer has this session, and the agent had not recorded this message.',
+  );
+  assert.equal(
+    markUndelivered(sending, 'failed').echoes[0]?.undelivered,
+    'The terminal channel failed before the agent recorded this message.',
   );
 
   // Nothing outstanding, and a second pass over what is already marked, are both
@@ -733,7 +745,7 @@ test('a hold that ended while the socket was down comes back dead, not wearing b
   const row = settled.rows[0] as ToolRow;
   assert.equal(row.outcome, 'timeout');
   assert.equal(toolState(row), 'in terminal');
-  assert.match(toolResult(row), /asking in the terminal/);
+  assert.match(toolResult(row, 'claude-code'), /asking in the terminal/);
 });
 
 test('an answer for a card this client never built is ignored, not a crash', () => {
@@ -744,17 +756,22 @@ test('an answer for a card this client never built is ignored, not a crash', () 
 test('what a card says about a permission it is holding, and about how it ended', () => {
   const held = addPending(noRows(), PROPOSED, DEADLINE).rows[0] as ToolRow;
   assert.equal(toolState(held), 'asking');
-  assert.match(toolResult(held), /waiting on your answer/);
+  assert.match(toolResult(held, 'claude-code'), /waiting on your answer/);
 
   const answered = (outcome: 'allow' | 'deny' | 'timeout') =>
     addAnswer(addPending(noRows(), PROPOSED, DEADLINE), 'toolu_1', outcome).rows[0] as ToolRow;
 
   assert.equal(toolState(answered('deny')), 'denied');
-  assert.match(toolResult(answered('deny')), /did not run it/);
+  assert.match(toolResult(answered('deny'), 'claude-code'), /did not run it/);
   // A timeout is not an error and must not read as one: the question went back
   // to the agent's own prompt, which the terminal is showing.
   assert.equal(toolState(answered('timeout')), 'in terminal');
-  assert.match(toolResult(answered('timeout')), /asking in the terminal/);
+  assert.match(toolResult(answered('timeout'), 'claude-code'), /asking in the terminal/);
+  // It names the agent that is actually running. It used to say "Claude Code"
+  // outright, which on a Codex card sent the user to answer an agent that was
+  // not there — the same family of fault as the close code above it.
+  assert.match(toolResult(answered('timeout'), 'claude-code'), /^No answer here in time — Claude/);
+  assert.match(toolResult(answered('timeout'), 'codex'), /^No answer here in time — Codex/);
   assert.equal(toolState(answered('allow')), '…', 'approved, and now simply running');
 
   // And once the real result lands, the card is an ordinary finished one again.
@@ -767,7 +784,7 @@ test('what a card says about a permission it is holding, and about how it ended'
     },
   ]);
   assert.equal(toolState(done.rows[0] as ToolRow), '✓');
-  assert.equal(toolResult(done.rows[0] as ToolRow), 'ok');
+  assert.equal(toolResult(done.rows[0] as ToolRow, 'claude-code'), 'ok');
 });
 
 /* ── lookalike characters ────────────────────────────────────────────────────

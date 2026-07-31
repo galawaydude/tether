@@ -195,8 +195,10 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   tmux on stdin and is never argv. The guard is not relaxed for this and must not
   be. Its other half is blast radius: a frame the guard refuses is an undeliverable
   **frame**, not a dead attach, so `web/term-socket.ts` logs, ACKs and drops it and
-  keeps the socket open — only a genuinely gone attach closes with
-  `CLOSE_ATTACH_FAILED`. That is why a stray Alt+`;` costs one keystroke instead of
+  keeps the socket open — only a genuinely gone attach closes at all, and it
+  closes with **no code**, so the client reconnects: `CLOSE_ATTACH_FAILED` is the
+  one the client now settles on, and settling here would cost a live session a
+  reload where re-attaching would have fixed it. That is why a stray Alt+`;` costs one keystroke instead of
   a reconnect and a full replay, and it is the easiest thing here to undo by
   accident. On the browser side, `xterm.onData` is **not only the keyboard** — it
   also carries xterm's replies to terminal queries (OSC colour reports, DA, cursor
@@ -543,13 +545,11 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   the `.tsx` leaves the test suite. An answerable card is the one card that opens
   itself and wraps rather than scrolls sideways: `rm -rf ./build` and `rm -rf /`
   differ at the right edge, and a clipped command is the "approving blind" the
-  surface exists to prevent. One string there is still not
-  provider-neutral: the expired-hold sentence hard-codes "Claude Code is asking
-  in the terminal instead", so it names the wrong agent on a Codex card, while
-  everything else on that card reads the same either way. The fix is to take the
-  name from `providerLabel` in `web/src/providers.ts` — where the rest of the web
-  app already reads a provider's name from, so it is the existing seam and not a
-  new one — and it belongs to whoever next owns `web/src/conversation.ts`.
+  surface exists to prevent. `toolResult` takes a `provider` for exactly one of
+  its sentences: the expired-hold line hard-coded "Claude Code is asking in the
+  terminal instead" and so named the wrong agent on a Codex card, and it now
+  reads `providerLabel` in `web/src/providers.ts` like the rest of the web app.
+  A second sentence there wanting a name is that same call, not a second seam.
 - **A clipped command is approving blind; a homoglyph is the same failure with no
   visual tell at all**, which is why `scanSuspects` in `web/src/conversation.ts`
   names the characters that make a command read as something it is not, and an
@@ -757,8 +757,8 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   not arrive — `waiting`, because a message pasted at a permission prompt answers
   the dialog; a message over `MAX_TEXT`, which `parseClientFrame` drops and never
   ACKs, so it would be resent on every reconnect under a permanent "Sending…";
-  and a terminal socket closed `ended` or `gone`, which is why those two closes
-  are separate `Status` values — and an echo already outstanding at either close
+  and a terminal socket closed `ended`, `gone` or `failed`, which is why those
+  three closes are separate `Status` values — and an echo outstanding at any of them
   is **marked with that close, never dropped and never retired**
   (`markUndelivered`), since the text is what the user would lose and a record
   that turns up anyway must still retire it exactly once. Its note says only
@@ -992,6 +992,57 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
 - **A `.conv` child needs `flex: none`.** The list is a column flex container,
   which shrinks its items to fit rather than overflowing; a collapsed tool card
   has no text holding it open, so every card renders as a 6px stripe without it.
+- **The server logs at `warn`, and a failure string may only say what its own
+  condition proves.** Two halves of one fault, and the second is the family to
+  watch for. `buildServer` was built with `logger: false`, so every `app.log.warn`
+  in the server — a terminal attach that threw most of all — was written to
+  nothing: the user got a badge and the operator got silence. It is now
+  `{ level: warn, stream: process.stderr }`, which is neither `false` nor `true`:
+  Fastify logs every request and reply at `info` and the browser polls the session
+  list every 5s, so `true` is chatter that gets switched off again, taking the
+  failures with it. `TETHER_LOG_LEVEL` widens it and is validated against a list
+  rather than passed through, since pino throws on a level it does not know — and
+  a value that fails that list says so on stderr, because a knob whose fallback
+  is silent reads as a knob that does nothing, which is the fault this half
+  exists to end. It is documented where an operator will look for it: README's
+  security section and `tether serve --help`.
+  The other half: `term-socket.ts` closed **every** failed attach as
+  `CLOSE_NO_SESSION`, which the browser renders as "Session not found" — so a
+  node-pty that would not spawn told a captain his work was gone, beside an
+  agent badge reading _Idle_. `attachClose` there is now the one place that
+  decides, off the registry row (`getSessionByTmuxName`, after one
+  `reconcileWithTmux` so a session that ended a moment ago is already marked):
+  no row is `CLOSE_NO_SESSION`, `deadAt` is `CLOSE_SESSION_ENDED`, and a live
+  row whose terminal went is `CLOSE_ATTACH_FAILED` — which says a terminal could
+  not be opened and **nothing about why**, because the why is in the log the
+  first half turned on. **Both ways a terminal is lost ask it**: the attach that
+  never opened, and the attach that exits mid-life. The second used to send
+  `CLOSE_SESSION_ENDED` outright, and a PTY exits for things that are not the
+  session ending — `Ctrl-B d` in the web terminal (`tether.conf` unbinds no
+  prefix and `keys.ts` maps `\x02` to `C-b`) and any `tmux detach-client` — so a
+  live session told every viewer it had ended and left the composer refusing to
+  send. A mid-life _frame_ failure is still the one close with no code at all,
+  which is what makes the client reconnect instead of settling.
+  `web/src/status.ts` owns the browser's half: the
+  `Status` union, `STATUS_TEXT` (only `gone` may say "not found") and
+  `agentStateTrusted`. Every surface reporting the agent — the badge, both
+  waiting banners, the `sr-only` live region — is gated on that one predicate,
+  because the fault was never in any one of them: it was two contradicting
+  sources printed side by side with nothing saying which tether believed. **It
+  takes both channels' statuses, never the front pane's**, and the rule is that
+  `ended`, `gone` or `signedOut` on _either_ channel silences the agent's state
+  while `failed` alone leaves it standing: the first three are facts about the
+  session, and `failed` says only that a terminal could not be opened, which is
+  no evidence at all that the agent has stopped. Both halves have been broken
+  once each by a fix meant to protect the other — gating on the front pane
+  silenced a screen reader's announcement on every summon, and gating on the
+  conversation channel alone left a dead pane's last `waiting` on screen for
+  good, since that socket closes only for a session with no row and the poller
+  never announces a state it could not read. Hence one predicate over the pair,
+  and a test over the whole matrix rather than an example. The header's channel
+  chip still prints the front channel's own word, which is the channel's fact
+  and not the agent's. It lives in a `.ts` for the reason every other
+  wording table does: `node --test` cannot compile JSX.
 - **Fastify's schema defaults silently repair a bad body** (`removeAdditional` and
   `coerceTypes` are on): `additionalProperties: false` strips instead of rejecting, and
   `{"password": 123}` arrives as `"123"`. `buildServer` turns both off. Do not remove that

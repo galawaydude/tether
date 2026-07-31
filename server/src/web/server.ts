@@ -67,6 +67,38 @@ const DEFAULTS = {
   loginWindowMs: 15 * 60 * 1000,
 };
 
+const LOG_LEVELS = ['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'];
+
+/**
+ * **`warn`, not `false` and not `true`.** The server used to be built with the
+ * logger off, so every `app.log.warn` in it — a terminal attach that threw, a
+ * frame the argv guard refused — was written to nothing. The user got a badge
+ * and the operator got silence, which cost one debugging session of about three
+ * hours: turning the logger on by hand printed the exception immediately.
+ *
+ * `true` is the other wrong answer. Fastify logs every request and every reply
+ * at `info`, and the browser polls the session list every 5 seconds, so an
+ * operator would be reading two lines a tick for as long as a tab is open —
+ * noise that gets switched off again, taking the failures with it. `warn` is the
+ * level at which nothing routine is said and every failure is.
+ *
+ * `TETHER_LOG_LEVEL` is there for the debugging session that wants the request
+ * log, and is validated rather than passed through: pino throws on a level it
+ * does not know, and a typo in an env var must not be a server that will not
+ * start. A rejected value is *said out loud* for the same reason this logger is
+ * on at all — a fallback nobody is told about reads as the knob doing nothing,
+ * and a change made to end a silence must not ship its own.
+ */
+function logLevel(): string {
+  const wanted = process.env['TETHER_LOG_LEVEL'];
+  if (wanted === undefined || LOG_LEVELS.includes(wanted)) return wanted ?? 'warn';
+  process.stderr.write(
+    `tether: TETHER_LOG_LEVEL=${wanted} is not a level; using warn. ` +
+      `Levels: ${LOG_LEVELS.join(', ')}.\n`,
+  );
+  return 'warn';
+}
+
 const LOGIN_SCHEMA = {
   body: {
     type: 'object',
@@ -104,7 +136,9 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     // `false` means request.protocol is derived from the socket alone, so
     // X-Forwarded-Proto is ignored unless the operator named the proxy.
     trustProxy: trustedProxies.length > 0 ? [...trustedProxies] : false,
-    logger: false,
+    // On stderr, where the rest of tether's diagnostics go: stdout is the
+    // banner. See `logLevel` for why the default is `warn`.
+    logger: { level: logLevel(), stream: process.stderr },
     ajv: {
       customOptions: {
         // Fastify's defaults silently repair a bad body: they strip unknown
@@ -258,7 +292,7 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   // `onRoute` hook it only installs once its own registration has run, and a
   // route added before that silently stays a plain HTTP route.
   app.after(() => {
-    registerTermSocket(app, options.terminals);
+    registerTermSocket(app, options.terminals, options.db, options.socket);
     registerConvSocket(app, options.db, conversations);
   });
   // Closing the server must take the attach PTYs and the transcript tailers with

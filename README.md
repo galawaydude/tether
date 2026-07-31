@@ -461,6 +461,16 @@ lives in `~/.local/state/tether/tether.sqlite` (`$XDG_STATE_HOME`, or
 `$TETHER_STATE_DIR` to override), at mode `0600`. Nothing secret, and no runtime
 state, is ever written inside the repository.
 
+The server logs to **stderr at `warn`**: every failure it hits, and none of the
+request chatter — a browser polls the session list every five seconds, so a log
+that says something about each of those is one that gets turned off again, taking
+the failures with it. `TETHER_LOG_LEVEL` widens it when you are debugging one;
+`info` is the level that adds the request log.
+
+```sh
+TETHER_LOG_LEVEL=info tether serve
+```
+
 ## Reaching it from your phone
 
 tether binds `127.0.0.1:8787` and terminates no TLS. That is the whole of its

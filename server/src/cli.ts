@@ -69,6 +69,9 @@ Options for serve:
   --allowed-host <name>            Extra hostname accepted in the Host header; repeatable.
                                    Needed for a Tailscale name or a reverse proxy.
   --trusted-proxy <ip|cidr>        Believe X-Forwarded-* from this peer; repeatable.
+  TETHER_LOG_LEVEL=<level>         Environment, not a flag: the server's log level, on
+                                   stderr. Default warn — every failure, none of the
+                                   request chatter; info adds the request log.
 
 Options for new:
   --title <title>                  Session title (default: the directory's name)

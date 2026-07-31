@@ -66,6 +66,13 @@ const MESSAGES: Record<string, string> = {
   forbidden_origin: 'The server refused this origin.',
 };
 
+/** For a status code with no wording of its own. See the call site. */
+export function unhandled(status: number): string {
+  return status >= 500
+    ? `The server failed on this (${status}). The reason is in its log.`
+    : `The server refused this (${status}).`;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
@@ -85,7 +92,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       code,
       // The server's own message wins where it has one: `invalid_cwd` carries the
       // allowed roots, and that sentence is the whole answer to the refusal.
-      fields.message ?? MESSAGES[code] ?? `The server refused this (${response.status}).`,
+      //
+      // The fallback says *refused* only where the server really refused. A 5xx
+      // is the server failing at something it agreed to do, and calling that a
+      // refusal points the user at their own request when the fault and its
+      // stack are on the server — which since this PR is a log they can read.
+      fields.message ?? MESSAGES[code] ?? unhandled(response.status),
       header === null ? null : Number(header),
       body,
     );
