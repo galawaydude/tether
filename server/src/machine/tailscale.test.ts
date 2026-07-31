@@ -82,8 +82,33 @@ test('a stopped tailscale is the same answer, naming its own state', async () =>
 test('Funnel not permitted on the tailnet points at the access controls', async () => {
   refuses(
     withoutCap(await status(), 'funnel'),
-    /Funnel is not enabled for this tailnet[\s\S]*admin\/acls\/file/,
+    /Funnel is not enabled for this machine[\s\S]*admin\/acls\/file/,
   );
+  // An empty set is a node the control plane granted nothing, which is that
+  // same refusal — it is a set, and `funnel` is not in it.
+  const empty = await status();
+  empty.Self.CapMap = {};
+  empty.Self.Capabilities = [];
+  refuses(empty, /Funnel is not enabled for this machine/);
+});
+
+test('a signed-in node reporting no capability set at all is not a refusal', async () => {
+  // The case that has no coverage and is not the same as an empty set: a
+  // `Running` node whose status carries neither shape has said nothing about
+  // its tailnet's access controls. Refusing here sends someone to add an
+  // attribute their policy already has, at the one precondition with no command
+  // to run — which is exactly what install.sh's own probe did.
+  const s = await status();
+  delete s.Self.CapMap;
+  delete s.Self.Capabilities;
+  assert.equal(funnelHostname(s), 'my-box.tailnet-1234.ts.net');
+  // And it is still only the capability questions that are waived: everything
+  // knowable from the document is still answered.
+  const nameless = await status();
+  delete nameless.Self.CapMap;
+  delete nameless.Self.Capabilities;
+  delete nameless.Self.DNSName;
+  refuses(nameless, /no MagicDNS name/);
 });
 
 test('HTTPS certificates off is its own answer, not the Funnel one', async () => {

@@ -60,7 +60,7 @@ Usage: install.sh [options]
 
   --dir <path>   Where to clone tether (default $DEFAULT_DIR)
   --yes          Do not prompt; accept the system packages this would install
-  --self-test    Check this script's own version parsing and exit
+  --self-test    Check the version parsing, PATH and Funnel probes, and exit
   --help         This message
 
 Environment:
@@ -78,7 +78,9 @@ latest_version() {
 }
 
 # `tmux -V` prints "tmux 3.7b", "tmux 3.4" or "tmux next-3.8". Succeeds iff that
-# version is at or above the floor.
+# version is at or above the floor. A string it cannot parse — and an empty one —
+# fails, which is the safe direction: the plan then offers to build tmux, and the
+# check after the build is what catches a PATH still running the old one.
 tmux_version_ok() {
 	local v="${1#tmux }" major minor
 	v="${v#next-}"
@@ -89,7 +91,9 @@ tmux_version_ok() {
 	((major > TMUX_MIN_MAJOR || (major == TMUX_MIN_MAJOR && minor >= TMUX_MIN_MINOR)))
 }
 
-# `node -v` prints "v24.18.0"; $2 is the major read out of .nvmrc.
+# `node -v` prints "v24.18.0"; $2 is the major read out of .nvmrc. Unparseable
+# fails, and there is no over-install to pay for it: the caller dies quoting what
+# it found, which is a better message than a build that fails later.
 node_version_ok() {
 	local major="${1#v}" want="$2"
 	major="${major%%.*}"
@@ -127,6 +131,11 @@ serve_log() {
 # the opaque 403 `--funnel` exists to prevent. Probing with the published name
 # is what tells "tether is already serving" from "already serving, but not for
 # this address".
+#
+# A failure means only "not answering for this Host" — nothing there, a 403, or
+# a timeout alike. That is ambiguous on its own, so the caller never acts on it
+# alone: it asks the bare loopback probe next, and the two answers together are
+# what separate "nothing is running" from "something is, without --funnel".
 serving_as() {
 	curl -fsS -o /dev/null --max-time 5 -H "Host: $1" "http://127.0.0.1:$PORT/" 2>/dev/null
 }
@@ -140,23 +149,67 @@ serving_as() {
 # Self. With the flag exactly one of each is in the payload and the matches
 # cannot be ambiguous; it is also the difference between ~3 KB and megabytes.
 # A fourth reader added here inherits the flag by using this.
+#
+# Spawned **once** per run, and the readers below are handed the document rather
+# than each asking for their own. Three spawns were three independent chances of
+# getting nothing back, and two of them turned that silence into a confident
+# instruction to go and change a tailnet policy. Taking it as an argument is
+# also what lets --self-test drive them.
 ts_status() {
 	tailscale status --json --peers=false 2>/dev/null
 }
 
-# Tailscale's backend state: `Running`, `NeedsLogin`, `Stopped`, `NoState`.
-# Empty when tailscaled is not answering at all.
-ts_state() {
-	ts_status | sed -n 's/.*"BackendState"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
+# Whether that document is a status reply at all. Empty is the ordinary shape of
+# "tailscaled did not answer" — `tailscale status` exits non-zero and prints
+# nothing to stdout — and the `2>/dev/null` above is what would otherwise let it
+# be read as one of the answers below rather than as no answer.
+ts_readable() {
+	case "$1" in *'"BackendState"'*) return 0 ;; *) return 1 ;; esac
 }
 
-# Whether this tailnet permits Funnel — the `funnel` node attribute, which
-# appears as its own key in `Self.CapMap` and in the deprecated `Capabilities`
-# list beside it. Advisory: this is the installer spending a sentence instead of
-# a sudo. The enforcing check is tether's own, in
+# Tailscale's backend state: `Running`, `NeedsLogin`, `Stopped`, `NoState`.
+# Empty only for a document ts_readable has already rejected.
+ts_state() {
+	printf '%s' "$1" |
+		sed -n 's/.*"BackendState"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
+}
+
+# `yes`, `no` or `unknown` — and **`unknown` is not `no`**, which is the whole of
+# this function. What says a tailnet permits Funnel is the `funnel` node
+# attribute, which a node it applies to carries as its own key in `Self.CapMap`
+# and in the deprecated `Capabilities` list beside it. Matched as a substring,
+# which is exact enough *because* of `--peers=false`: Self's is then the only
+# capability set in the document.
+#
+# The absent case is what this is for. A capability set without `funnel` in it
+# is a real `no`. **No capability set at all** is not: it is a node that did not
+# report one, and it says nothing whatever about the tailnet's access controls —
+# so answering `no` there sends someone to add an attribute their policy already
+# has, which is a dead end at the one step of this script that has no command to
+# offer. Advisory either way: the enforcing check is tether's own, in
 # server/src/machine/tailscale.ts, and it is the one with the tests.
-ts_funnel_allowed() {
-	ts_status | grep -q '"funnel"'
+#
+# A field that is present but `null` is an absence, and is dropped below so it
+# answers `unknown` like a missing one — which is what tailscale.ts's `record()`
+# and `Array.isArray` already do with it. tailscale has not been observed
+# emitting null for either field; the parity is kept because the direction this
+# fails in matters, not because the shape was seen.
+ts_funnel_permission() {
+	local json
+	json=$(printf '%s' "$1" | tr -d '[:space:]')
+	json=${json//\"CapMap\":null/}
+	json=${json//\"Capabilities\":null/}
+	case "$json" in
+	*'"CapMap"'* | *'"Capabilities"'*) ;;
+	*)
+		printf 'unknown\n'
+		return
+		;;
+	esac
+	case "$json" in
+	*'"funnel"'*) printf 'yes\n' ;;
+	*) printf 'no\n' ;;
+	esac
 }
 
 # This machine's MagicDNS name — the public address Funnel serves it under, and
@@ -164,34 +217,50 @@ ts_funnel_allowed() {
 # trailing dot, which is the field and the treatment
 # server/src/machine/tailscale.ts uses. Deliberately not scraped out of
 # `tailscale funnel status`, whose `https://<name> (Funnel on)` line is prose
-# another tool owns and is free to reword.
+# another tool owns and is free to reword. Empty means this tailnet gave the
+# machine no name, which is MagicDNS being off — and it can only mean that,
+# because ts_readable has already separated out the document that says nothing.
 ts_dns_name() {
-	ts_status | sed -n 's/.*"DNSName"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
+	printf '%s' "$1" |
+		sed -n 's/.*"DNSName"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
 		head -n 1 | sed 's/\.$//'
 }
 
-# Whether Funnel is already published at tether's port, which is what makes a
-# re-run skip the sudo rather than repeat it. Structured for the same reason as
-# everything above, and here the reason is sharper than tidiness: `tailscale
-# funnel status` *is* `tailscale serve status`, so a tailnet-only
-# `tailscale serve --bg 8787` prints the identical `proxy http://127.0.0.1:8787`
-# line under a `(tailnet only)` heading. Reading that line would call Funnel
-# armed when it is not, skip the arm, and end the run telling someone to open a
-# link that answers nothing — and the Host probe cannot catch it, since it only
-# proves tether accepts the name, never that Funnel is in front of it.
+# Whether Funnel is already published at tether's port — `$1` is
+# `tailscale serve status --json`, `$2` the host. A different question from
+# ts_funnel_permission above, and the two must not be run together: a tailnet
+# may permit Funnel with nothing armed, which is the state **every** fresh
+# machine is in and the one that has to go on and arm it. This one is what makes
+# a re-run skip the sudo rather than repeat it.
+#
+# Structured for the same reason as everything above, and here the reason is
+# sharper than tidiness: `tailscale funnel status` *is* `tailscale serve status`,
+# so a tailnet-only `tailscale serve --bg 8787` prints the identical
+# `proxy http://127.0.0.1:8787` line under a `(tailnet only)` heading. Reading
+# that line would call Funnel armed when it is not, skip the arm, and end the run
+# telling someone to open a link that answers nothing — and the Host probe cannot
+# catch it, since it only proves tether accepts the name, never that Funnel is in
+# front of it.
 #
 # So both halves are asked, because they are different questions:
 # `AllowFunnel["<name>:443"]` is `true` when Funnel is on for this host, and
 # `Web["<name>:443"].Handlers["/"].Proxy` is what it points at. Note the two
 # ports: the key carries Funnel's own 443, the proxy value carries tether's.
 # Shape read off tailscale 1.98.10. Whitespace is stripped so the match does not
-# depend on how the JSON is laid out; anything unreadable answers "not armed",
-# which costs a re-run of a command the user has already consented to.
+# depend on how the JSON is laid out.
+#
+# **Absent means "not armed", and that is the one direction this may fail in.**
+# A machine with nothing served prints `{}`, and so does one whose serve
+# configuration this cannot read; both cost a re-run of a command the user has
+# already seen and agreed to, whereas guessing "armed" ends the run handing over
+# a link to nothing. `AllowFunnel` may therefore never be read as an answer to
+# whether the *tailnet* permits Funnel: it is absent on every machine that has
+# not armed it yet, which is not a policy at all.
 funnel_armed() {
 	local json
-	json=$(tailscale serve status --json 2>/dev/null | tr -d '[:space:]')
+	json=$(printf '%s' "$1" | tr -d '[:space:]')
 	case "$json" in
-	*"\"AllowFunnel\":{"*"\"$1:443\":true"*) ;;
+	*"\"AllowFunnel\":{"*"\"$2:443\":true"*) ;;
 	*) return 1 ;;
 	esac
 	case "$json" in
@@ -279,6 +348,57 @@ self_test() {
 	check_out absent path_message_state "$bin" /usr/bin/tether /home/u/.local/binx:/usr/bin
 	check_out later path_message_state "$bin" /usr/bin/tether "/usr/bin:$bin"
 	check_out later path_message_state "$bin" /usr/bin/tether "$bin"
+
+	# The two Funnel questions, and the fresh machine is the case that gets both
+	# wrong when they are conflated: it is `yes` to permitted and `no` to armed,
+	# and neither answer may be inferred from the other's field. Documents are
+	# the shapes tailscale 1.98.10 really prints,
+	# trimmed to the tokens these read — the full capture of the first is
+	# server/src/machine/fixtures/tailscale-status.json, which tailscale.test.ts
+	# drives; the negative and capability-less ones cannot be captured without an
+	# account-level change and are built here instead, exactly as that fixture's
+	# README does for the same reason.
+	local permitted unpermitted no_caps
+	permitted='{"BackendState":"Running","Self":{"DNSName":"my-box.tailnet-1234.ts.net.","CapMap":{"funnel":null,"https":null}}}'
+	unpermitted='{"BackendState":"Running","Self":{"DNSName":"my-box.tailnet-1234.ts.net.","CapMap":{"https":null}}}'
+	no_caps='{"BackendState":"Running","Self":{"DNSName":"my-box.tailnet-1234.ts.net."}}'
+	check_out yes ts_funnel_permission "$permitted"
+	check_out yes ts_funnel_permission '{"BackendState":"Running","Self":{"Capabilities":["funnel","https"]}}'
+	check_out no ts_funnel_permission "$unpermitted"
+	# The regression this file exists for: a Running node reporting no capability
+	# set is "tether cannot tell", never "your tailnet forbids it".
+	check_out unknown ts_funnel_permission "$no_caps"
+	check_out unknown ts_funnel_permission ''
+	# A present-but-null capability field is an absence too, and answers the same
+	# as a missing one — parity with tailscale.ts, which reads null as no set.
+	check_out unknown ts_funnel_permission '{"BackendState":"Running","Self":{"CapMap":null}}'
+	check_out unknown ts_funnel_permission '{"BackendState":"Running","Self":{"CapMap": null, "Capabilities": null}}'
+	# Null beside a real set is not an absence: the set still answers.
+	check_out yes ts_funnel_permission '{"BackendState":"Running","Self":{"CapMap":null,"Capabilities":["funnel"]}}'
+	check 0 ts_readable "$permitted"
+	check 1 ts_readable ''
+	check 1 ts_readable '{}'
+	check_out Running ts_state "$permitted"
+	check_out my-box.tailnet-1234.ts.net ts_dns_name "$permitted"
+	# MagicDNS off. Distinguishable from an unreadable document only because
+	# ts_readable answers that one first.
+	check_out '' ts_dns_name '{"BackendState":"Running","Self":{"CapMap":{"funnel":null}}}'
+
+	# Armed is a different question, and `{}` — a machine with nothing served,
+	# which is every fresh one — is a "no" that must go on and arm rather than
+	# being read as a tailnet that forbids Funnel.
+	local armed
+	armed='{"TCP":{"443":{"HTTPS":true}},"Web":{"my-box.tailnet-1234.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8787"}}}},"AllowFunnel":{"my-box.tailnet-1234.ts.net:443":true}}'
+	check 0 funnel_armed "$armed" my-box.tailnet-1234.ts.net
+	check 1 funnel_armed '{}' my-box.tailnet-1234.ts.net
+	check 1 funnel_armed '' my-box.tailnet-1234.ts.net
+	# Served on the tailnet only: the same proxy line, no AllowFunnel.
+	check 1 funnel_armed \
+		'{"Web":{"my-box.tailnet-1234.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8787"}}}}}' \
+		my-box.tailnet-1234.ts.net
+	# Funnel on for a different host on this tailnet.
+	check 1 funnel_armed "$armed" other-box.tailnet-1234.ts.net
+
 	if ((fails)); then die 'self-test failed'; fi
 	printf 'self-test ok\n'
 }
@@ -298,7 +418,7 @@ self_test() {
 # here exactly as it does above: the exact commands on screen, a yes, and
 # declining prints them and stops. Re-running skips whatever is already true.
 reachability() {
-	local state url host log ts_installer
+	local status state url host log ts_installer
 
 	step "Reaching tether from your phone"
 	note "This sets up Tailscale Funnel: a public HTTPS address for this machine,"
@@ -363,8 +483,13 @@ reachability() {
 
 	# 2 ── logged in? Nothing below can be known until it is: a logged-out node
 	# reports no capabilities at all, so asking about Funnel first would tell
-	# someone to edit their access controls when they need to sign in.
-	state=$(ts_state)
+	# someone to edit their access controls when they need to sign in. The same
+	# goes for a tailscaled that answers nothing at all, which is what an
+	# unreadable document is and why it shares this branch rather than falling
+	# through it as an empty string.
+	status=$(ts_status || true)
+	state=""
+	if ts_readable "$status"; then state=$(ts_state "$status"); fi
 	if [ "$state" != Running ]; then
 		step "Tailscale is installed but not signed in (state: ${state:-no answer from tailscaled})"
 		note "This is a step that cannot be automated and must not be faked: signing"
@@ -383,33 +508,57 @@ reachability() {
 			note "\`tailscale up\` did not finish. Run it yourself and re-run this script."
 			return 1
 		}
-		state=$(ts_state)
+		# Re-read: signing in is what fills in everything below, so the document
+		# from before it is stale for every question after this one.
+		status=$(ts_status || true)
+		state=""
+		if ts_readable "$status"; then state=$(ts_state "$status"); fi
 		[ "$state" = Running ] || {
-			note "Tailscale reports state \"$state\". Re-run this script once it is Running."
+			note "Tailscale reports state \"${state:-no answer from tailscaled}\". Re-run this script once it is Running."
 			return 1
 		}
 	fi
 
 	# 3 ── permitted on the tailnet? A policy change rather than a command, so
-	# there is nothing to offer to run — only the place to make it.
-	if ! ts_funnel_allowed; then
-		step "Funnel is not enabled for this tailnet"
+	# there is nothing to offer to run — only the place to make it. Which is
+	# exactly why "cannot tell" may not be reported as "no": this is the one step
+	# with no way forward, and being sent to it wrongly ends the install.
+	case "$(ts_funnel_permission "$status")" in
+	no)
+		step "Funnel is not enabled for this machine"
 		note "The last one-time human step, and this one is a policy change rather"
-		note "than a command: the \"funnel\" node attribute has to be in your tailnet's"
-		note "access controls, which is a thing only an admin of it can add."
+		note "than a command: the \"funnel\" node attribute has to apply to this machine"
+		note "in your tailnet's access controls, which is a thing only an admin can do."
 		note ""
 		note "  https://login.tailscale.com/admin/acls/file"
 		note ""
+		note "Note that having the attribute is not the same as it reaching here — the"
+		note "default policy grants it to \"autogroup:member\", and a machine joined with"
+		note "an auth key that tagged it is not a member. Tailscale reports the"
+		note "attributes this machine did get under \`Self.CapMap\` in:"
+		note ""
+		note "  tailscale status --json --peers=false"
+		note ""
 		note "What to add is written up at https://tailscale.com/s/no-funnel"
 		note ""
-		note "Add it, then re-run this script."
+		note "Fix it, then re-run this script."
 		return 1
-	fi
+		;;
+	unknown)
+		# Not a stop. This probe is advisory — it spends a sentence to save a
+		# sudo — and a document with no capability set in it is not evidence
+		# that anything is wrong. `tailscale funnel` below says so itself, with
+		# its own message, if the tailnet really does refuse.
+		note "Tailscale reports no capability set for this machine, so whether your"
+		note "tailnet permits Funnel cannot be read here. Carrying on: the command"
+		note "below is the one that would refuse, and it says so itself."
+		;;
+	esac
 
 	# 4 ── does this machine have a name to be published under? Tailscale's own
 	# answer, asked before anything is armed, because it is what the address is
 	# and there is nothing to publish without it.
-	host=$(ts_dns_name)
+	host=$(ts_dns_name "$status")
 	[ -n "$host" ] || {
 		step "Tailscale reports no name for this machine"
 		note "A public address is a MagicDNS name, and this tailnet is not giving"
@@ -424,7 +573,7 @@ reachability() {
 
 	# The sudo all of that was leading to — skipped whole when Funnel already
 	# points at the port, which is what makes a second run cheap and quiet.
-	if funnel_armed "$host"; then
+	if funnel_armed "$(tailscale serve status --json 2>/dev/null || true)" "$host"; then
 		note "Funnel already points at 127.0.0.1:$PORT."
 	else
 		step "This publishes this machine on the internet"

@@ -518,8 +518,11 @@ separate: it is a machine-wide Tailscale setting that outlives tether and needs
 root, so tether never turns it on itself. `tailscale funnel status` says what is
 published right now, and `sudo tailscale funnel --bg off` takes it down.
 
-If any of Tailscale, a login, or Funnel-on-your-tailnet is missing, `--funnel`
-says which one and what to do about it, and starts nothing.
+If any of Tailscale, a login, or Funnel-on-this-machine is missing, `--funnel`
+says which one and what to do about it, and starts nothing. The one exception is
+a machine Tailscale reports no capabilities for at all: that says nothing about
+your access controls, so `--funnel` starts and lets `tailscale funnel` refuse in
+its own words if the tailnet really does forbid it.
 
 The first request after an idle spell is slow, sometimes several seconds, while
 Funnel wakes up. That is Funnel, not tether.
@@ -676,6 +679,9 @@ Other checks, all of which CI runs on every pull request:
 npm run typecheck    # tsc --noEmit, per package
 npm run lint         # eslint
 npm run format:check # prettier --check   (npm run format to fix)
+
+shellcheck install.sh        # the installer is the only shell in the repo
+bash install.sh --self-test  # its own checks: version parsing, PATH, the Funnel probes
 
 npx playwright install chromium   # once; npm 12 blocks playwright's own postinstall
 npm run test:e2e                  # the end-to-end specs

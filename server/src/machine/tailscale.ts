@@ -51,7 +51,9 @@ function record(value: unknown): Record<string, unknown> | undefined {
  *
  * The order of the checks is the order the answers become knowable: `CapMap` is
  * empty on a logged-out node, so asking about Funnel first would report a
- * missing capability to someone who has simply not signed in.
+ * missing capability to someone who has simply not signed in. The same
+ * distinction runs one level deeper inside the capability check itself — see
+ * there.
  */
 export function funnelHostname(status: unknown): string {
   const root = record(status);
@@ -68,22 +70,37 @@ export function funnelHostname(status: unknown): string {
   // `CapMap` is the current shape and `Capabilities` the deprecated list beside
   // it; both were populated on the node this was read from, so either answering
   // is enough and neither is required to exist.
-  const caps = new Set<string>([
-    ...Object.keys(record(self?.['CapMap']) ?? {}),
-    ...(Array.isArray(self?.['Capabilities']) ? (self['Capabilities'] as unknown[]) : []).filter(
-      (c): c is string => typeof c === 'string',
-    ),
-  ]);
+  //
+  // **Neither existing is a third answer, and it is not "no".** An empty
+  // capability set is a node the control plane granted nothing, which is a real
+  // refusal worth naming; a node that reported no set at all has said nothing
+  // about its tailnet's access controls, and turning that silence into the two
+  // refusals below tells someone to add an attribute their policy may already
+  // have — with no way forward, since neither is a command anyone can run.
+  // So this carries on instead: `serve --funnel` binds loopback either way, and
+  // Funnel itself refuses in its own words if the tailnet really does forbid it.
+  // Nothing is being gated here — the password rule and the loopback bind are
+  // what make `--funnel` safe, and both are elsewhere.
+  const capMap = record(self?.['CapMap']);
+  const capList = Array.isArray(self?.['Capabilities'])
+    ? (self['Capabilities'] as unknown[]).filter((c): c is string => typeof c === 'string')
+    : undefined;
+  const caps =
+    capMap || capList
+      ? new Set<string>([...Object.keys(capMap ?? {}), ...(capList ?? [])])
+      : undefined;
 
-  if (!caps.has(FUNNEL_ATTR)) {
+  if (caps && !caps.has(FUNNEL_ATTR)) {
     throw new TailscaleError(
-      'Funnel is not enabled for this tailnet, so this machine cannot have a public address.\n' +
-        'It is a one-time change: add the "funnel" node attribute to your access\n' +
-        'controls at https://login.tailscale.com/admin/acls/file\n' +
+      'Funnel is not enabled for this machine, so it cannot have a public address.\n' +
+        'It is a one-time change: the "funnel" node attribute has to apply to this\n' +
+        'machine in your access controls at https://login.tailscale.com/admin/acls/file\n' +
+        'Having it is not the same as it reaching here — the default policy grants it\n' +
+        'to "autogroup:member", and a machine joined with a tagged auth key is not one.\n' +
         'What to add: https://tailscale.com/s/no-funnel',
     );
   }
-  if (!caps.has(HTTPS_ATTR)) {
+  if (caps && !caps.has(HTTPS_ATTR)) {
     throw new TailscaleError(
       'Funnel needs HTTPS certificates, and they are off for this tailnet.\n' +
         'Turn them on once at https://login.tailscale.com/admin/dns\n' +
