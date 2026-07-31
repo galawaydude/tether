@@ -191,13 +191,20 @@ main() {
 	# sentence rather than a clone, a sudo, an apt install, a tmux build and an
 	# `npm ci` first. Tested by writing: permission bits do not settle it on every
 	# filesystem, and a read-only mount reports the same bits as a writable one.
-	mkdir -p "$BIN_DIR" 2>/dev/null ||
-		die "could not create $BIN_DIR, which is where the tether command goes."
-	probe="$BIN_DIR/.tether-write-test.$$"
+	# The directory itself is not created here — it is outside tether's own
+	# directory, and a run declined at the prompt below must leave nothing behind —
+	# so what is probed is the deepest part of the path that already exists.
+	BIN_DIR_EXISTED=1
+	bin_probe_dir="$BIN_DIR"
+	while [ ! -d "$bin_probe_dir" ]; do
+		BIN_DIR_EXISTED=0
+		bin_probe_dir=$(dirname "$bin_probe_dir")
+	done
+	probe="$bin_probe_dir/.tether-write-test.$$"
 	if touch "$probe" 2>/dev/null; then
 		rm -f "$probe"
 	else
-		die "$BIN_DIR is not writable, and that is where the tether command goes. Fix its permissions and re-run."
+		die "$bin_probe_dir is not writable, and $BIN_DIR is where the tether command goes. Fix its permissions and re-run."
 	fi
 
 	# Running ./install.sh from inside a checkout installs *that* checkout, rather
@@ -219,7 +226,10 @@ main() {
 	# A checkout being worked on is at whatever ref its owner put it at; asking the
 	# network which release is current is neither wanted nor used there.
 	if ((FROM_CHECKOUT == 0)); then
-		VERSION="${TETHER_VERSION:-$(latest_version)}"
+		# `|| true` because under `set -e` a failing substitution in a plain
+		# assignment exits the script there and then — offline, or on a repo with no
+		# release tag, that is a silent exit 1 with the message below never printed.
+		VERSION="${TETHER_VERSION:-$(latest_version || true)}"
 		[ -n "$VERSION" ] ||
 			die "could not work out the latest tether release from $REPO_URL. Set TETHER_VERSION=vX.Y.Z and re-run."
 	fi
@@ -295,6 +305,11 @@ main() {
 			apt_packages+=(bison libevent-dev libncurses-dev pkg-config)
 		fi
 		if ((${#apt_packages[@]})); then
+			# Before the plan rather than before the install: a plan quoting apt-get
+			# to a machine that has no apt-get asks for consent to something that
+			# cannot happen, and tells the user so only once they have said yes.
+			command -v apt-get >/dev/null 2>&1 ||
+				die "no apt-get on this system. Install the equivalents of ${apt_packages[*]} with your package manager and re-run."
 			plan+=("install these packages: ${apt_packages[*]}")
 		fi
 		if [ "$tmux_state" != ok ]; then
@@ -330,7 +345,8 @@ main() {
 				;;
 			*)
 				note "Your existing tmux at $(command -v tmux) is left exactly where it is."
-				note "/usr/local/bin comes before it on PATH, so tmux $TMUX_VERSION is what runs."
+				note "tmux $TMUX_VERSION goes to /usr/local/bin. Which of the two your PATH"
+				note "then runs is checked after the build, and named here if it is the old one."
 				;;
 			esac
 		fi
@@ -353,8 +369,6 @@ main() {
 	fi
 
 	if ((${#apt_packages[@]})); then
-		command -v apt-get >/dev/null 2>&1 ||
-			die "no apt-get on this system. Install the equivalents of ${apt_packages[*]} with your package manager and re-run."
 		step "Installing system packages"
 		as_root apt-get update </dev/null
 		as_root apt-get install -y "${apt_packages[@]}" </dev/null
@@ -397,6 +411,8 @@ main() {
 	# carries its own shebang and exec bit (server's `build` ends in `chmod +x`),
 	# and Node resolves a symlink to its real path, so the checkout's own
 	# node_modules is found exactly as it was under `npm link`.
+	mkdir -p "$BIN_DIR" ||
+		die "could not create $BIN_DIR, which is where the tether command goes."
 	ln -sf "$TARGET_DIR/server/dist/cli.js" "$BIN_DIR/tether"
 
 	hash -r
@@ -406,15 +422,34 @@ main() {
 		note ""
 		note "  export PATH=\"$BIN_DIR:\$PATH\""
 		note ""
-		note "On Debian and Ubuntu ~/.profile already adds that directory when it"
-		note "exists — it did not exist when you logged in, so logging out and back"
-		note "in is enough on its own."
-		note ""
+		if ((BIN_DIR_EXISTED == 0)); then
+			note "On Debian and Ubuntu ~/.profile adds that directory when it exists, and"
+			note "this run created it — so if your login shell reads ~/.profile (bash does,"
+			note "zsh does not), logging out and back in does the same thing."
+			note ""
+		fi
 		note "This script does not edit shell startup files."
 		exit 1
 	fi
 
-	step "Done — tether is at $(command -v tether)"
+	# What `tether` resolves to need not be the symlink just written: an install
+	# from before this script used ~/.local/bin left one in npm's global prefix,
+	# which nvm, fnm, volta and asdf all put ahead of it on PATH. `-ef` rather than
+	# a string compare, so a leftover pointing at *this* checkout is not reported.
+	resolved=$(command -v tether)
+	if ! [ "$resolved" -ef "$BIN_DIR/tether" ]; then
+		step "tether is installed, but a different one is what runs"
+		note "This script wrote $BIN_DIR/tether."
+		note "Your PATH finds $resolved first, and that is another file."
+		note "A previous install of tether used npm link, which is the likely source."
+		note "Remove it (npm unlink -g @tether/server, or delete that file), or put"
+		note "$BIN_DIR earlier on PATH."
+		note ""
+		note "This script does not remove a command it did not create."
+		exit 1
+	fi
+
+	step "Done — tether is at $resolved"
 	cat <<-'EOF'
 
 		Next, in a terminal on this machine:

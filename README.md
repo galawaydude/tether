@@ -62,7 +62,8 @@ yourself and stops. `--yes` accepts them up front for an unattended run. It
 never edits a shell startup file — if `~/.local/bin` is not on your PATH, it
 shows you the line to add and leaves the file alone. (On Debian and Ubuntu
 `~/.profile` already adds that directory when it exists, so if the installer
-had to create it, logging out and back in is enough.)
+had to create it, logging out and back in does the same thing — for a login
+shell that reads `~/.profile`, which bash does and zsh does not.)
 
 ### What it needs, and the one that surprises people
 
@@ -90,7 +91,7 @@ separate upgrade command to remember or to keep working.
 
 ```sh
 rm -f  ~/.local/bin/tether          # the command
-rm -rf ~/.local/share/tether        # the checkout
+rm -rf ~/.local/share/tether        # the checkout ($XDG_DATA_HOME, or --dir, move it)
 rm -rf ~/.local/state/tether        # the password hash, the session registry, hook shims and logs
 ```
 
