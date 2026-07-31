@@ -734,6 +734,7 @@ label {
 
 .chip-ended,
 .chip-gone,
+.chip-failed,
 .chip-signedOut {
   --tone: var(--danger);
 }

@@ -14,10 +14,12 @@
  */
 
 import type { FastifyInstance } from 'fastify';
-import type { ClientFrame, ServerFrame } from '@tether/shared';
+import type { DatabaseSync } from 'node:sqlite';
+import type { ClientFrame, ServerFrame, Session } from '@tether/shared';
 
+import { getSessionByTmuxName, reconcileWithTmux } from '../machine/registry.ts';
 import type { Terminals } from '../machine/terminal.ts';
-import { UnsafeArgumentError } from '../machine/tmux.ts';
+import { DEFAULT_SOCKET, UnsafeArgumentError } from '../machine/tmux.ts';
 
 /** Enough for a pasted prompt; short enough that a socket cannot be a memory hog. */
 const MAX_TEXT = 64 * 1024;
@@ -99,9 +101,44 @@ export function parseClientFrame(raw: string): ClientFrame | null {
 export const CLOSE_NO_SESSION = 4404;
 /** The attach died under us — the tmux session was killed, or its server went. */
 export const CLOSE_SESSION_ENDED = 4410;
+/**
+ * The attach threw for some other reason. The client settles on this rather
+ * than reconnecting — which is why the mid-life frame failure below closes
+ * without a code instead of borrowing it. The exception is in the server log
+ * and never in the reason string, because this side cannot name the cause.
+ */
 export const CLOSE_ATTACH_FAILED = 4500;
 
-export function registerTermSocket(app: FastifyInstance, terminals: Terminals): void {
+/**
+ * Which of the three an attach failure actually was, from the registry row for
+ * the session that was asked for.
+ *
+ * All three used to be `CLOSE_NO_SESSION`, and the client renders that as
+ * "Session not found" — so a native module that could not spawn, and a session
+ * that had ended perfectly normally, both told the user their work was gone. The
+ * screenshot that produced this fix showed the agent's own badge reading *Idle*
+ * beside it.
+ *
+ * The registry is the thing that knows, and it knows all three apart: no row at
+ * all is the only case where the server really has lost the session, `deadAt` is
+ * a session that ended — which has its own close code and its own correct
+ * wording already — and a live row whose attach threw is a fault, whose *cause*
+ * this side cannot name and does not try to. That last one is the whole point:
+ * the close code says a terminal could not be opened, and nothing more, because
+ * anything more would be the guess this bug was made of.
+ */
+export function attachClose(row: Session | undefined): { code: number; reason: string } {
+  if (row === undefined) return { code: CLOSE_NO_SESSION, reason: 'no such session' };
+  if (row.deadAt !== null) return { code: CLOSE_SESSION_ENDED, reason: 'the session ended' };
+  return { code: CLOSE_ATTACH_FAILED, reason: 'could not open a terminal' };
+}
+
+export function registerTermSocket(
+  app: FastifyInstance,
+  terminals: Terminals,
+  db: DatabaseSync,
+  tmuxSocket: string = DEFAULT_SOCKET,
+): void {
   app.get<{ Params: { name: string }; Querystring: { client: string } }>(
     '/api/sessions/:name/term',
     { websocket: true, schema: TERM_SCHEMA },
@@ -157,9 +194,17 @@ export function registerTermSocket(app: FastifyInstance, terminals: Terminals): 
           },
           () => socket.close(CLOSE_SESSION_ENDED, 'the session ended'),
         )
-        .catch((error: unknown) => {
+        .catch(async (error: unknown) => {
           app.log.warn({ err: error, session }, 'terminal attach failed');
-          socket.close(CLOSE_NO_SESSION, 'cannot attach to this session');
+          // Asked of tmux first: the commonest attach failure *is* a tmux
+          // session that has gone, and a row is only marked dead when something
+          // reconciles. The session list does that every 5s, so the row is
+          // usually already right — but "usually" is what would put the wrong
+          // sentence on screen for a session that ended a moment ago, and this
+          // is a failure path with nothing else to spend.
+          await reconcileWithTmux(db, tmuxSocket).catch(() => 0);
+          const { code, reason } = attachClose(getSessionByTmuxName(db, session));
+          socket.close(code, reason);
           return null;
         });
       if (detach === null) return;
@@ -199,7 +244,15 @@ export function registerTermSocket(app: FastifyInstance, terminals: Terminals): 
             return;
           }
           app.log.warn({ err: error, session }, 'terminal frame failed');
-          socket.close(CLOSE_ATTACH_FAILED, 'terminal command failed');
+          // No application close code, which is what makes the client reconnect
+          // rather than settle — and that is the right answer here, unlike at
+          // the attach above. This attach is gone, but the *session* may be
+          // perfectly fine, and re-attaching is exactly how the terminal
+          // recovers; if it is not fine, the reconnect's own attach failure is
+          // what says so, in the right words, having asked the registry. That
+          // is why this is not `CLOSE_ATTACH_FAILED`: the client now settles on
+          // that one, and settling here would cost a working session a reload.
+          socket.close();
         });
       // In order, and before anything that arrives from here on: `Terminals`
       // applies sequences in the order it is called and drops the rest.
