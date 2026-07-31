@@ -70,9 +70,12 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   means the tmux on `PATH` is too old, not that the argv was wrong. `install.sh` builds
   the **same pinned release and checksum** for a user's machine, so those two constants
   now live in two files and must be bumped together. It is the repo's only shell script
-  and is held to `shellcheck` (CI does not run it; `bash install.sh --self-test` covers
-  its version parsing, which is the only branch in it that can be silently wrong — a
-  `tmux 3.4` read as new enough is a session that dies at birth). Its consent rule is
+  and is held to `shellcheck` and to its own `bash install.sh --self-test`, both of
+  which CI runs in one step before anything expensive, because nothing else in the
+  repo's checks looks at shell at all. What that self-test covers is every branch in
+  the file that can be silently wrong: the version parsing (a `tmux 3.4` read as new
+  enough is a session that dies at birth), the PATH message, and the two Funnel
+  questions below. Its consent rule is
   the Codex hook's, generalised: nothing outside tether's own directory changes without
   the exact commands on screen and a yes, declining prints them and stops, and no shell
   startup file is ever edited. A sentence it cannot back with something it actually
@@ -115,7 +118,24 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   a match found anywhere in it is not an answer. It derives the published
   address from `Self.DNSName` there, and asks `tailscale serve status --json`
   (`AllowFunnel["<name>:443"]` **and** the `/` handler's `Proxy`, two questions
-  and two different ports) whether Funnel is already armed. Neither is scraped
+  and two different ports) whether Funnel is already armed. **Permitted and
+  armed are different questions and each has exactly one source.** `AllowFunnel`
+  is absent on every machine that has not armed Funnel yet, so it can never
+  answer the first; permitted-but-unarmed is what a fresh machine _is_, and it
+  has to go on and arm. And the permitted answer is **tri-state**: a capability
+  set without `funnel` in it is a real no, but a status carrying no capability
+  set at all is `unknown`, which is not a no — reporting it as one sends someone
+  to add an attribute their policy already has, at the one step of the script
+  with no command to offer. `unknown` therefore carries on and lets
+  `tailscale funnel` refuse in its own words. Both are pure string functions
+  taking the document as an argument, which is what lets `--self-test` drive
+  them; the fresh-machine pair (`{}` serve status, a status with no `CapMap`) is
+  the case that had no coverage and is now the point of that block. **The same
+  tri-state is in `machine/tailscale.ts` and had to be**, since the installer
+  ends by running `tether serve --funnel`: an `unknown` the script carried on
+  past would otherwise die there under the very sentence it declined to print.
+  An **empty** capability set is not the unknown case in either — it is a node
+  granted nothing, which is a real refusal. Neither is scraped
   out of `tailscale funnel status` — human-readable output another tool owns
   must never be what a flow is gated on, and here that is not tidiness:
   `funnel status` _is_ `serve status`, so a tailnet-only `tailscale serve`
