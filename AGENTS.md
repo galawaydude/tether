@@ -15,9 +15,9 @@ The Codex provider has its own empirical study next to it at
 ## Commands and layout
 
 See the Development section of `README.md`. Every check is in root `package.json` scripts and
-CI runs exactly those (`.github/workflows/ci.yml`), with one exception: the Installer step
-runs `shellcheck install.sh` and `bash install.sh --self-test`, neither of which is an npm
-script. Both are in README's list too, so a red CI is reproducible locally.
+CI runs those, plus a few steps that are not npm scripts; `.github/workflows/ci.yml` is the
+authoritative list. Everything README lists is runnable as-is, so a red CI is reproducible
+locally.
 
 ## Sharp edges
 
