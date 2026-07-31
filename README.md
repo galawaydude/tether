@@ -50,13 +50,19 @@ bash install.sh
 ```
 
 It clones tether to `~/.local/share/tether` (`--dir` moves that), builds it, and
-puts `tether` on your PATH. Running it again updates that checkout in place.
+links `tether` into `~/.local/bin`.
+
+**It installs the latest release, not the tip of `main`**, so the one-liner
+cannot hand you a change that landed half an hour ago and half-landed.
+`TETHER_VERSION=v0.1.0` installs a particular one instead.
 
 **It asks before it installs a system package or runs `sudo`.** It prints the
 exact commands first and waits for a yes; declining prints them for you to run
 yourself and stops. `--yes` accepts them up front for an unattended run. It
-never edits a shell startup file — if `tether` lands somewhere that is not on
-your PATH, it shows you the line to add and leaves the file alone.
+never edits a shell startup file — if `~/.local/bin` is not on your PATH, it
+shows you the line to add and leaves the file alone. (On Debian and Ubuntu
+`~/.profile` already adds that directory when it exists, so if the installer
+had to create it, logging out and back in is enough.)
 
 ### What it needs, and the one that surprises people
 
@@ -73,6 +79,31 @@ your PATH, it shows you the line to add and leaves the file alone.
 - **A C++ toolchain on Linux** (`build-essential`, `python3`): `node-pty` ships
   no Linux prebuild and is compiled during install. macOS needs none — `node-pty`
   has prebuilds for both Darwin architectures.
+
+### Upgrading, and uninstalling
+
+**Upgrading is re-running the installer.** It fetches whatever the latest
+release is now and checks it out over the existing clone, so there is no
+separate upgrade command to remember or to keep working.
+
+**Uninstalling is three paths, and the third one matters most:**
+
+```sh
+rm -f  ~/.local/bin/tether          # the command
+rm -rf ~/.local/share/tether        # the checkout
+rm -rf ~/.local/state/tether        # the password hash, the session registry, hook shims and logs
+```
+
+The last one is not a cache. It holds the hash of the password that guards a
+shell on this machine, along with every session tether knows about — leaving it
+behind leaves a credential behind. (`$XDG_STATE_HOME` or `$TETHER_STATE_DIR`
+move it, if you set either.)
+
+Everything else tether ever wrote is in a file that was already yours: the two
+hook entries in a project's `.claude/settings.local.json`, and in
+`~/.codex/config.toml` the Codex hook entry — `tether codex-hook remove` takes
+that one out — and any folder you told it to trust, which is marked with a
+comment so you can find it.
 
 ## First run
 
@@ -604,6 +635,28 @@ npm run format:check # prettier --check   (npm run format to fix)
 npx playwright install chromium   # once; npm 12 blocks playwright's own postinstall
 npm run test:e2e                  # the end-to-end specs
 ```
+
+### Cutting a release
+
+The install line installs the latest release tag, so **merging to `main` does not
+ship anything.** A change reaches anyone running that line when a tag is cut:
+
+```sh
+git tag -a v0.2.0 -m v0.2.0 && git push origin v0.2.0
+gh release create v0.2.0 --generate-notes
+```
+
+`install.sh` picks the highest `vX.Y.Z` tag out of `git ls-remote --tags`, so the
+**tag** is what decides what gets installed and the GitHub release is the
+changelog beside it. Anything that is not three numbers behind a `v` — a `-rc1`,
+a branch — is ignored by that query and reachable only as `TETHER_VERSION`, which
+is also how you install an older release deliberately.
+
+`install.sh` itself is fetched from `main` rather than from the tag, as
+Homebrew's is: it is the thing that has to know how to find the current release,
+so pinning it would mean editing the README's install line every time. Which
+means a change to `install.sh` is live at merge, while everything it installs is
+live at tag.
 
 ### The HTTP and WebSocket API
 

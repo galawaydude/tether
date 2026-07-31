@@ -9,10 +9,23 @@
 # printing exactly what it would run and asking first; declining is a supported
 # answer, and prints the commands so you can run them yourself.
 
+# Arrays and [[ ]] below are bash-only, and `sh install.sh` would otherwise die
+# on one of them with a syntax error naming a line rather than the cause. This
+# has to come before `set -o pipefail`, which is itself not portable to every sh.
+if [ -z "${BASH_VERSION:-}" ]; then
+	printf 'error: this installer needs bash. Run it as: bash install.sh\n' >&2
+	exit 1
+fi
+
 set -euo pipefail
 
 REPO_URL="${TETHER_REPO_URL:-https://github.com/galawaydude/tether.git}"
 DEFAULT_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/tether"
+# uv, mise and the rest of the modern consensus land the command here, and on
+# Debian and Ubuntu ~/.profile already puts it on PATH when it exists. It also
+# never needs sudo, unlike npm's global prefix, which is a property of how Node
+# was installed rather than a choice this script gets to make.
+BIN_DIR="$HOME/.local/bin"
 
 # tmux before 3.7 sizes a not-yet-created window through a NULL pointer, so under
 # the `window-size manual` that tether.conf sets every detached `new-session`
@@ -26,6 +39,7 @@ TMUX_SHA256=87f2e99e3b685973f2ca002ffd6ed7e51a5744f7009daae5a15670b6d532db96
 
 ASSUME_YES=0
 TARGET_DIR=""
+VERSION=""
 
 die() {
 	printf '\nerror: %s\n' "$1" >&2
@@ -48,7 +62,19 @@ Usage: install.sh [options]
   --yes          Do not prompt; accept the system packages this would install
   --self-test    Check this script's own version parsing and exit
   --help         This message
+
+Environment:
+
+  TETHER_VERSION   Release tag to install (default: the latest one)
 EOF
+}
+
+# The tip of a branch is whatever landed minutes ago, half-landed changes
+# included, so this installs a release instead — the highest vX.Y.Z tag the repo
+# publishes. Anything else (v0.1.0-rc1, a branch name) is TETHER_VERSION's job.
+latest_version() {
+	git ls-remote --tags --refs "$REPO_URL" 2>/dev/null |
+		sed 's#.*/##' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1
 }
 
 # `tmux -V` prints "tmux 3.7b", "tmux 3.4" or "tmux next-3.8". Succeeds iff that
@@ -79,7 +105,10 @@ confirm() {
 	# The group scopes the 2>/dev/null to this one open — `exec 3<> … 2>/dev/null`
 	# would silence the whole script's stderr for good — while still leaving fd 3
 	# open in this shell, which a subshell would not.
-	if ! { exec 3<>/dev/tty; } 2>/dev/null; then return 1; fi
+	if ! { exec 3<>/dev/tty; } 2>/dev/null; then
+		note "There is no terminal to ask on. Re-run with --yes to accept the above."
+		return 1
+	fi
 	printf '\n%s [y/N] ' "$1" >&3
 	read -r reply <&3 || reply=""
 	exec 3>&-
@@ -149,9 +178,27 @@ main() {
 	*) die "unsupported platform: $(uname -s). tether needs Linux or macOS." ;;
 	esac
 
+	# All of them, so a machine missing two takes one round trip rather than two.
+	missing=()
 	for tool in git curl; do
-		command -v "$tool" >/dev/null 2>&1 || die "$tool is required but is not installed."
+		command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
 	done
+	((${#missing[@]} == 0)) ||
+		die "required but not installed: ${missing[*]}"
+
+	# Where the tether command ends up, asked before anything at all is done rather
+	# than at the last step, so a destination that cannot be written to costs a
+	# sentence rather than a clone, a sudo, an apt install, a tmux build and an
+	# `npm ci` first. Tested by writing: permission bits do not settle it on every
+	# filesystem, and a read-only mount reports the same bits as a writable one.
+	mkdir -p "$BIN_DIR" 2>/dev/null ||
+		die "could not create $BIN_DIR, which is where the tether command goes."
+	probe="$BIN_DIR/.tether-write-test.$$"
+	if touch "$probe" 2>/dev/null; then
+		rm -f "$probe"
+	else
+		die "$BIN_DIR is not writable, and that is where the tether command goes. Fix its permissions and re-run."
+	fi
 
 	# Running ./install.sh from inside a checkout installs *that* checkout, rather
 	# than cloning a second copy and leaving `tether` pointing at whichever won. It
@@ -169,22 +216,38 @@ main() {
 		TARGET_DIR="$DEFAULT_DIR"
 	fi
 
+	# A checkout being worked on is at whatever ref its owner put it at; asking the
+	# network which release is current is neither wanted nor used there.
+	if ((FROM_CHECKOUT == 0)); then
+		VERSION="${TETHER_VERSION:-$(latest_version)}"
+		[ -n "$VERSION" ] ||
+			die "could not work out the latest tether release from $REPO_URL. Set TETHER_VERSION=vX.Y.Z and re-run."
+	fi
+
 	if [ ! -e "$TARGET_DIR" ]; then
-		step "Cloning tether into $TARGET_DIR"
+		step "Cloning tether $VERSION into $TARGET_DIR"
 		# Fail rather than hang on a credential prompt if this ever stops being public.
-		GIT_TERMINAL_PROMPT=0 git clone "$REPO_URL" "$TARGET_DIR" ||
-			die "could not clone $REPO_URL. If it is private, clone it yourself (gh repo clone galawaydude/tether \"$TARGET_DIR\") and re-run this script."
+		GIT_TERMINAL_PROMPT=0 git clone --branch "$VERSION" --depth 1 "$REPO_URL" "$TARGET_DIR" ||
+			die "could not clone $VERSION from $REPO_URL. If it is private, clone it yourself (gh repo clone galawaydude/tether \"$TARGET_DIR\") and re-run this script."
 	elif [ ! -e "$TARGET_DIR/.git" ]; then
 		die "$TARGET_DIR exists and is not a git checkout. Move it, or pass --dir <path>."
 	elif ((FROM_CHECKOUT)); then
 		step "Installing this checkout: $TARGET_DIR"
 	else
-		step "Updating $TARGET_DIR"
-		git -C "$TARGET_DIR" pull --ff-only ||
-			note "could not fast-forward — leaving your checkout as it is and building that."
+		# Not a pull: the clone above is shallow and on a tag rather than a branch,
+		# so there is no upstream to fast-forward along. Fetching the one tag keeps it
+		# shallow, and re-running the installer is how tether is upgraded.
+		step "Updating $TARGET_DIR to $VERSION"
+		if ! GIT_TERMINAL_PROMPT=0 git -C "$TARGET_DIR" fetch --depth 1 --force origin \
+			"refs/tags/$VERSION:refs/tags/$VERSION" ||
+			! git -C "$TARGET_DIR" checkout --quiet "$VERSION"; then
+			note "could not check out $VERSION — leaving your checkout as it is and building that."
+		fi
 	fi
 
 	cd "$TARGET_DIR"
+	# The symlink below points at this path, so a relative --dir must not survive.
+	TARGET_DIR="$PWD"
 
 	NODE_MAJOR=$(sed 's/^v//; s/\..*//' .nvmrc)
 	command -v node >/dev/null 2>&1 ||
@@ -307,7 +370,9 @@ main() {
 			build=$(mktemp -d)
 			trap 'rm -rf "$build"' EXIT
 			tarball="tmux-$TMUX_VERSION.tar.gz"
-			curl -sSfL -o "$build/$tarball" \
+			# -L follows redirects, and --proto '=https' is what keeps one of them
+			# from landing on plain http; --proto-redir cannot widen it back.
+			curl -sSfL --proto '=https' -o "$build/$tarball" \
 				"https://github.com/tmux/tmux/releases/download/$TMUX_VERSION/$tarball"
 			echo "$TMUX_SHA256  $build/$tarball" | sha256sum -c -
 			tar -xzf "$build/$tarball" -C "$build"
@@ -324,31 +389,26 @@ main() {
 	step "Installing dependencies and building"
 	npm ci
 
-	step "Linking the tether command"
-	# The one step on the happy path that writes outside tether's own directory. A
-	# Node installed from a tarball or a distro package has a root-owned global
-	# prefix, so this is an EACCES for an ordinary user — and sudo-ing it silently is
-	# the one thing the rest of this script never does without asking.
-	if ! npm link --workspace @tether/server; then
-		npm_prefix=$(npm prefix -g 2>/dev/null || true)
-		step "Could not link the tether command"
-		note "npm could not write to its global prefix${npm_prefix:+ ($npm_prefix)}. Either:"
-		note ""
-		note "  - re-run this script with sudo, or"
-		note "  - install Node with nvm (nvm install $(cat .nvmrc)), which puts the"
-		note "    prefix under your own home, and re-run this script."
-		note ""
-		note "This script does not run sudo for you here."
-		exit 1
-	fi
+	step "Linking the tether command into $BIN_DIR"
+	# A symlink rather than `npm link`, which writes into npm's *global prefix* —
+	# root-owned whenever Node came from a distro package or a tarball, so it is an
+	# EACCES with a Node stack trace for an ordinary user, at the last step, after
+	# every expensive consented thing above has already been spent. `dist/cli.js`
+	# carries its own shebang and exec bit (server's `build` ends in `chmod +x`),
+	# and Node resolves a symlink to its real path, so the checkout's own
+	# node_modules is found exactly as it was under `npm link`.
+	ln -sf "$TARGET_DIR/server/dist/cli.js" "$BIN_DIR/tether"
 
 	hash -r
 	if ! command -v tether >/dev/null 2>&1; then
-		npm_bin="$(npm prefix -g)/bin"
 		step "tether is installed, but not on your PATH"
-		note "It is at $npm_bin/tether. Add this line to your shell's startup file:"
+		note "It is at $BIN_DIR/tether. Add this line to your shell's startup file:"
 		note ""
-		note "  export PATH=\"$npm_bin:\$PATH\""
+		note "  export PATH=\"$BIN_DIR:\$PATH\""
+		note ""
+		note "On Debian and Ubuntu ~/.profile already adds that directory when it"
+		note "exists — it did not exist when you logged in, so logging out and back"
+		note "in is enough on its own."
 		note ""
 		note "This script does not edit shell startup files."
 		exit 1

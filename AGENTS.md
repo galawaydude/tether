@@ -75,7 +75,16 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   `tmux 3.4` read as new enough is a session that dies at birth). Its consent rule is
   the Codex hook's, generalised: nothing outside tether's own directory changes without
   the exact commands on screen and a yes, declining prints them and stops, and no shell
-  startup file is ever edited.
+  startup file is ever edited. Two things about it that the script alone does not
+  show. **It installs the highest `vX.Y.Z` tag, so merging to `main` ships nothing** —
+  a change reaches the public install line only when a release is cut (README's
+  Development → _Cutting a release_), and `install.sh` itself is the one exception,
+  being fetched from `main` so that it is what knows how to find the current release.
+  And the `tether` command is a **symlink into `~/.local/bin`**, not `npm link`: npm's
+  global prefix is root-owned wherever Node came from a distro package or a tarball,
+  which made the last step of the script the one that failed after every expensive
+  consented thing had already been spent. Anything that moves `server/dist/cli.js`
+  moves that symlink's target.
 - **`cwd` is a trust boundary and `resolveCwd` in `machine/tmux.ts` is the only
   gate.** It resolves the path (symlinks included) _before_ checking it, and confines
   the result to `allowedRoots()` — the user's home unless `TETHER_ALLOWED_ROOTS` (a
