@@ -29,7 +29,7 @@ import {
 } from './providers.ts';
 import { crumbs, groupSessions } from './sessions.ts';
 import { TerminalView } from './terminal.tsx';
-import { AGENT_CHANNEL, STATUS_TEXT, agentStateTrusted, type Status } from './status.ts';
+import { STATUS_TEXT, agentStateTrusted, type Status } from './status.ts';
 
 /** How often the list refreshes. tmux reconciliation happens server-side per read. */
 const POLL_MS = 5000;
@@ -235,15 +235,15 @@ function SessionScreen({
    * one of them: it was **Idle** printed beside **Session not found**, two
    * sources contradicting each other with nothing saying which tether believed.
    * A rule applied to some of them would just move that contradiction to the
-   * rest. See `agentStateTrusted`.
+   * rest.
    *
-   * The channel it is asked about is `AGENT_CHANNEL`, the one that publishes the
-   * `state` frame, not whichever pane is in front: the banners and the live
-   * region report the *agent*, and what a blind user hears must not depend on
-   * whether the terminal happens to be summoned. The chip is the one exception,
-   * below, because it is printed beside that channel's own word.
+   * Both channels and never `front`: the agent's state is one fact about one
+   * process, so which pane happens to be on screen cannot be part of the answer
+   * — and `ended` on either channel is the session being over for both, however
+   * live the other one still looks. `agentStateTrusted` is where that is
+   * decided, and where the reason for each state's side of the line is written.
    */
-  const agentKnown = agentStateTrusted(status[AGENT_CHANNEL]);
+  const agentKnown = agentStateTrusted(status.conversation, status.terminal);
 
   // Closing from inside the sheet hides the button that was focused, and a
   // browser drops focus to `<body>` when that happens — so a keyboard user who
@@ -305,11 +305,10 @@ function SessionScreen({
               rules forbid *inside* a row, not across one: `.bar-chips` is its
               own row below 600px and one chip is no taller than two.
 
-              The one place `front` and not `AGENT_CHANNEL` is asked: this chip
-              is printed immediately beside the front channel's own word, and
-              that pairing is the contradiction the predicate exists to
-              prevent. */}
-          {agentStateTrusted(status[front]) && (
+              The same `agentKnown` as the banners and the live region: this is
+              the agent's fact wherever it is printed, and the chip beside it is
+              the channel's. */}
+          {agentKnown && (
             <span class={`chip chip-agent-${agent.state}`}>
               {STATE_TEXT[agent.state]}
               {/* Its own component, so the 1s tick re-renders this span and not

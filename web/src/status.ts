@@ -38,18 +38,30 @@ export const STATUS_TEXT: Record<Status, string> = {
 };
 
 /**
- * The channel states that say nothing more is coming, so the agent's own
- * `busy`/`idle`/`waiting` badge is no longer something this screen can vouch for.
+ * The channel states that silence the agent's own `busy`/`idle`/`waiting` state,
+ * on **either** channel.
  *
- * `retrying` and `connecting` are deliberately not here. A dropped socket is the
- * ordinary case on a phone, the last state the agent published is still the best
- * thing known about it, and "Idle" beside "Reconnecting…" is two true statements
- * about two different things.
+ * `ended` and `gone` are facts about the *session*, not about the socket that
+ * noticed one: a session that has ended has ended for both channels, and neither
+ * will correct the other. The conversation socket closes only where the registry
+ * has no row at all, and the status poller may not announce a state it could not
+ * read — so a pane that dies mid-turn leaves the last published `waiting`
+ * standing for the life of the page, and something has to be the thing that
+ * stops believing it. `signedOut` is here because a browser that is no longer
+ * allowed to ask is not one to keep telling.
+ *
+ * `failed` is deliberately not here, and that distinction is the whole point of
+ * this set: it says a terminal could not be opened and nothing whatever about
+ * whether the session is alive — the agent may be working perfectly, and hiding
+ * its state would be this screen guessing in the opposite direction. Nor are
+ * `connecting` and `retrying`: a phone drops its socket every time it locks, and
+ * "Idle" beside "Reconnecting…" is two true statements about two different
+ * things.
  */
-const FINISHED = new Set<Status>(['ended', 'gone', 'failed', 'signedOut']);
+const SILENCES_AGENT = new Set<Status>(['ended', 'gone', 'signedOut']);
 
 /**
- * Whether the bar may still show the agent's own state beside the channel's.
+ * Whether any surface may still show the agent's own state.
  *
  * The bug this exists to make unrepresentable: the bar showed **Idle** and
  * **Session not found** side by side — tether reporting the agent alive and the
@@ -59,22 +71,17 @@ const FINISHED = new Set<Status>(['ended', 'gone', 'failed', 'signedOut']);
  * fresher of the two: the agent badge is whatever the last `state` frame said
  * before the socket finished, and a socket that has finished is not going to
  * correct it.
- */
-export function agentStateTrusted(terminal: Status): boolean {
-  return !FINISHED.has(terminal);
-}
-
-/**
- * The channel the agent's own `busy`/`idle`/`waiting` state arrives on, and so
- * the one every surface reporting the *agent* asks `agentStateTrusted` about.
  *
- * Named here rather than spelled inline in `app.tsx` because it is a rule and
- * not a lookup: the waiting banners and the `sr-only` live region were gated on
- * whichever pane happened to be in front, which silenced the announcement the
- * moment the terminal was summoned and made it again on dismiss — and that
- * region is deliberately separate from both surfaces precisely so what a blind
- * user hears does not depend on which one is up. The header's channel chip is
- * the one thing that follows the front pane, because it prints that channel's
- * own word.
+ * Both channels, one answer, and **not** "whichever pane is in front". Asking
+ * about the front pane is how this was broken in the other direction: the
+ * `sr-only` live region is kept separate from both surfaces precisely so what a
+ * blind user hears does not depend on which one is up, and gating it on the
+ * front pane silenced the announcement on every summon and made it again on
+ * dismiss. Taking the pair removes the choice — "ask the right channel" and
+ * "never contradict the other one" are one rule here, not two that can be
+ * satisfied separately. The header's channel chip still prints the front
+ * channel's own word; that is the channel's fact, not the agent's.
  */
-export const AGENT_CHANNEL = 'conversation';
+export function agentStateTrusted(conversation: Status, terminal: Status): boolean {
+  return !SILENCES_AGENT.has(conversation) && !SILENCES_AGENT.has(terminal);
+}

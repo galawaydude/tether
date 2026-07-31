@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { AGENT_CHANNEL, STATUS_TEXT, agentStateTrusted, type Status } from './status.ts';
+import { STATUS_TEXT, agentStateTrusted, type Status } from './status.ts';
 
 /** Every value of the union, so a new one cannot be added without a decision. */
 const ALL: readonly Status[] = [
@@ -30,33 +30,41 @@ test('only a genuinely missing session may say the session is missing', () => {
   assert.equal(STATUS_TEXT.failed, 'Terminal unavailable');
 });
 
-test('alive and missing are no longer sayable at once', () => {
+/** The states that say the session is over, whichever channel noticed. */
+const OVER: readonly Status[] = ['ended', 'gone', 'signedOut'];
+
+test('alive and missing are no longer sayable at once, on either channel', () => {
   // The screenshot that produced this fix: the bar read **Idle** and **Session
   // not found** side by side. Two chips, two sources, and nothing said which one
   // tether believed — so the user read it as "the agent is fine and the work is
-  // lost". A finished channel cannot vouch for the agent badge beside it, so the
-  // badge is not drawn at all.
-  for (const status of ['ended', 'gone', 'failed', 'signedOut'] as const) {
-    assert.equal(agentStateTrusted(status), false, status);
-  }
-
-  // A socket that is coming back is not a contradiction: the last state the
-  // agent published is still the best thing known about it, and a phone drops
-  // its socket every time the screen locks.
-  for (const status of ['connecting', 'live', 'retrying'] as const) {
-    assert.equal(agentStateTrusted(status), true, status);
+  // lost". The whole matrix rather than an example, because this invariant has
+  // been broken twice by changes meant to protect it: once by gating the badge
+  // on the front pane, and once by gating it on the conversation channel alone,
+  // which left a dead pane's last `waiting` on screen for good.
+  for (const conversation of ALL) {
+    for (const terminal of ALL) {
+      const over = OVER.includes(conversation) || OVER.includes(terminal);
+      assert.equal(
+        agentStateTrusted(conversation, terminal),
+        !over,
+        `${conversation} / ${terminal}`,
+      );
+    }
   }
 });
 
-test('the surface that reports the agent follows the channel that publishes it', () => {
-  // The `state` frame arrives on the conversation socket, so a dead *terminal*
-  // says nothing about whether the agent's state is still worth showing. Gating
-  // the waiting banners and the live region on whichever pane was in front made
-  // a screen reader's announcement come and go with the terminal overlay, which
-  // is the one thing that region is kept separate from both surfaces to avoid.
-  assert.equal(AGENT_CHANNEL, 'conversation');
+test('a terminal that could not be opened says nothing about the agent', () => {
+  // `failed` is the one channel state that is not a fact about the session: it
+  // says a terminal could not be opened, and the agent may be working perfectly.
+  // Hiding its state there would be this screen guessing in the other direction,
+  // which is the same fault with the sign flipped.
+  assert.equal(agentStateTrusted('live', 'failed'), true);
+  assert.equal(agentStateTrusted('failed', 'live'), true);
 
-  const status = { conversation: 'live', terminal: 'failed' } as const;
-  assert.equal(agentStateTrusted(status[AGENT_CHANNEL]), true, 'the agent is still being heard');
-  assert.equal(agentStateTrusted(status.terminal), false, 'the terminal chip is a different fact');
+  // And a socket that is coming back is not a contradiction either: a phone
+  // drops its socket every time the screen locks, and the last state the agent
+  // published is still the best thing known about it.
+  for (const status of ['connecting', 'live', 'retrying'] as const) {
+    assert.equal(agentStateTrusted(status, status), true, status);
+  }
 });

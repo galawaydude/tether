@@ -1002,17 +1002,24 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   send. A mid-life _frame_ failure is still the one close with no code at all,
   which is what makes the client reconnect instead of settling.
   `web/src/status.ts` owns the browser's half: the
-  `Status` union, `STATUS_TEXT` (only `gone` may say "not found"),
-  `agentStateTrusted` and `AGENT_CHANNEL`. Every surface reporting the agent is
-  gated on that one predicate — the fault was never in any one of
-  them, it was two contradicting sources printed side by side with nothing
-  saying which tether believed — and every one of them **asks it about
-  `AGENT_CHANNEL`, the channel that publishes the `state` frame**, not about
-  whichever pane is in front. The header's channel chip is the single exception,
-  since it is printed beside that channel's own word; gating the waiting banners
-  and the `sr-only` live region on the front pane silenced a screen reader's
-  announcement on every summon, which is exactly what keeping that region
-  separate from both surfaces is for. It lives in a `.ts` for the reason every other
+  `Status` union, `STATUS_TEXT` (only `gone` may say "not found") and
+  `agentStateTrusted`. Every surface reporting the agent — the badge, both
+  waiting banners, the `sr-only` live region — is gated on that one predicate,
+  because the fault was never in any one of them: it was two contradicting
+  sources printed side by side with nothing saying which tether believed. **It
+  takes both channels' statuses, never the front pane's**, and the rule is that
+  `ended`, `gone` or `signedOut` on _either_ channel silences the agent's state
+  while `failed` alone leaves it standing: the first three are facts about the
+  session, and `failed` says only that a terminal could not be opened, which is
+  no evidence at all that the agent has stopped. Both halves have been broken
+  once each by a fix meant to protect the other — gating on the front pane
+  silenced a screen reader's announcement on every summon, and gating on the
+  conversation channel alone left a dead pane's last `waiting` on screen for
+  good, since that socket closes only for a session with no row and the poller
+  never announces a state it could not read. Hence one predicate over the pair,
+  and a test over the whole matrix rather than an example. The header's channel
+  chip still prints the front channel's own word, which is the channel's fact
+  and not the agent's. It lives in a `.ts` for the reason every other
   wording table does: `node --test` cannot compile JSX.
 - **Fastify's schema defaults silently repair a bad body** (`removeAdditional` and
   `coerceTypes` are on): `additionalProperties: false` strips instead of rejecting, and
