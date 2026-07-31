@@ -67,7 +67,15 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   before 3.7 sizes a not-yet-created window through a NULL pointer, so every detached
   `new-session` dies with `server exited unexpectedly`. Ubuntu 24.04 ships 3.4, hence
   the source build in `.github/workflows/ci.yml`. That message from any tmux command
-  means the tmux on `PATH` is too old, not that the argv was wrong.
+  means the tmux on `PATH` is too old, not that the argv was wrong. `install.sh` builds
+  the **same pinned release and checksum** for a user's machine, so those two constants
+  now live in two files and must be bumped together. It is the repo's only shell script
+  and is held to `shellcheck` (CI does not run it; `bash install.sh --self-test` covers
+  its version parsing, which is the only branch in it that can be silently wrong — a
+  `tmux 3.4` read as new enough is a session that dies at birth). Its consent rule is
+  the Codex hook's, generalised: nothing outside tether's own directory changes without
+  the exact commands on screen and a yes, declining prints them and stops, and no shell
+  startup file is ever edited.
 - **`cwd` is a trust boundary and `resolveCwd` in `machine/tmux.ts` is the only
   gate.** It resolves the path (symlinks included) _before_ checking it, and confines
   the result to `allowedRoots()` — the user's home unless `TETHER_ALLOWED_ROOTS` (a
