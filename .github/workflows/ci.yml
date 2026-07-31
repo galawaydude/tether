@@ -66,12 +66,15 @@ jobs:
 
       - run: npm ci
 
-      # npm 12 blocks dependency install scripts unless approved, and an
-      # unapproved or unbuildable `node-pty` fails as a missing native module at
-      # the first attach — long after this job has gone green. Fail here instead.
-      - name: Verify node-pty built
-        run: |
-          node -e "require('node-pty').spawn('/bin/true', [], { cols: 80, rows: 24 })"
+      # Whether a terminal can start at all — an unbuildable `node-pty`, or a
+      # `spawn-helper` without its executable bit, otherwise fails at the first
+      # attach, long after this job has gone green. The same command `install.sh`
+      # runs on a user's machine, and the same one that carries the only evidence
+      # about macOS obtainable here: this runner holds the darwin prebuilds, so
+      # it can prove the root postinstall set their bit even though it cannot use
+      # them. server/src/machine/pty-smoke.ts says what it checks and why.
+      - name: Verify a terminal can start
+        run: npm run check:pty
 
       - name: Typecheck
         run: npm run typecheck
