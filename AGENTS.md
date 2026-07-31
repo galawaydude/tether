@@ -108,7 +108,16 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   dot and the capability set appears in both `Self.CapMap` and the deprecated
   `Self.Capabilities`; the precondition order is fixed, because a logged-out
   node reports **no** capabilities and asking about Funnel first tells someone
-  to edit their ACLs when they need to sign in.
+  to edit their ACLs when they need to sign in. `install.sh` reads that same
+  JSON for the same reason and derives the published address from
+  `Self.DNSName` (`--peers=false`, so exactly one is in the payload) rather
+  than scraping `tailscale funnel status` — human-readable output another tool
+  owns must never be what a flow is gated on. What proves the setup works is
+  functional instead: one `curl` carrying the derived `Host`, which a plain
+  `tether serve` refuses with the very 403 `--funnel` exists to prevent. And
+  `tailscale funnel` **prompts**: without a terminal it waits rather than
+  failing, so the installer passes `--yes` to the command it has already put on
+  screen and taken a yes for. Anything else there would hang `curl | bash`.
 - **`cwd` is a trust boundary and `resolveCwd` in `machine/tmux.ts` is the only
   gate.** It resolves the path (symlinks included) _before_ checking it, and confines
   the result to `allowedRoots()` — the user's home unless `TETHER_ALLOWED_ROOTS` (a

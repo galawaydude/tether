@@ -147,12 +147,19 @@ ts_funnel_allowed() {
 	tailscale status --json 2>/dev/null | grep -q '"funnel"'
 }
 
-# The public address Funnel is currently serving, read from Tailscale rather
-# than assembled here: `tailscale funnel status` prints one
-# `https://<name> (Funnel on)` line and it is the authority on what is published.
-funnel_url() {
-	tailscale funnel status 2>/dev/null |
-		sed -n 's|^\(https://[^ ]*\) (Funnel on)$|\1|p' | head -n 1
+# This machine's MagicDNS name — the public address Funnel serves it under, and
+# the Host the probe below asks tether to accept. Read from the same
+# `tailscale status --json` the two checks above read, and from the same field
+# server/src/machine/tailscale.ts reads: `Self.DNSName`, minus its trailing dot.
+# Deliberately not scraped out of `tailscale funnel status`, whose
+# `https://<name> (Funnel on)` line is human-readable output another tool owns
+# and is free to reword — the structured source is already in hand here.
+# `--peers=false` is what makes the match unambiguous: it leaves exactly one
+# `DNSName` in the payload, Self's, where a full status carries one per peer.
+ts_dns_name() {
+	tailscale status --json --peers=false 2>/dev/null |
+		sed -n 's/.*"DNSName"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
+		head -n 1 | sed 's/\.$//'
 }
 
 # Whether Funnel already points at tether's port, which is what makes a re-run
@@ -367,13 +374,29 @@ reachability() {
 		return 1
 	fi
 
+	# 4 ── does this machine have a name to be published under? Tailscale's own
+	# answer, asked before anything is armed, because it is what the address is
+	# and there is nothing to publish without it.
+	host=$(ts_dns_name)
+	[ -n "$host" ] || {
+		step "Tailscale reports no name for this machine"
+		note "A public address is a MagicDNS name, and this tailnet is not giving"
+		note "this machine one. Turn MagicDNS on once at"
+		note ""
+		note "  https://login.tailscale.com/admin/dns"
+		note ""
+		note "then re-run this script."
+		return 1
+	}
+	url="https://$host"
+
 	# The sudo all of that was leading to — skipped whole when Funnel already
 	# points at the port, which is what makes a second run cheap and quiet.
 	if funnel_armed; then
 		note "Funnel already points at 127.0.0.1:$PORT."
 	else
 		step "This publishes this machine on the internet"
-		note "- sudo tailscale funnel --bg $PORT"
+		note "- sudo tailscale funnel --yes --bg $PORT"
 		note ""
 		note "It stays on across reboots until you turn it off:"
 		note ""
@@ -385,24 +408,16 @@ reachability() {
 			return 1
 		fi
 		step "Turning Funnel on"
-		as_root tailscale funnel --bg "$PORT" || {
+		# `--yes` because Tailscale asks its own confirmation before publishing,
+		# and with no controlling terminal it waits for an answer that can never
+		# come — which under `curl | bash` or `--yes` is a hang, not a failure.
+		# The exact command is on screen above and has already been agreed to, so
+		# this declines to ask a question the user has just answered.
+		as_root tailscale funnel --yes --bg "$PORT" || {
 			note "\`tailscale funnel\` failed. tether is installed and works on loopback."
 			return 1
 		}
 	fi
-
-	# Read back from Tailscale rather than assembled here, so what is printed is
-	# what is actually published — including on a re-run that armed nothing. Read
-	# before tether starts, because the name is also what the probe below asks
-	# the running server to accept.
-	url=$(funnel_url)
-	[ -n "$url" ] || {
-		note "Funnel is on, but \`tailscale funnel status\` did not name an address."
-		note "Run it yourself to see what is published."
-		return 1
-	}
-	host=${url#https://}
-	host=${host%%/*}
 
 	# Before tether starts and therefore before the address is answerable at all.
 	# `--if-unset` is what makes a re-run leave a working password alone rather
