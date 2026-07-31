@@ -87,8 +87,8 @@ locally.
   which CI runs in one step before anything expensive, because nothing else in the
   repo's checks looks at shell at all. What that self-test covers is every branch in
   the file that can be silently wrong: the version parsing (a `tmux 3.4` read as new
-  enough is a session that dies at birth), the PATH message, and the two Funnel
-  questions below. Its consent rule is
+  enough is a session that dies at birth), the PATH message, the two Funnel
+  questions below, and the `TETHER_VERSION` checkout moves. Its consent rule is
   the Codex hook's, generalised: nothing outside tether's own directory changes without
   the exact commands on screen and a yes, declining prints them and stops, and no shell
   startup file is ever edited. A sentence it cannot back with something it actually
