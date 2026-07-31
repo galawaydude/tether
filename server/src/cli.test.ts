@@ -107,6 +107,47 @@ test('--allowed-host and --trusted-proxy reach the config', () => {
   assert.deepEqual(config.trustedProxies, ['10.0.0.1']);
 });
 
+// ── --funnel: the composition, and the password rule it may not escape ──
+
+const FUNNEL = 'my-box.tailnet-1234.ts.net';
+
+test('--funnel composes the three flags it replaces', () => {
+  const config = resolveServeConfig({ funnelHost: FUNNEL }, true);
+  // Loopback, so the port is unreachable from anywhere but this machine — which
+  // is what makes believing that proxy's X-Forwarded-* safe. Verified against a
+  // real Funnel: it sends `Host: <name>` with no port, and X-Forwarded-Proto.
+  assert.equal(config.host, '127.0.0.1');
+  assert.equal(config.allowedHosts.has(FUNNEL), true);
+  assert.deepEqual(config.trustedProxies, ['127.0.0.1']);
+  assert.equal(config.funnelHost, FUNNEL);
+});
+
+test('--funnel still takes extra allowed hosts and proxies rather than replacing them', () => {
+  const config = resolveServeConfig(
+    { funnelHost: FUNNEL, allowedHosts: ['tether.example'], trustedProxies: ['10.0.0.1'] },
+    true,
+  );
+  assert.equal(config.allowedHosts.has(FUNNEL), true);
+  assert.equal(config.allowedHosts.has('tether.example'), true);
+  assert.deepEqual(config.trustedProxies, ['127.0.0.1', '10.0.0.1']);
+});
+
+test('--funnel without a password refuses, though it binds loopback', () => {
+  // The whole point of the rule, and the one case "off-loopback" would miss:
+  // the bind is loopback and the audience is the internet.
+  assert.throws(
+    () => resolveServeConfig({ funnelHost: FUNNEL }, false),
+    /refusing to publish this machine on the internet/,
+  );
+});
+
+test('--funnel with --host is refused rather than silently picking one', () => {
+  assert.throws(
+    () => resolveServeConfig({ funnelHost: FUNNEL, host: '0.0.0.0' }, true),
+    /drop --host/,
+  );
+});
+
 // ── The banner ──
 
 test('the banner states the bind address and whether a password is set', () => {
@@ -124,6 +165,26 @@ test('an off-loopback bind warns loudly, and loopback does not', () => {
   const warning = offLoopbackWarning(resolveServeConfig({ host: '0.0.0.0' }, true));
   assert.match(warning ?? '', /plain HTTP/);
   assert.match(warning ?? '', /shell on this machine/);
+});
+
+test('the banner hands back the public URL, and says what arms it', () => {
+  const banner = formatBanner(resolveServeConfig({ funnelHost: FUNNEL, port: '8787' }, true), true);
+  assert.match(banner, new RegExp(`public URL:\\s+https://${FUNNEL}/`));
+  // The URL is only live once Funnel is pointed at the port, and tether never
+  // does that itself — so the banner may not imply that it has.
+  assert.match(banner, /tailscale funnel --bg 8787/);
+});
+
+test('a Funnel bind warns about the internet, not about plain HTTP', () => {
+  // Loopback, so the off-loopback branch would have returned null here.
+  const warning = offLoopbackWarning(resolveServeConfig({ funnelHost: FUNNEL }, true)) ?? '';
+  assert.match(warning, new RegExp(`public internet at https://${FUNNEL}/`));
+  assert.match(warning, /shell on this machine/);
+  // Promoting Funnel does not make its risks quieter: the address is in the
+  // certificate-transparency logs, so it is not a second factor.
+  assert.match(warning, /not a secret/);
+  assert.match(warning, /funnel --bg off/);
+  assert.doesNotMatch(warning, /plain HTTP/);
 });
 
 // ── The command, end to end ──
