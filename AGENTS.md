@@ -44,12 +44,12 @@ locally.
   **macOS has the opposite failure and it is silent.** There node-pty uses a prebuild, and
   that prebuild ships `spawn-helper` — which macOS starts _every_ process through — without
   its executable bit, so `posix_spawnp` refuses and every terminal attach dies while nothing
-  else is wrong. The bit is set in three places on purpose, not by accident: the root
-  `postinstall` on every `npm ci`, `install.sh` again for the tag it just built (see the
-  installer entry below for why it cannot rely on the first), and `npm run check:pty` —
-  `machine/pty-smoke.ts` — is what _fails_ when a PTY cannot start. That check asserts the
-  bit as well as spawning, because a Linux CI runner carries the darwin prebuilds and is
-  therefore the only place this can be proven without a Mac. It looks in every directory
+  else is wrong. The bit is _set_ in two places on purpose, not by accident: the root
+  `postinstall` on every `npm ci`, and `install.sh` again for the tag it just built (see the
+  installer entry below for why it cannot rely on the first). It is _proven_ in a third,
+  which sets nothing: `npm run check:pty` — `machine/pty-smoke.ts` — asserts the bit and
+  fails when a PTY cannot start, because a Linux CI runner carries the darwin prebuilds and
+  is therefore the only place this can be proven without a Mac. It looks in every directory
   node-pty resolves from (`build/Release`, `build/Debug`, `prebuilds/<platform>-<arch>`) and
   names no architecture; anything that starts hardcoding one has gone wrong.
 - **`npx tether` only works because `server`'s `prepare` builds during `npm ci`.** npm links

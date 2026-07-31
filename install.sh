@@ -60,7 +60,8 @@ Usage: install.sh [options]
 
   --dir <path>   Where to clone tether (default $DEFAULT_DIR)
   --yes          Do not prompt; accept the system packages this would install
-  --self-test    Check the version parsing, PATH and Funnel probes, and exit
+  --self-test    Check the version parsing, PATH, Funnel probes and TETHER_VERSION
+                 checkout moves, and exit
   --help         This message
 
 Environment:
@@ -1030,26 +1031,6 @@ main() {
 	# calling the repo's own — a released tag has neither.
 	find node_modules/node-pty -type f -name spawn-helper -exec chmod +x {} + 2>/dev/null || true
 
-	# The one thing every check above leaves untested: whether a terminal can
-	# start at all. Node and tmux are prerequisites; this is the product, and it
-	# is the check whose absence cost three hours of blind debugging on a Mac —
-	# the install said it was done, and the failure arrived later as a node-pty
-	# stack trace in the server log. `node` itself rather than a command from
-	# PATH: node-pty reports a refused `posix_spawnp` and a missing binary with
-	# the same message, and this one provably exists. The timeout is because a
-	# PTY that never exits would otherwise hang the install rather than fail it.
-	step "Checking that a terminal can start"
-	if ! node -e "const p = require('node-pty').spawn(process.execPath, ['-e', ''], { cols: 80, rows: 24 });
-		setTimeout(() => { console.error('the process it started never exited'); process.exit(1); }, 20000);
-		p.onExit(({ exitCode, signal }) => process.exit(exitCode || signal ? 1 : 0));"; then
-		note "The error above is node-pty's, and node-pty is what tether starts every"
-		note "terminal through. On macOS the usual cause is"
-		note "node_modules/node-pty/prebuilds/<arch>/spawn-helper missing its executable"
-		note "bit — which the line before this one sets, so a failure here is something"
-		note "else. tether's other half, the conversation view, does not depend on this."
-		die "tether is installed at $TARGET_DIR but cannot open a terminal on this machine."
-	fi
-
 	step "Linking the tether command into $BIN_DIR"
 	# A symlink rather than `npm link`, which writes into npm's *global prefix* —
 	# root-owned whenever Node came from a distro package or a tarball, so it is an
@@ -1061,6 +1042,37 @@ main() {
 	mkdir -p "$BIN_DIR" ||
 		die "could not create $BIN_DIR, which is where the tether command goes."
 	ln -sf "$TARGET_DIR/server/dist/cli.js" "$BIN_DIR/tether"
+
+	# The one thing every check above leaves untested: whether a terminal can
+	# start at all. Node and tmux are prerequisites; this is the product, and it
+	# is the check whose absence cost three hours of blind debugging on a Mac —
+	# the install said it was done, and the failure arrived later as a node-pty
+	# stack trace in the server log. `node` itself rather than a command from
+	# PATH: node-pty reports a refused `posix_spawnp` and a missing binary with
+	# the same message, and this one provably exists. The timeout is because a
+	# PTY that never exits would otherwise hang the install rather than fail it.
+	#
+	# It runs *after* the symlink and *before* the PATH block on purpose. On that
+	# Mac the terminal was the only broken part — the session list, the badges and
+	# the conversation view all worked — so dying before the link would take the
+	# command away from a machine that is otherwise fine, while dying after the
+	# PATH block would never run on a machine whose $BIN_DIR is not on PATH, which
+	# exits 1 there. It still dies: a terminal that cannot start fails the install.
+	step "Checking that a terminal can start"
+	if ! node -e "const p = require('node-pty').spawn(process.execPath, ['-e', ''], { cols: 80, rows: 24 });
+		setTimeout(() => { console.error('the process it started never exited'); process.exit(1); }, 20000);
+		p.onExit(({ exitCode, signal }) => process.exit(exitCode || signal ? 1 : 0));"; then
+		note "The error above is node-pty's, and node-pty is what tether starts every"
+		note "terminal through. On macOS the usual cause is"
+		note "node_modules/node-pty/prebuilds/<arch>/spawn-helper missing its executable"
+		note "bit — which this script has already set, so a failure here is something"
+		note "else."
+		note ""
+		note "The tether command is installed, at $BIN_DIR/tether, and the conversation"
+		note "view works: what will not work on this machine is the terminal. Re-run"
+		note "this installer to check it again."
+		die "tether cannot open a terminal on this machine."
+	fi
 
 	hash -r
 	# What `tether` resolves to need not be the symlink just written: an install
