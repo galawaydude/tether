@@ -60,7 +60,11 @@ bash install.sh
 ```
 
 It clones tether to `~/.local/share/tether` (`--dir` moves that), builds it, and
-links `tether` into `~/.local/bin`.
+links `tether` into `~/.local/bin`. Then it offers the Funnel setup described
+above: it sets the password if there is not one already, turns Funnel on, and
+leaves `tether serve --funnel` running in the background with its output in
+`~/.local/state/tether/serve.log`. Declining anywhere in that leaves a working
+loopback install and stops there.
 
 **It installs the latest release, not the tip of `main`**, so the one-liner
 cannot hand you a change that landed half an hour ago and half-landed.
@@ -424,8 +428,9 @@ tether serve
 - **`--funnel`** is the other opt-out, and the larger one: it stays on loopback
   and puts Tailscale Funnel in front, which means the internet. It is subject to
   the password rule rather than exempt from it — it refuses to start without one,
-  and says it would otherwise be publishing a shell. It composes the three flags
-  below from what Tailscale reports about this machine; see
+  and says it would otherwise be publishing a shell. It sets the bind address
+  and the two flags below itself, from what Tailscale reports about this
+  machine; see
   [Reaching it from your phone](#reaching-it-from-your-phone).
 - **No TLS inside tether**, by design — the platform solves it better, so
   [Reaching it from your phone](#reaching-it-from-your-phone) delegates it to

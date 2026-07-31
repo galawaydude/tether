@@ -481,7 +481,11 @@ reachability() {
 	else
 		step "Starting tether"
 		# 0700 to match the directory tether itself creates for its state; -m
-		# applies only where this is the thing that creates it.
+		# applies only where this is the thing that creates it. SC2174's caveat
+		# — that -m reaches only the deepest directory — is the intent: the state
+		# directory is the one holding secrets, and its parents are ordinary XDG
+		# directories that keep the umask they would have had anyway.
+		# shellcheck disable=SC2174
 		mkdir -p -m 700 "$(dirname "$log")"
 		# Backgrounded and detached from this script, which is about to exit —
 		# and from its stdin, which under `curl | bash` is the script itself.
