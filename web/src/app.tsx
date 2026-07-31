@@ -29,7 +29,7 @@ import {
 } from './providers.ts';
 import { crumbs, groupSessions } from './sessions.ts';
 import { TerminalView } from './terminal.tsx';
-import { STATUS_TEXT, agentStateTrusted, type Status } from './status.ts';
+import { AGENT_CHANNEL, STATUS_TEXT, agentStateTrusted, type Status } from './status.ts';
 
 /** How often the list refreshes. tmux reconciliation happens server-side per read. */
 const POLL_MS = 5000;
@@ -230,14 +230,20 @@ function SessionScreen({
   /**
    * Whether anything derived from the `state` frame may still be shown.
    *
-   * One predicate for all three places the agent's own state reaches the screen
-   * — the chip, the banner and the live region — because the fault was never in
-   * any one of them: it was **Idle** printed beside **Session not found**, two
+   * One predicate everywhere the agent's own state reaches the screen — the
+   * chip, the banners and the live region — because the fault was never in any
+   * one of them: it was **Idle** printed beside **Session not found**, two
    * sources contradicting each other with nothing saying which tether believed.
-   * A rule applied to two of the three would just move that contradiction to
-   * the third. See `agentStateTrusted`.
+   * A rule applied to some of them would just move that contradiction to the
+   * rest. See `agentStateTrusted`.
+   *
+   * The channel it is asked about is `AGENT_CHANNEL`, the one that publishes the
+   * `state` frame, not whichever pane is in front: the banners and the live
+   * region report the *agent*, and what a blind user hears must not depend on
+   * whether the terminal happens to be summoned. The chip is the one exception,
+   * below, because it is printed beside that channel's own word.
    */
-  const agentKnown = agentStateTrusted(status[front]);
+  const agentKnown = agentStateTrusted(status[AGENT_CHANNEL]);
 
   // Closing from inside the sheet hides the button that was focused, and a
   // browser drops focus to `<body>` when that happens — so a keyboard user who
@@ -297,8 +303,13 @@ function SessionScreen({
               time, which is what sent a captain looking for lost work — see
               `agentStateTrusted`. Dropping a chip is a height change the `.bar`
               rules forbid *inside* a row, not across one: `.bar-chips` is its
-              own row below 600px and one chip is no taller than two. */}
-          {agentKnown && (
+              own row below 600px and one chip is no taller than two.
+
+              The one place `front` and not `AGENT_CHANNEL` is asked: this chip
+              is printed immediately beside the front channel's own word, and
+              that pairing is the contradiction the predicate exists to
+              prevent. */}
+          {agentStateTrusted(status[front]) && (
             <span class={`chip chip-agent-${agent.state}`}>
               {STATE_TEXT[agent.state]}
               {/* Its own component, so the 1s tick re-renders this span and not

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { STATUS_TEXT, agentStateTrusted, type Status } from './status.ts';
+import { AGENT_CHANNEL, STATUS_TEXT, agentStateTrusted, type Status } from './status.ts';
 
 /** Every value of the union, so a new one cannot be added without a decision. */
 const ALL: readonly Status[] = [
@@ -46,4 +46,17 @@ test('alive and missing are no longer sayable at once', () => {
   for (const status of ['connecting', 'live', 'retrying'] as const) {
     assert.equal(agentStateTrusted(status), true, status);
   }
+});
+
+test('the surface that reports the agent follows the channel that publishes it', () => {
+  // The `state` frame arrives on the conversation socket, so a dead *terminal*
+  // says nothing about whether the agent's state is still worth showing. Gating
+  // the waiting banners and the live region on whichever pane was in front made
+  // a screen reader's announcement come and go with the terminal overlay, which
+  // is the one thing that region is kept separate from both surfaces to avoid.
+  assert.equal(AGENT_CHANNEL, 'conversation');
+
+  const status = { conversation: 'live', terminal: 'failed' } as const;
+  assert.equal(agentStateTrusted(status[AGENT_CHANNEL]), true, 'the agent is still being heard');
+  assert.equal(agentStateTrusted(status.terminal), false, 'the terminal chip is a different fact');
 });

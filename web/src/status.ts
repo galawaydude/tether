@@ -63,3 +63,18 @@ const FINISHED = new Set<Status>(['ended', 'gone', 'failed', 'signedOut']);
 export function agentStateTrusted(terminal: Status): boolean {
   return !FINISHED.has(terminal);
 }
+
+/**
+ * The channel the agent's own `busy`/`idle`/`waiting` state arrives on, and so
+ * the one every surface reporting the *agent* asks `agentStateTrusted` about.
+ *
+ * Named here rather than spelled inline in `app.tsx` because it is a rule and
+ * not a lookup: the waiting banners and the `sr-only` live region were gated on
+ * whichever pane happened to be in front, which silenced the announcement the
+ * moment the terminal was summoned and made it again on dismiss — and that
+ * region is deliberately separate from both surfaces precisely so what a blind
+ * user hears does not depend on which one is up. The header's channel chip is
+ * the one thing that follows the front pane, because it prints that channel's
+ * own word.
+ */
+export const AGENT_CHANNEL = 'conversation';

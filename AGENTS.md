@@ -979,7 +979,11 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   Fastify logs every request and reply at `info` and the browser polls the session
   list every 5s, so `true` is chatter that gets switched off again, taking the
   failures with it. `TETHER_LOG_LEVEL` widens it and is validated against a list
-  rather than passed through, since pino throws on a level it does not know.
+  rather than passed through, since pino throws on a level it does not know — and
+  a value that fails that list says so on stderr, because a knob whose fallback
+  is silent reads as a knob that does nothing, which is the fault this half
+  exists to end. It is documented where an operator will look for it: README's
+  security section and `tether serve --help`.
   The other half: `term-socket.ts` closed **every** failed attach as
   `CLOSE_NO_SESSION`, which the browser renders as "Session not found" — so a
   node-pty that would not spawn told a captain his work was gone, beside an
@@ -987,14 +991,28 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   decides, off the registry row (`getSessionByTmuxName`, after one
   `reconcileWithTmux` so a session that ended a moment ago is already marked):
   no row is `CLOSE_NO_SESSION`, `deadAt` is `CLOSE_SESSION_ENDED`, and a live
-  row whose attach threw is `CLOSE_ATTACH_FAILED` — which says a terminal could
+  row whose terminal went is `CLOSE_ATTACH_FAILED` — which says a terminal could
   not be opened and **nothing about why**, because the why is in the log the
-  first half turned on. `web/src/status.ts` owns the browser's half: the
-  `Status` union, `STATUS_TEXT` (only `gone` may say "not found"), and
-  `agentStateTrusted`, which is why the chip, the waiting banner and the live
-  region are all gated on one predicate — the fault was never in any one of
+  first half turned on. **Both ways a terminal is lost ask it**: the attach that
+  never opened, and the attach that exits mid-life. The second used to send
+  `CLOSE_SESSION_ENDED` outright, and a PTY exits for things that are not the
+  session ending — `Ctrl-B d` in the web terminal (`tether.conf` unbinds no
+  prefix and `keys.ts` maps `\x02` to `C-b`) and any `tmux detach-client` — so a
+  live session told every viewer it had ended and left the composer refusing to
+  send. A mid-life _frame_ failure is still the one close with no code at all,
+  which is what makes the client reconnect instead of settling.
+  `web/src/status.ts` owns the browser's half: the
+  `Status` union, `STATUS_TEXT` (only `gone` may say "not found"),
+  `agentStateTrusted` and `AGENT_CHANNEL`. Every surface reporting the agent is
+  gated on that one predicate — the fault was never in any one of
   them, it was two contradicting sources printed side by side with nothing
-  saying which tether believed. It lives in a `.ts` for the reason every other
+  saying which tether believed — and every one of them **asks it about
+  `AGENT_CHANNEL`, the channel that publishes the `state` frame**, not about
+  whichever pane is in front. The header's channel chip is the single exception,
+  since it is printed beside that channel's own word; gating the waiting banners
+  and the `sr-only` live region on the front pane silenced a screen reader's
+  announcement on every summon, which is exactly what keeping that region
+  separate from both surfaces is for. It lives in a `.ts` for the reason every other
   wording table does: `node --test` cannot compile JSX.
 - **Fastify's schema defaults silently repair a bad body** (`removeAdditional` and
   `coerceTypes` are on): `additionalProperties: false` strips instead of rejecting, and
