@@ -106,6 +106,100 @@ tmux_build_recipe() {
 	note "  ./configure && make && sudo make install"
 }
 
+# The port tether serves on, and the one Funnel is pointed at. Not an option:
+# `tether serve --port` exists for someone who has a reason, and that someone is
+# past what this script sets up.
+PORT=8787
+
+# Where a backgrounded `tether serve` writes. tether's own state directory, so
+# uninstalling by the README's three paths takes it with everything else — this
+# script invents no new location. The derivation is `stateDir()`'s, in
+# server/src/db.ts, including that `TETHER_STATE_DIR` is the directory itself
+# and only the XDG branch appends `tether`; the two must agree or the log lands
+# beside the state rather than in it.
+serve_log() {
+	printf '%s/serve.log\n' "${TETHER_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/tether}"
+}
+
+# Whether something on tether's port answers *for this Host*. `-f` makes the
+# guard's 403 a failure, which is the whole point: a plain `tether serve` allows
+# loopback names only, so it answers a bare probe and refuses the Funnel name —
+# the opaque 403 `--funnel` exists to prevent. Probing with the published name
+# is what tells "tether is already serving" from "already serving, but not for
+# this address".
+serving_as() {
+	curl -fsS -o /dev/null --max-time 5 -H "Host: $1" "http://127.0.0.1:$PORT/" 2>/dev/null
+}
+
+# The one way this script reads Tailscale, and it is the structured document
+# rather than any of the human-readable output the same binary prints:
+# `tailscale status --json`, which server/src/machine/tailscale.ts reads too.
+# **Always `--peers=false`.** Every question below is about *this* node, and a
+# full status serialises the whole tailnet — a `DNSName` and a capability set
+# per peer — so a match found anywhere in that document is not an answer about
+# Self. With the flag exactly one of each is in the payload and the matches
+# cannot be ambiguous; it is also the difference between ~3 KB and megabytes.
+# A fourth reader added here inherits the flag by using this.
+ts_status() {
+	tailscale status --json --peers=false 2>/dev/null
+}
+
+# Tailscale's backend state: `Running`, `NeedsLogin`, `Stopped`, `NoState`.
+# Empty when tailscaled is not answering at all.
+ts_state() {
+	ts_status | sed -n 's/.*"BackendState"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
+}
+
+# Whether this tailnet permits Funnel — the `funnel` node attribute, which
+# appears as its own key in `Self.CapMap` and in the deprecated `Capabilities`
+# list beside it. Advisory: this is the installer spending a sentence instead of
+# a sudo. The enforcing check is tether's own, in
+# server/src/machine/tailscale.ts, and it is the one with the tests.
+ts_funnel_allowed() {
+	ts_status | grep -q '"funnel"'
+}
+
+# This machine's MagicDNS name — the public address Funnel serves it under, and
+# the Host the probe below asks tether to accept. `Self.DNSName`, minus its
+# trailing dot, which is the field and the treatment
+# server/src/machine/tailscale.ts uses. Deliberately not scraped out of
+# `tailscale funnel status`, whose `https://<name> (Funnel on)` line is prose
+# another tool owns and is free to reword.
+ts_dns_name() {
+	ts_status | sed -n 's/.*"DNSName"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
+		head -n 1 | sed 's/\.$//'
+}
+
+# Whether Funnel is already published at tether's port, which is what makes a
+# re-run skip the sudo rather than repeat it. Structured for the same reason as
+# everything above, and here the reason is sharper than tidiness: `tailscale
+# funnel status` *is* `tailscale serve status`, so a tailnet-only
+# `tailscale serve --bg 8787` prints the identical `proxy http://127.0.0.1:8787`
+# line under a `(tailnet only)` heading. Reading that line would call Funnel
+# armed when it is not, skip the arm, and end the run telling someone to open a
+# link that answers nothing — and the Host probe cannot catch it, since it only
+# proves tether accepts the name, never that Funnel is in front of it.
+#
+# So both halves are asked, because they are different questions:
+# `AllowFunnel["<name>:443"]` is `true` when Funnel is on for this host, and
+# `Web["<name>:443"].Handlers["/"].Proxy` is what it points at. Note the two
+# ports: the key carries Funnel's own 443, the proxy value carries tether's.
+# Shape read off tailscale 1.98.10. Whitespace is stripped so the match does not
+# depend on how the JSON is laid out; anything unreadable answers "not armed",
+# which costs a re-run of a command the user has already consented to.
+funnel_armed() {
+	local json
+	json=$(tailscale serve status --json 2>/dev/null | tr -d '[:space:]')
+	case "$json" in
+	*"\"AllowFunnel\":{"*"\"$1:443\":true"*) ;;
+	*) return 1 ;;
+	esac
+	case "$json" in
+	*"\"Proxy\":\"http://127.0.0.1:$PORT\""*) return 0 ;;
+	*) return 1 ;;
+	esac
+}
+
 # Which of the three things there is to say about PATH is true, decided from
 # strings alone so the self-test can ask it. `first` is the symlink this script
 # wrote being what runs, `later` is it being on PATH behind something else, and
@@ -187,6 +281,238 @@ self_test() {
 	check_out later path_message_state "$bin" /usr/bin/tether "$bin"
 	if ((fails)); then die 'self-test failed'; fi
 	printf 'self-test ok\n'
+}
+
+# Reaching tether from somewhere that is not this machine, which is the whole
+# point of the product and the part that exposes it. Tailscale Funnel is what
+# this sets up: the only option where the phone needs nothing installed, and the
+# only one that puts the login page on the public internet. Both halves get said,
+# in that order, before anything is done.
+#
+# Three preconditions, each its own answer because each has a different thing for
+# the user to do and two of them cannot be automated at all. Returning non-zero
+# from anywhere in here is a supported outcome, not an error: tether is installed
+# and works on loopback, and main() prints that instead of the link.
+#
+# It changes things outside tether's own directory, so the file's contract holds
+# here exactly as it does above: the exact commands on screen, a yes, and
+# declining prints them and stops. Re-running skips whatever is already true.
+reachability() {
+	local state url host log ts_installer
+
+	step "Reaching tether from your phone"
+	note "This sets up Tailscale Funnel: a public HTTPS address for this machine,"
+	note "reachable from a device that has never heard of Tailscale."
+	note ""
+	note "Anyone who opens that address and knows your tether password gets a shell"
+	note "on this machine. There is one account and one password, and no read-only"
+	note "mode. The address is not a secret either: the certificate Funnel gets for"
+	note "it is published in the public certificate-transparency logs, so treat the"
+	note "name as known rather than as a second factor."
+	note ""
+	note "README.md's \"Reaching it from your phone\" has the two narrower options — a"
+	note "private tailnet with nothing public, and an SSH tunnel."
+
+	# 1 ── installed?
+	if ! command -v tailscale >/dev/null 2>&1; then
+		step "Tailscale is not installed"
+		if [ "$OS" = macos ]; then
+			# Not offered rather than offered badly: on macOS Tailscale is the App
+			# Store app or a Homebrew cask, they behave differently, and which one
+			# someone wants is not this script's guess to make.
+			note "On macOS this script does not install it for you — it is the App Store"
+			note "app or a Homebrew cask, and which of those you want is yours to pick:"
+			note ""
+			note "  brew install --cask tailscale"
+			note "  https://tailscale.com/download"
+			note ""
+			note "Install it, then re-run this script; it picks up from here."
+			return 1
+		fi
+		note "Tailscale publishes its own install script. This is that script:"
+		note ""
+		note "  curl -fsSL https://tailscale.com/install.sh | sh"
+		note ""
+		note "It installs a system package and uses sudo, and it is Tailscale's"
+		note "script rather than tether's. It is fetched to a file and run from"
+		note "there rather than piped, so that it cannot eat this script's own stdin."
+		if ! confirm "Run it?"; then
+			step "Tailscale was not installed."
+			note "Run the command above yourself and re-run this script."
+			return 1
+		fi
+		step "Installing Tailscale"
+		ts_installer=$(mktemp)
+		# Same rules as the tmux tarball above: -L follows redirects and
+		# --proto '=https' is what keeps one of them landing on plain http.
+		curl -sSfL --proto '=https' -o "$ts_installer" https://tailscale.com/install.sh ||
+			die "could not download https://tailscale.com/install.sh"
+		sh "$ts_installer" </dev/null || {
+			rm -f "$ts_installer"
+			note "Tailscale's installer failed. Run it yourself and re-run this script."
+			return 1
+		}
+		rm -f "$ts_installer"
+		hash -r
+		command -v tailscale >/dev/null 2>&1 || {
+			note "Tailscale's installer finished, but \`tailscale\` is not on PATH."
+			return 1
+		}
+	fi
+	note "$(tailscale version 2>/dev/null | head -n 1)"
+
+	# 2 ── logged in? Nothing below can be known until it is: a logged-out node
+	# reports no capabilities at all, so asking about Funnel first would tell
+	# someone to edit their access controls when they need to sign in.
+	state=$(ts_state)
+	if [ "$state" != Running ]; then
+		step "Tailscale is installed but not signed in (state: ${state:-no answer from tailscaled})"
+		note "This is a step that cannot be automated and must not be faked: signing"
+		note "in happens in a browser, against your own Tailscale account."
+		note ""
+		note "  sudo tailscale up"
+		note ""
+		note "That prints a URL. Open it, sign in, and it returns on its own."
+		if ! confirm "Run it and wait?"; then
+			step "Tailscale was not signed in."
+			note "Run the command above yourself and re-run this script."
+			return 1
+		fi
+		step "Waiting for you to finish signing in in your browser"
+		as_root tailscale up || {
+			note "\`tailscale up\` did not finish. Run it yourself and re-run this script."
+			return 1
+		}
+		state=$(ts_state)
+		[ "$state" = Running ] || {
+			note "Tailscale reports state \"$state\". Re-run this script once it is Running."
+			return 1
+		}
+	fi
+
+	# 3 ── permitted on the tailnet? A policy change rather than a command, so
+	# there is nothing to offer to run — only the place to make it.
+	if ! ts_funnel_allowed; then
+		step "Funnel is not enabled for this tailnet"
+		note "The last one-time human step, and this one is a policy change rather"
+		note "than a command: the \"funnel\" node attribute has to be in your tailnet's"
+		note "access controls, which is a thing only an admin of it can add."
+		note ""
+		note "  https://login.tailscale.com/admin/acls/file"
+		note ""
+		note "What to add is written up at https://tailscale.com/s/no-funnel"
+		note ""
+		note "Add it, then re-run this script."
+		return 1
+	fi
+
+	# 4 ── does this machine have a name to be published under? Tailscale's own
+	# answer, asked before anything is armed, because it is what the address is
+	# and there is nothing to publish without it.
+	host=$(ts_dns_name)
+	[ -n "$host" ] || {
+		step "Tailscale reports no name for this machine"
+		note "A public address is a MagicDNS name, and this tailnet is not giving"
+		note "this machine one. Turn MagicDNS on once at"
+		note ""
+		note "  https://login.tailscale.com/admin/dns"
+		note ""
+		note "then re-run this script."
+		return 1
+	}
+	url="https://$host"
+
+	# The sudo all of that was leading to — skipped whole when Funnel already
+	# points at the port, which is what makes a second run cheap and quiet.
+	if funnel_armed "$host"; then
+		note "Funnel already points at 127.0.0.1:$PORT."
+	else
+		step "This publishes this machine on the internet"
+		note "- sudo tailscale funnel --yes --bg $PORT"
+		note ""
+		note "It stays on across reboots until you turn it off:"
+		note ""
+		note "  sudo tailscale funnel --bg off"
+		if ! confirm "Publish it?"; then
+			step "Funnel was not turned on."
+			note "tether is installed and works on loopback. Turn Funnel on whenever"
+			note "you want to, with the command above."
+			return 1
+		fi
+		step "Turning Funnel on"
+		# `--yes` because Tailscale asks its own confirmation before publishing,
+		# and with no controlling terminal it waits for an answer that can never
+		# come — which under `curl | bash` or `--yes` is a hang, not a failure.
+		# The exact command is on screen above and has already been agreed to, so
+		# this declines to ask a question the user has just answered.
+		as_root tailscale funnel --yes --bg "$PORT" || {
+			note "\`tailscale funnel\` failed. tether is installed and works on loopback."
+			return 1
+		}
+	fi
+
+	# Before tether starts and therefore before the address is answerable at all.
+	# `--if-unset` is what makes a re-run leave a working password alone rather
+	# than asking for it again.
+	step "Setting tether's password"
+	note "One account, one password. It is the only thing between that public"
+	note "address and a shell on this machine, so make it a real one."
+	[ -e /dev/tty ] || {
+		note "There is no terminal to prompt on. Run \`tether set-password\` yourself,"
+		note "then \`tether serve --funnel\`."
+		return 1
+	}
+	"$BIN_DIR/tether" set-password --if-unset </dev/tty || return 1
+
+	log=$(serve_log)
+	if serving_as "$host"; then
+		note "tether is already serving on 127.0.0.1:$PORT for $host; leaving it as it is."
+	elif curl -fsS -o /dev/null --max-time 5 "http://127.0.0.1:$PORT/" 2>/dev/null; then
+		# Answers on loopback, refuses the published name: a `tether serve`
+		# started without --funnel. Printing the address now would hand over a
+		# link that 403s on every request, so this stops instead of succeeding.
+		step "Something else is already serving on 127.0.0.1:$PORT"
+		note "It answers on loopback but refuses $host, so it was not started"
+		note "with --funnel and every request through Funnel would fail with a 403."
+		note "Stop it, then start tether again:"
+		note ""
+		note "  tether serve --funnel --port $PORT"
+		return 1
+	else
+		step "Starting tether"
+		# 0700 to match the directory tether itself creates for its state; -m
+		# applies only where this is the thing that creates it. SC2174's caveat
+		# — that -m reaches only the deepest directory — is the intent: the state
+		# directory is the one holding secrets, and its parents are ordinary XDG
+		# directories that keep the umask they would have had anyway.
+		# shellcheck disable=SC2174
+		mkdir -p -m 700 "$(dirname "$log")"
+		# Backgrounded and detached from this script, which is about to exit —
+		# and from its stdin, which under `curl | bash` is the script itself.
+		# `--port` because this script's PORT is what Funnel was armed at, so it
+		# is the authority rather than `serve`'s own default.
+		nohup "$BIN_DIR/tether" serve --funnel --port "$PORT" >>"$log" 2>&1 </dev/null &
+		for _ in 1 2 3 4 5 6 7 8 9 10; do
+			serving_as "$host" && break
+			sleep 1
+		done
+		serving_as "$host" || {
+			note "tether did not come up on $host. What it printed is in $log."
+			return 1
+		}
+		note "Running in the background; its output goes to $log"
+	fi
+
+	step "Open this on your phone"
+	note ""
+	note "  $url"
+	note ""
+	note "Log in with the password you just set. That address is on the public"
+	note "internet and reaching it is equivalent to a shell on this machine."
+	note ""
+	note "  sudo tailscale funnel --bg off    # take it down again"
+	note "  tailscale funnel status           # what is published right now"
+	return 0
 }
 
 # Everything below runs inside main() so that bash reads this whole script
@@ -520,16 +846,28 @@ main() {
 	esac
 
 	step "Done — tether is at $resolved"
-	cat <<-'EOF'
+
+	# Everything above installed tether; this reaches it from your phone. A no
+	# anywhere inside it leaves a working loopback install, which is what the
+	# fallback below is: not an error path, the narrower of two good outcomes.
+	if reachability; then
+		return 0
+	fi
+
+	step "tether is installed, and reachable on this machine"
+	cat <<-EOF
 
 		Next, in a terminal on this machine:
 
 		  tether set-password    # there is one account, and it is never defaulted
-		  tether serve           # binds 127.0.0.1:8787
+		  tether serve           # binds 127.0.0.1:$PORT
 
 		Anyone who can reach that address and knows that password has a shell on
-		this machine. README.md's "Access and security" section is worth reading
-		before you put tether anywhere but loopback.
+		this machine. README.md's "Reaching it from your phone" covers the ways to
+		reach it from somewhere else — Tailscale Funnel, a private tailnet, or an
+		SSH tunnel — and "Access and security" is worth reading before you pick one.
+
+		Re-running this script picks the Funnel setup up from wherever it stopped.
 	EOF
 }
 

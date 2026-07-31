@@ -152,7 +152,12 @@ type Harness = Awaited<ReturnType<typeof harness>>;
 
 function post(
   h: Harness,
-  options: { secret?: string | undefined; remoteAddress?: string; payload?: unknown } = {},
+  options: {
+    secret?: string | undefined;
+    remoteAddress?: string;
+    payload?: unknown;
+    headers?: Record<string, string>;
+  } = {},
 ) {
   const secret = 'secret' in options ? options.secret : h.secret;
   return h.app.inject({
@@ -162,6 +167,7 @@ function post(
       host: HOST,
       'content-type': 'application/json',
       ...(secret === undefined ? {} : { 'x-tether-hook': secret }),
+      ...options.headers,
     },
     remoteAddress: options.remoteAddress ?? '127.0.0.1',
     payload: options.payload ?? preToolUse(),
@@ -235,6 +241,31 @@ test('an off-loopback caller is refused before the secret is even compared', asy
     assert.equal(res.statusCode, 204, remoteAddress);
   }
   assert.equal(h.seen.length, 4);
+});
+
+/**
+ * Under `--funnel` the proxy is on this machine, so a loopback peer address no
+ * longer means a local caller. These four headers are what a real Funnel adds
+ * (tailscale 1.98.10) and what the shim, POSTing to `127.0.0.1`, never sends.
+ */
+test('a loopback peer that came through a proxy is refused as well', async (t) => {
+  const h = await harness(t);
+  liveSession(h.db);
+
+  for (const header of [
+    'x-forwarded-for',
+    'x-forwarded-host',
+    'x-forwarded-proto',
+    'tailscale-funnel-request',
+  ]) {
+    const res = await post(h, { headers: { [header]: '203.0.113.9' } });
+    assert.equal(res.statusCode, 403, header);
+  }
+  assert.deepEqual(h.seen, []);
+
+  // And the shim's own request, which sets none of them, still gets through.
+  assert.equal((await post(h)).statusCode, 204);
+  assert.equal(h.seen.length, 1);
 });
 
 test('a valid secret is still not permission to speak for an unknown session', async (t) => {

@@ -23,6 +23,7 @@ import {
   startSession,
   stopSession,
 } from './machine/sessions.ts';
+import { funnelHost } from './machine/tailscale.ts';
 import { PtyUnavailableError, createTerminals, loadPty } from './machine/terminal.ts';
 import {
   HOOK_EVENTS,
@@ -47,7 +48,8 @@ const WARN_INTERVAL_MS = 10 * 60 * 1000;
 const USAGE = `tether — self-hosted control plane for coding-agent sessions
 
 Usage:
-  tether set-password              Set the single account's password (prompts; never echoes)
+  tether set-password [--if-unset] Set the single account's password (prompts; never echoes).
+                                   --if-unset leaves an existing one alone, for installers.
   tether serve [options]           Run the server
   tether ls                        List this machine's sessions, live and dead
   tether new <dir> [options]       Start a session in <dir>
@@ -59,6 +61,11 @@ Options for serve:
   --port <n>                       Port to listen on (default ${DEFAULT_PORT})
   --host <addr>                    Address to bind (default ${DEFAULT_HOST}, loopback only).
                                    Binding off-loopback requires a password to be set.
+  --funnel                         Serve behind Tailscale Funnel: stay on loopback, ask
+                                   Tailscale for this machine's own name, and trust what
+                                   Funnel forwards. PUBLISHES THIS MACHINE ON THE
+                                   INTERNET; requires a password. Turn Funnel itself on
+                                   with \`sudo tailscale funnel --bg <port>\`.
   --allowed-host <name>            Extra hostname accepted in the Host header; repeatable.
                                    Needed for a Tailscale name or a reverse proxy.
   --trusted-proxy <ip|cidr>        Believe X-Forwarded-* from this peer; repeatable.
@@ -250,6 +257,8 @@ export type ServeConfig = {
   trustedProxies: string[];
   /** Where a session may be started — home unless `TETHER_ALLOWED_ROOTS` widens it. */
   allowedRoots: readonly string[];
+  /** This machine's own `.ts.net` name, when `--funnel` asked Tailscale for it. */
+  funnelHost?: string | undefined;
 };
 
 export type ServeArgs = {
@@ -257,32 +266,73 @@ export type ServeArgs = {
   port?: string | undefined;
   allowedHosts?: readonly string[] | undefined;
   trustedProxies?: readonly string[] | undefined;
+  /**
+   * The machine's `.ts.net` name — already derived, because deriving it spawns
+   * `tailscale` and this function is pure. `undefined` is "no `--funnel`".
+   */
+  funnelHost?: string | undefined;
 };
+
+/** What Funnel connects from, having terminated TLS at Tailscale's edge. */
+const FUNNEL_PROXY = '127.0.0.1';
 
 /**
  * Loopback is the default and binding anywhere else is an explicit act that
  * refuses to happen without a password (report §7). No silent `0.0.0.0`.
+ *
+ * `--funnel` is the third case, and it is the reason the password check below
+ * is not written as "off-loopback": it *stays* on loopback and is nonetheless
+ * the most exposed thing tether can be, because Funnel is in front of it. The
+ * shape it composes was established by putting a header echo behind a real
+ * Funnel (see README): the request arrives from the proxy target's own address,
+ * carrying `Host: <name>.ts.net` with no port and `X-Forwarded-Proto: https`.
+ * So binding {@link FUNNEL_PROXY} makes the port unreachable from anywhere but
+ * this machine — which is what makes trusting that proxy's `X-Forwarded-*` safe
+ * — and the derived name is what the browser will send as `Host`.
  */
 export function resolveServeConfig(args: ServeArgs, hasPassword: boolean): ServeConfig {
-  const host = args.host ?? DEFAULT_HOST;
+  const funnel = args.funnelHost;
+  if (funnel !== undefined && args.host !== undefined) {
+    throw new Error('--funnel binds loopback and sets the address itself; drop --host.');
+  }
+  const host = funnel !== undefined ? FUNNEL_PROXY : (args.host ?? DEFAULT_HOST);
   // An empty --host would reach `listen` as "bind every interface", silently.
   if (host.trim() === '') throw new Error(`invalid --host ${JSON.stringify(args.host)}`);
   const port = args.port === undefined ? DEFAULT_PORT : Number(args.port);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error(`invalid --port ${JSON.stringify(args.port)}`);
   }
-  if (!isLoopbackHost(host) && !hasPassword) {
-    throw new Error(
-      `refusing to bind ${host}: no password is set, and binding off-loopback exposes a shell.\n` +
-        'Run `tether set-password` first.',
-    );
+  if (!hasPassword) {
+    // Two exposures, two sentences, one rule: nothing reachable from off this
+    // machine starts without a password. Funnel's is the louder one because
+    // what it is reachable from is everyone.
+    if (funnel !== undefined) {
+      throw new Error(
+        'refusing to publish this machine on the internet: no password is set.\n' +
+          `--funnel would put a shell behind https://${funnel}/ with nothing in front of it.\n` +
+          'Run `tether set-password` first.',
+      );
+    }
+    if (!isLoopbackHost(host)) {
+      throw new Error(
+        `refusing to bind ${host}: no password is set, and binding off-loopback exposes a shell.\n` +
+          'Run `tether set-password` first.',
+      );
+    }
   }
   return {
     host,
     port,
-    allowedHosts: defaultAllowedHosts(host, args.allowedHosts ?? []),
-    trustedProxies: [...(args.trustedProxies ?? [])],
+    allowedHosts: defaultAllowedHosts(host, [
+      ...(funnel === undefined ? [] : [funnel]),
+      ...(args.allowedHosts ?? []),
+    ]),
+    trustedProxies: [
+      ...(funnel === undefined ? [] : [FUNNEL_PROXY]),
+      ...(args.trustedProxies ?? []),
+    ],
     allowedRoots: allowedRoots(),
+    funnelHost: funnel,
   };
 }
 
@@ -290,6 +340,19 @@ export function formatBanner(config: ServeConfig, hasPassword: boolean): string 
   const shown = config.host.includes(':') ? `[${config.host}]` : config.host;
   return [
     `tether listening on http://${shown}:${config.port}`,
+    // First, above the settings, because on a Funnel run it is the address that
+    // matters and the bind address is an implementation detail of it.
+    ...(config.funnelHost === undefined
+      ? []
+      : [
+          `  public URL:    https://${config.funnelHost}/`,
+          // Funnel is a machine-wide setting tether does not own and never turns
+          // on (it needs root), so the URL above is only live once this has been
+          // run once — by `install.sh`, or by hand. Said every time rather than
+          // guessed at: a banner that claims a link is up when it is not is the
+          // one thing this line must never do.
+          `                 (live once \`sudo tailscale funnel --bg ${config.port}\` has been run once)`,
+        ]),
     `  password:      ${hasPassword ? 'set' : 'NOT SET — every login will fail'}`,
     `  allowed hosts: ${[...config.allowedHosts].join(', ')}`,
     `  trusted proxies: ${config.trustedProxies.length > 0 ? config.trustedProxies.join(', ') : 'none (X-Forwarded-* ignored)'}`,
@@ -298,11 +361,25 @@ export function formatBanner(config: ServeConfig, hasPassword: boolean): string 
 }
 
 /**
- * tether implements no TLS by design (report §7 delegates it to Tailscale, SSH
- * or a reverse proxy), so an off-loopback bind is plaintext until the operator
- * puts something in front of it. Say so, loudly, and keep saying it.
+ * What this bind exposes, said plainly and then kept being said. tether
+ * implements no TLS by design (report §7 delegates it to Tailscale, SSH or a
+ * reverse proxy), so an off-loopback bind is plaintext until the operator puts
+ * something in front of it — and a Funnel bind is the opposite problem: the
+ * transport is fine and the *audience* is the internet.
+ *
+ * Funnel's sentence is not softer for being the recommended path. It is the one
+ * configuration where getting it wrong is unrecoverable by the reader's own
+ * network, so it names the address, what reaching it is worth, and how to stop.
  */
 export function offLoopbackWarning(config: ServeConfig): string | null {
+  if (config.funnelHost !== undefined) {
+    return [
+      `!! tether is on the public internet at https://${config.funnelHost}/`,
+      '!! Anyone who opens that address and knows the password gets a shell on this machine.',
+      '!! The address is not a secret: its certificate is in the public transparency logs.',
+      '!! `sudo tailscale funnel --bg off` takes it down.',
+    ].join('\n');
+  }
   if (isLoopbackHost(config.host)) return null;
   return [
     '!! tether is bound off-loopback and serves plain HTTP.',
@@ -356,11 +433,22 @@ async function setPassword(auth: AuthStore): Promise<number> {
   return 0;
 }
 
-async function serve(db: DatabaseSync, auth: AuthStore, args: ServeArgs): Promise<number> {
+async function serve(
+  db: DatabaseSync,
+  auth: AuthStore,
+  args: ServeArgs & { funnel?: boolean | undefined },
+): Promise<number> {
   const hasPassword = auth.hasPassword();
   let config: ServeConfig;
   try {
-    config = resolveServeConfig(args, hasPassword);
+    // Asked of Tailscale rather than of the user: the name is discoverable, and
+    // a hand-typed one that is wrong fails as a 403 with no clue why. A refusal
+    // here is a precondition the user can fix, so it prints its own sentence and
+    // exits — `funnelHost` has already written the only useful one.
+    config = resolveServeConfig(
+      { ...args, funnelHost: args.funnel === true ? await funnelHost() : undefined },
+      hasPassword,
+    );
   } catch (error) {
     process.stderr.write(`${(error as Error).message}\n`);
     return 1;
@@ -553,8 +641,12 @@ export async function main(argv: readonly string[]): Promise<number> {
       options: {
         port: { type: 'string' },
         host: { type: 'string' },
+        funnel: { type: 'boolean' },
         'allowed-host': { type: 'string', multiple: true },
         'trusted-proxy': { type: 'string', multiple: true },
+        // `set-password`'s, so `install.sh` can re-run end to end without
+        // asking again for a password that is already set.
+        'if-unset': { type: 'boolean' },
       },
       allowPositionals: false,
     }));
@@ -570,11 +662,16 @@ export async function main(argv: readonly string[]): Promise<number> {
 
   switch (command) {
     case 'set-password':
+      if (values['if-unset'] === true && auth.hasPassword()) {
+        process.stdout.write('A password is already set; leaving it alone.\n');
+        return 0;
+      }
       return setPassword(auth);
     case 'serve':
       return serve(db, auth, {
         host: values.host,
         port: values.port,
+        funnel: values.funnel,
         allowedHosts: values['allowed-host'],
         trustedProxies: values['trusted-proxy'],
       });

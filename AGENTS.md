@@ -87,6 +87,45 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   which made the last step of the script the one that failed after every expensive
   consented thing had already been spent. Anything that moves `server/dist/cli.js`
   moves that symlink's target.
+- **Tailscale Funnel is the documented default, and `--funnel` is composition
+  rather than control.** `machine/tailscale.ts` only ever _reads_ — one
+  `tailscale status --json`, four fields — and `install.sh` is what turns Funnel
+  on, because `tailscale funnel` needs root or an operator (`Access denied:
+serve config denied` otherwise) and sets a machine-wide thing that outlives
+  the server. So there is no Tailscale client here and none is wanted; adding
+  one is the "network manager" this was scoped against. Three facts established
+  by putting a header echo behind a real Funnel (tailscale 1.98.10, captured in
+  the PR): it forwards `Host: <name>.ts.net` with **no port**, sets
+  `X-Forwarded-Proto: https` and a real client `X-Forwarded-For`, and marks
+  itself with `Tailscale-Funnel-Request: ?1`. That is why the composition is
+  bind `127.0.0.1` + allow the derived name + trust `127.0.0.1`, and the three
+  are one decision: the loopback bind is what makes trusting that proxy's
+  `X-Forwarded-*` safe, and the trust is what gets the session cookie its
+  `Secure` flag. **The password rule is extended, never excepted** — the check
+  is no longer "off-loopback", because `--funnel` binds loopback and is the most
+  exposed tether can be. A `--funnel` that could start without a password is the
+  one regression here that publishes a shell. `Self.DNSName` carries a trailing
+  dot and the capability set appears in both `Self.CapMap` and the deprecated
+  `Self.Capabilities`; the precondition order is fixed, because a logged-out
+  node reports **no** capabilities and asking about Funnel first tells someone
+  to edit their ACLs when they need to sign in. `install.sh` reads that same
+  JSON for the same reason, through the one `ts_status` helper so a fourth
+  reader cannot forget **`--peers=false`** — every question it asks is about
+  Self, and a full status carries a `DNSName` and a capability set per peer, so
+  a match found anywhere in it is not an answer. It derives the published
+  address from `Self.DNSName` there, and asks `tailscale serve status --json`
+  (`AllowFunnel["<name>:443"]` **and** the `/` handler's `Proxy`, two questions
+  and two different ports) whether Funnel is already armed. Neither is scraped
+  out of `tailscale funnel status` — human-readable output another tool owns
+  must never be what a flow is gated on, and here that is not tidiness:
+  `funnel status` _is_ `serve status`, so a tailnet-only `tailscale serve`
+  prints an identical proxy line and would make the installer skip arming and
+  publish a link to nothing. What proves the setup works is
+  functional instead: one `curl` carrying the derived `Host`, which a plain
+  `tether serve` refuses with the very 403 `--funnel` exists to prevent. And
+  `tailscale funnel` **prompts**: without a terminal it waits rather than
+  failing, so the installer passes `--yes` to the command it has already put on
+  screen and taken a yes for. Anything else there would hang `curl | bash`.
 - **`cwd` is a trust boundary and `resolveCwd` in `machine/tmux.ts` is the only
   gate.** It resolves the path (symlinks included) _before_ checking it, and confines
   the result to `allowedRoots()` — the user's home unless `TETHER_ALLOWED_ROOTS` (a
@@ -500,8 +539,14 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   session and tether cannot know it at install time — and **per-session
   authorisation lives at the endpoint instead**: loopback checked against the
   real peer address (never `request.ip`, which `trustProxy` lets a header
-  forge), constant-time secret compare, then a payload accepted only for a live
-  registry row. A hook whose `session_id` no row holds is bound by
+  forge), **and not proxied**, constant-time secret compare, then a payload
+  accepted only for a live registry row. The second half of that first gate is
+  what keeps it a gate at all under Funnel, which proxies from `127.0.0.1` and
+  so gives every internet request a loopback peer: `isProxied` refuses anything
+  carrying `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto` or
+  `Tailscale-Funnel-Request`, which a real Funnel always sets and the shim —
+  POSTing to `127.0.0.1` — never does. A presence test can only over-refuse,
+  never over-admit, which is the direction this boundary must fail in. A hook whose `session_id` no row holds is bound by
   `Conversations.bindProviderSession` — which is how the _first_ tool call of a
   session is not lost, and how the first after a `/resume` is not either. The
   payload's `cwd` is **not** consulted: a `cwd` can only ever say "one of

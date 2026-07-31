@@ -32,6 +32,16 @@ link is not like sharing a document; it is like handing someone your laptop
 unlocked. [Access and security](#access-and-security) is the section to read
 before you put tether anywhere but loopback.
 
+**The installer offers to put this machine on the public internet, and that is
+the path it leads with.** It sets up [Tailscale
+Funnel](#tailscale-funnel--a-public-https-address-nothing-to-install-on-the-phone),
+because it is the only way to reach tether from a phone with nothing installed
+on it — and the cost is that your login page ends up somewhere anyone can find,
+with the one password above as the only thing behind it. It shows you the exact
+commands and waits for a yes; declining leaves tether installed and working on
+loopback, and every narrower option is still there. Decide that before you run
+it, not during.
+
 ## Install
 
 On Linux or macOS:
@@ -50,7 +60,11 @@ bash install.sh
 ```
 
 It clones tether to `~/.local/share/tether` (`--dir` moves that), builds it, and
-links `tether` into `~/.local/bin`.
+links `tether` into `~/.local/bin`. Then it offers the Funnel setup described
+above: it sets the password if there is not one already, turns Funnel on, and
+leaves `tether serve --funnel` running in the background with its output in
+`~/.local/state/tether/serve.log`. Declining anywhere in that leaves a working
+loopback install and stops there.
 
 **It installs the latest release, not the tip of `main`**, so the one-liner
 cannot hand you a change that landed half an hour ago and half-landed.
@@ -411,6 +425,13 @@ tether serve
 
 - **Loopback by default.** `--host` is the explicit opt-out, and it refuses to
   start unless a password is set.
+- **`--funnel`** is the other opt-out, and the larger one: it stays on loopback
+  and puts Tailscale Funnel in front, which means the internet. It is subject to
+  the password rule rather than exempt from it — it refuses to start without one,
+  and says it would otherwise be publishing a shell. It sets the bind address
+  and the two flags below itself, from what Tailscale reports about this
+  machine; see
+  [Reaching it from your phone](#reaching-it-from-your-phone).
 - **No TLS inside tether**, by design — the platform solves it better, so
   [Reaching it from your phone](#reaching-it-from-your-phone) delegates it to
   Tailscale, an SSH tunnel or a reverse proxy. An off-loopback bind warns that it
@@ -445,15 +466,72 @@ state, is ever written inside the repository.
 tether binds `127.0.0.1:8787` and terminates no TLS. That is the whole of its
 transport story, so getting to it from somewhere else is a decision you make
 once, here. Read the section above again first: **whatever you put in front of
-tether is what stands between the network and a shell on this machine.** Pick
-accordingly — the options below are in the order you should want them.
+tether is what stands between the network and a shell on this machine.**
 
-### Tailscale — recommended
+Three options, and they differ in who can reach the login page: **anyone**
+(Funnel), **your own devices** (a private tailnet), or **whoever can already SSH
+in** (a tunnel). Funnel is first because it is what the installer sets up and the
+only one that asks nothing of the other device — not because it is the safest.
+It is the least safe of the three, and the rest of this section says so in
+detail rather than in passing.
 
-A WireGuard network between your own devices. Free for personal use, no port is
-opened on your router, and reaching tether then requires a device that is already
-enrolled in your tailnet — a second factor considerably stronger than the
-password. Install it on the machine and on the phone, then:
+### Tailscale Funnel — a public HTTPS address, nothing to install on the phone
+
+Funnel puts your tailnet machine on the **public internet** at
+`https://my-box.tailnet-1234.ts.net/`, with a real certificate, reachable from a
+device that has never heard of Tailscale. That is its whole appeal and its whole
+risk: it is the only option here that needs nothing installed on the other
+device, and it is also **the option that puts your login page where anyone can
+find it.** One password is then the only thing between the internet and a shell
+on this machine. The address is not a secret, either: the certificate Funnel gets
+for that name is published in the public certificate-transparency logs, so treat
+the name as known rather than as a second factor.
+
+**The installer sets this up for you** — it is the last thing it does, and
+re-running it picks up wherever it stopped. By hand it is two commands:
+
+```sh
+tether serve --funnel
+sudo tailscale funnel --bg 8787
+```
+
+`--funnel` is the whole configuration, and none of it is typed:
+
+- It asks Tailscale for this machine's own name (`tailscale status --json`) and
+  puts that in the `Host` allowlist. The allowlist is what stops a hostile web
+  page from resolving its own hostname to your machine and driving tether
+  through your browser, and a hand-typed name that is wrong fails as a `403`
+  with nothing to say why — which is the reason this is not a flag you fill in.
+- It keeps binding **loopback**, so the port is unreachable from anywhere but
+  this machine. Funnel reaches it there.
+- Because of that, it trusts `127.0.0.1` as a proxy, which is what makes the
+  `X-Forwarded-Proto: https` Funnel sends believed — and that is why the session
+  cookie gets its `Secure` flag. Trusting a proxy is only safe because the bind
+  is loopback; the two go together and `--funnel` is the pair.
+- **It refuses to start without a password**, even though it binds loopback,
+  because what is in front of it is the internet. `--funnel` cannot publish an
+  unprotected shell, and there is no flag that makes it.
+
+It prints the address at startup and says what it exposes, then keeps saying it
+every ten minutes. `sudo tailscale funnel --bg 8787` is separate and stays
+separate: it is a machine-wide Tailscale setting that outlives tether and needs
+root, so tether never turns it on itself. `tailscale funnel status` says what is
+published right now, and `sudo tailscale funnel --bg off` takes it down.
+
+If any of Tailscale, a login, or Funnel-on-your-tailnet is missing, `--funnel`
+says which one and what to do about it, and starts nothing.
+
+The first request after an idle spell is slow, sometimes several seconds, while
+Funnel wakes up. That is Funnel, not tether.
+
+### A private tailnet — your own devices only, nothing public
+
+The same WireGuard network without the public address. Free for personal use, no
+port is opened on your router, and reaching tether then requires a device that is
+already enrolled in your tailnet — a second factor considerably stronger than the
+password, and the thing Funnel gives up. **Prefer this whenever every device that
+needs tether is one of yours.** Install Tailscale on the machine and on the
+phone, then:
 
 ```sh
 tailscale ip -4                                  # 100.101.102.103
@@ -469,11 +547,9 @@ Both flags are needed and neither is optional:
 - `--host <tailscale ip>` binds to the tailnet interface **only**. `0.0.0.0`
   would work too and would also publish tether to every café Wi-Fi the laptop
   joins.
-- `--allowed-host <tailscale name>` puts that name in the `Host` allowlist.
-  Without it every request from `http://my-box.tailnet-1234.ts.net:8787` is
-  refused, because the allowlist is what stops a hostile web page from resolving
-  its own hostname to your machine and driving tether through your browser. Use
-  the name without the trailing dot that `tailscale status` prints.
+- `--allowed-host <tailscale name>` puts that name in the `Host` allowlist, for
+  the reason given under `--funnel` above. Use the name without the trailing dot
+  that `tailscale status` prints.
 
 Then open `http://my-box.tailnet-1234.ts.net:8787` on the phone. Tailscale
 carries the encryption, so plain HTTP over it is not plaintext on any wire —
@@ -491,36 +567,6 @@ ssh -N -L 8787:127.0.0.1:8787 you@box
 Then open `http://localhost:8787`. Phone SSH clients (Termius, Blink, JuiceSSH)
 all do local port forwarding. It is the least convenient option to keep alive on
 a phone that sleeps, and the easiest one to set up correctly.
-
-### Tailscale Funnel — a public HTTPS address, nothing to install on the phone
-
-Funnel puts your tailnet machine on the **public internet** at
-`https://my-box.tailnet-1234.ts.net/`, with a real certificate, reachable from a
-device that has never heard of Tailscale. That is its whole appeal and its whole
-risk: it is the only option here that needs nothing installed on the other
-device, and it is also **the option that puts your login page where anyone can
-find it.** One password is then the only thing between the internet and a shell
-on this machine. The address is not a secret, either: the certificate Funnel gets
-for that name is published in the public certificate-transparency logs, so treat
-the name as known rather than as a second factor.
-
-```sh
-tether serve \
-  --allowed-host my-box.tailnet-1234.ts.net \
-  --trusted-proxy 127.0.0.1
-
-sudo tailscale funnel --bg 8787
-```
-
-tether keeps binding loopback; Funnel reaches it there, so `--trusted-proxy
-127.0.0.1` is what makes the `X-Forwarded-Proto` Funnel sets believed, and it is
-why the session cookie gets its `Secure` flag. `--allowed-host` is needed for the
-same reason as above — the public name is what the browser will send.
-`tailscale funnel status` says what is currently exposed, and
-`sudo tailscale funnel reset` takes it down again.
-
-The first request after an idle spell is slow, sometimes several seconds, while
-Funnel wakes up. That is Funnel, not tether.
 
 ### A reverse proxy — deliberate exposure
 
