@@ -60,10 +60,7 @@ cannot hand you a change that landed half an hour ago and half-landed.
 exact commands first and waits for a yes; declining prints them for you to run
 yourself and stops. `--yes` accepts them up front for an unattended run. It
 never edits a shell startup file — if `~/.local/bin` is not on your PATH, it
-shows you the line to add and leaves the file alone. (On Debian and Ubuntu
-`~/.profile` already adds that directory when it exists, so if the installer
-had to create it, logging out and back in does the same thing — for a login
-shell that reads `~/.profile`, which bash does and zsh does not.)
+shows you the line to add and leaves the file alone.
 
 ### What it needs, and the one that surprises people
 

@@ -172,7 +172,7 @@ self_test() {
 	check_out() {
 		want=$1
 		shift
-		got=$("$@")
+		got=$("$@" || true)
 		if [ "$got" != "$want" ]; then
 			printf 'FAIL (want %s, got %s): %s\n' "$want" "$got" "$*"
 			fails=1
@@ -239,10 +239,8 @@ main() {
 	# The directory itself is not created here — it is outside tether's own
 	# directory, and a run declined at the prompt below must leave nothing behind —
 	# so what is probed is the deepest part of the path that already exists.
-	BIN_DIR_EXISTED=1
 	bin_probe_dir="$BIN_DIR"
 	while [ ! -d "$bin_probe_dir" ]; do
-		BIN_DIR_EXISTED=0
 		bin_probe_dir=$(dirname "$bin_probe_dir")
 	done
 	probe="$bin_probe_dir/.tether-write-test.$$"
@@ -370,9 +368,9 @@ main() {
 					note ""
 				fi
 				if [ "$tmux_state" != ok ]; then
-					note "tmux is the half this script can be exact about. Installing $TMUX_VERSION"
-					note "yourself satisfies the version check above — the packages listed are what"
-					note "building it needs, under whatever names your distribution gives them:"
+					note "tmux is the half this script can be exact about — the packages listed"
+					note "are what building it needs, under whatever names your distribution"
+					note "gives them. This is how it would have built $TMUX_VERSION:"
 					note ""
 					tmux_build_recipe
 					note ""
@@ -514,11 +512,6 @@ main() {
 			note "Until then \`tether\` runs $resolved, which is another"
 			note "file — most likely a previous install that used npm link. The line above"
 			note "puts $BIN_DIR ahead of it."
-			note ""
-		elif ((BIN_DIR_EXISTED == 0)); then
-			note "On Debian and Ubuntu ~/.profile adds that directory when it exists, and"
-			note "this run created it — so if your login shell reads ~/.profile (bash does,"
-			note "zsh does not), logging out and back in does the same thing."
 			note ""
 		fi
 		note "This script does not edit shell startup files."
