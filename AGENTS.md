@@ -114,8 +114,10 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   `Self.Capabilities`; the precondition order is fixed, because a logged-out
   node reports **no** capabilities and asking about Funnel first tells someone
   to edit their ACLs when they need to sign in. `install.sh` reads that same
-  JSON for the same reason, through the one `ts_status` helper so a fourth
-  reader cannot forget **`--peers=false`** — every question it asks is about
+  JSON for the same reason, through the one `ts_status` helper — spawned
+  **once** per run and handed to the readers as an argument, so no reader can
+  forget **`--peers=false`** and no second spawn can come back empty where the
+  first came back with a document — every question it asks is about
   Self, and a full status carries a `DNSName` and a capability set per peer, so
   a match found anywhere in it is not an answer. It derives the published
   address from `Self.DNSName` there, and asks `tailscale serve status --json`
