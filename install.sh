@@ -433,7 +433,9 @@ self_test() {
 	#
 	# `quiet` because git's own progress output is not what is under test. It is
 	# invoked through `check` rather than directly, which shellcheck cannot see.
-	# shellcheck disable=SC2329
+	# Both codes, because which one it reports depends on the shellcheck version:
+	# SC2329 since 0.10, SC2317 before it.
+	# shellcheck disable=SC2317,SC2329
 	quiet() { "$@" >/dev/null 2>&1; }
 	local tmp
 	tmp=$(mktemp -d)
