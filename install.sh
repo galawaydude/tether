@@ -113,9 +113,22 @@ PORT=8787
 
 # Where a backgrounded `tether serve` writes. tether's own state directory, so
 # uninstalling by the README's three paths takes it with everything else — this
-# script invents no new location.
+# script invents no new location. The derivation is `stateDir()`'s, in
+# server/src/db.ts, including that `TETHER_STATE_DIR` is the directory itself
+# and only the XDG branch appends `tether`; the two must agree or the log lands
+# beside the state rather than in it.
 serve_log() {
-	printf '%s/tether/serve.log\n' "${TETHER_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}}"
+	printf '%s/serve.log\n' "${TETHER_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/tether}"
+}
+
+# Whether something on tether's port answers *for this Host*. `-f` makes the
+# guard's 403 a failure, which is the whole point: a plain `tether serve` allows
+# loopback names only, so it answers a bare probe and refuses the Funnel name —
+# the opaque 403 `--funnel` exists to prevent. Probing with the published name
+# is what tells "tether is already serving" from "already serving, but not for
+# this address".
+serving_as() {
+	curl -fsS -o /dev/null --max-time 5 -H "Host: $1" "http://127.0.0.1:$PORT/" 2>/dev/null
 }
 
 # Tailscale's backend state: `Running`, `NeedsLogin`, `Stopped`, `NoState`.
@@ -246,7 +259,7 @@ self_test() {
 # here exactly as it does above: the exact commands on screen, a yes, and
 # declining prints them and stops. Re-running skips whatever is already true.
 reachability() {
-	local state url log ts_installer
+	local state url host log ts_installer
 
 	step "Reaching tether from your phone"
 	note "This sets up Tailscale Funnel: a public HTTPS address for this machine,"
@@ -378,6 +391,19 @@ reachability() {
 		}
 	fi
 
+	# Read back from Tailscale rather than assembled here, so what is printed is
+	# what is actually published — including on a re-run that armed nothing. Read
+	# before tether starts, because the name is also what the probe below asks
+	# the running server to accept.
+	url=$(funnel_url)
+	[ -n "$url" ] || {
+		note "Funnel is on, but \`tailscale funnel status\` did not name an address."
+		note "Run it yourself to see what is published."
+		return 1
+	}
+	host=${url#https://}
+	host=${host%%/*}
+
 	# Before tether starts and therefore before the address is answerable at all.
 	# `--if-unset` is what makes a re-run leave a working password alone rather
 	# than asking for it again.
@@ -392,33 +418,39 @@ reachability() {
 	"$BIN_DIR/tether" set-password --if-unset </dev/tty || return 1
 
 	log=$(serve_log)
-	if curl -fsS -o /dev/null --max-time 5 "http://127.0.0.1:$PORT/" 2>/dev/null; then
-		note "tether is already serving on 127.0.0.1:$PORT; leaving it as it is."
+	if serving_as "$host"; then
+		note "tether is already serving on 127.0.0.1:$PORT for $host; leaving it as it is."
+	elif curl -fsS -o /dev/null --max-time 5 "http://127.0.0.1:$PORT/" 2>/dev/null; then
+		# Answers on loopback, refuses the published name: a `tether serve`
+		# started without --funnel. Printing the address now would hand over a
+		# link that 403s on every request, so this stops instead of succeeding.
+		step "Something else is already serving on 127.0.0.1:$PORT"
+		note "It answers on loopback but refuses $host, so it was not started"
+		note "with --funnel and every request through Funnel would fail with a 403."
+		note "Stop it, then start tether again:"
+		note ""
+		note "  tether serve --funnel --port $PORT"
+		return 1
 	else
 		step "Starting tether"
-		mkdir -p "$(dirname "$log")"
+		# 0700 to match the directory tether itself creates for its state; -m
+		# applies only where this is the thing that creates it.
+		mkdir -p -m 700 "$(dirname "$log")"
 		# Backgrounded and detached from this script, which is about to exit —
 		# and from its stdin, which under `curl | bash` is the script itself.
-		nohup "$BIN_DIR/tether" serve --funnel >>"$log" 2>&1 </dev/null &
+		# `--port` because this script's PORT is what Funnel was armed at, so it
+		# is the authority rather than `serve`'s own default.
+		nohup "$BIN_DIR/tether" serve --funnel --port "$PORT" >>"$log" 2>&1 </dev/null &
 		for _ in 1 2 3 4 5 6 7 8 9 10; do
-			curl -fsS -o /dev/null --max-time 5 "http://127.0.0.1:$PORT/" 2>/dev/null && break
+			serving_as "$host" && break
 			sleep 1
 		done
-		curl -fsS -o /dev/null --max-time 5 "http://127.0.0.1:$PORT/" 2>/dev/null || {
-			note "tether did not come up. What it printed is in $log."
+		serving_as "$host" || {
+			note "tether did not come up on $host. What it printed is in $log."
 			return 1
 		}
 		note "Running in the background; its output goes to $log"
 	fi
-
-	# Read back from Tailscale rather than assembled here, so what is printed is
-	# what is actually published — including on a re-run that armed nothing.
-	url=$(funnel_url)
-	[ -n "$url" ] || {
-		note "Funnel is on, but \`tailscale funnel status\` did not name an address."
-		note "Run it yourself to see what is published."
-		return 1
-	}
 
 	step "Open this on your phone"
 	note ""

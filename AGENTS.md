@@ -522,8 +522,14 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   session and tether cannot know it at install time — and **per-session
   authorisation lives at the endpoint instead**: loopback checked against the
   real peer address (never `request.ip`, which `trustProxy` lets a header
-  forge), constant-time secret compare, then a payload accepted only for a live
-  registry row. A hook whose `session_id` no row holds is bound by
+  forge), **and not proxied**, constant-time secret compare, then a payload
+  accepted only for a live registry row. The second half of that first gate is
+  what keeps it a gate at all under Funnel, which proxies from `127.0.0.1` and
+  so gives every internet request a loopback peer: `isProxied` refuses anything
+  carrying `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto` or
+  `Tailscale-Funnel-Request`, which a real Funnel always sets and the shim —
+  POSTing to `127.0.0.1` — never does. A presence test can only over-refuse,
+  never over-admit, which is the direction this boundary must fail in. A hook whose `session_id` no row holds is bound by
   `Conversations.bindProviderSession` — which is how the _first_ tool call of a
   session is not lost, and how the first after a `/resume` is not either. The
   payload's `cwd` is **not** consulted: a `cwd` can only ever say "one of

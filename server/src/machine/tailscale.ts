@@ -18,6 +18,16 @@ import { promisify } from 'node:util';
 const run = promisify(execFile);
 
 /**
+ * `tailscale status --json` serialises every peer on the tailnet, so Node's
+ * default 1 MiB is a size a real tailnet reaches — and the failure is silent in
+ * the worst way: `execFile` kills the child, hands back *truncated* stdout, and
+ * that parses as "did not print JSON" on a node where Funnel works perfectly.
+ * 64 MiB is past any plausible tailnet, and the truncation is named below rather
+ * than left to the JSON parser.
+ */
+const STATUS_MAX_BUFFER = 64 * 1024 * 1024;
+
+/**
  * A precondition the user has to fix, carrying the sentence that says how.
  * Distinct from a bug: `serve` prints `message` and exits 1 rather than throwing
  * a stack trace at somebody who simply has not logged in yet.
@@ -100,7 +110,9 @@ export function funnelHostname(status: unknown): string {
 export async function tailscaleStatus(): Promise<unknown> {
   let stdout: string;
   try {
-    ({ stdout } = await run('tailscale', ['status', '--json']));
+    ({ stdout } = await run('tailscale', ['status', '--json'], {
+      maxBuffer: STATUS_MAX_BUFFER,
+    }));
   } catch (error) {
     const err = error as NodeJS.ErrnoException & { stdout?: string };
     if (err.code === 'ENOENT') {
@@ -108,6 +120,14 @@ export async function tailscaleStatus(): Promise<unknown> {
         'Tailscale is not installed, and --funnel needs it.\n' +
           'Install it from https://tailscale.com/download — or re-run tether’s\n' +
           'installer, which offers to do it for you.',
+      );
+    }
+    // Said plainly rather than falling through to the parse, where truncated
+    // JSON would be reported as tailscale printing something unreadable.
+    if (err.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
+      throw new TailscaleError(
+        `\`tailscale status --json\` printed more than ${STATUS_MAX_BUFFER} bytes, so tether\n` +
+          'stopped reading it. Run it yourself to see what this tailnet reports.',
       );
     }
     if (typeof err.stdout !== 'string' || err.stdout.trim() === '') {

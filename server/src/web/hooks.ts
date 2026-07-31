@@ -10,10 +10,20 @@
  *
  * Three independent gates, and none of them is the cookie:
  *
- * 1. **Loopback only**, checked against the real peer address rather than
- *    `request.ip` — with `trustProxy` on, `request.ip` is whatever
+ * 1. **Loopback only, and not proxied**, checked against the real peer address
+ *    rather than `request.ip` — with `trustProxy` on, `request.ip` is whatever
  *    `X-Forwarded-For` said, and a forwarded header must never be able to
- *    present itself as a local process.
+ *    present itself as a local process. The peer address alone stopped being
+ *    the whole of that gate when Funnel became the documented default: Funnel
+ *    proxies from `127.0.0.1`, so every request off the public internet arrives
+ *    with a loopback peer and the check would admit the whole of it, leaving the
+ *    secret as the only remaining gate. So a request carrying any of the four
+ *    headers a real Funnel sets — `X-Forwarded-For`, `X-Forwarded-Host`,
+ *    `X-Forwarded-Proto` and its own `Tailscale-Funnel-Request` marker, all
+ *    captured off a live one — is refused here. The shim POSTs to `127.0.0.1`
+ *    and sets none of them, and the failure direction is the safe one: a
+ *    presence test can only refuse a local caller that volunteered a forwarded
+ *    header, never admit a forwarded request, because Funnel always sets them.
  * 2. **The shared secret**, compared in constant time.
  * 3. **A session that exists**, resolved from the payload's own `session_id`.
  *    This is the per-session authorisation: a valid secret does not let a caller
@@ -68,6 +78,21 @@ export function isLoopbackAddress(address: string | undefined): boolean {
   return plain === '::1' || /^127(\.\d{1,3}){3}$/.test(plain);
 }
 
+/**
+ * What a reverse proxy adds and a local process does not. The first three are
+ * every proxy's; the fourth is Tailscale Funnel's own marker.
+ */
+const PROXY_HEADERS = [
+  'x-forwarded-for',
+  'x-forwarded-host',
+  'x-forwarded-proto',
+  'tailscale-funnel-request',
+] as const;
+
+export function isProxied(headers: Record<string, unknown>): boolean {
+  return PROXY_HEADERS.some((name) => headers[name] !== undefined);
+}
+
 /** Constant-time, and length-safe: `timingSafeEqual` throws on a length mismatch. */
 function secretMatches(presented: unknown, expected: string): boolean {
   if (typeof presented !== 'string') return false;
@@ -88,7 +113,7 @@ export function registerHookRoute(
     '/internal/hook',
     { config: { public: true }, schema: HOOK_SCHEMA },
     async (request, reply) => {
-      if (!isLoopbackAddress(request.socket.remoteAddress)) {
+      if (!isLoopbackAddress(request.socket.remoteAddress) || isProxied(request.headers)) {
         return reply.code(403).send();
       }
 
