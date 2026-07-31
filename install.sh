@@ -131,11 +131,23 @@ serving_as() {
 	curl -fsS -o /dev/null --max-time 5 -H "Host: $1" "http://127.0.0.1:$PORT/" 2>/dev/null
 }
 
+# The one way this script reads Tailscale, and it is the structured document
+# rather than any of the human-readable output the same binary prints:
+# `tailscale status --json`, which server/src/machine/tailscale.ts reads too.
+# **Always `--peers=false`.** Every question below is about *this* node, and a
+# full status serialises the whole tailnet — a `DNSName` and a capability set
+# per peer — so a match found anywhere in that document is not an answer about
+# Self. With the flag exactly one of each is in the payload and the matches
+# cannot be ambiguous; it is also the difference between ~3 KB and megabytes.
+# A fourth reader added here inherits the flag by using this.
+ts_status() {
+	tailscale status --json --peers=false 2>/dev/null
+}
+
 # Tailscale's backend state: `Running`, `NeedsLogin`, `Stopped`, `NoState`.
 # Empty when tailscaled is not answering at all.
 ts_state() {
-	tailscale status --json 2>/dev/null |
-		sed -n 's/.*"BackendState"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
+	ts_status | sed -n 's/.*"BackendState"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
 }
 
 # Whether this tailnet permits Funnel — the `funnel` node attribute, which
@@ -144,28 +156,48 @@ ts_state() {
 # a sudo. The enforcing check is tether's own, in
 # server/src/machine/tailscale.ts, and it is the one with the tests.
 ts_funnel_allowed() {
-	tailscale status --json 2>/dev/null | grep -q '"funnel"'
+	ts_status | grep -q '"funnel"'
 }
 
 # This machine's MagicDNS name — the public address Funnel serves it under, and
-# the Host the probe below asks tether to accept. Read from the same
-# `tailscale status --json` the two checks above read, and from the same field
-# server/src/machine/tailscale.ts reads: `Self.DNSName`, minus its trailing dot.
-# Deliberately not scraped out of `tailscale funnel status`, whose
-# `https://<name> (Funnel on)` line is human-readable output another tool owns
-# and is free to reword — the structured source is already in hand here.
-# `--peers=false` is what makes the match unambiguous: it leaves exactly one
-# `DNSName` in the payload, Self's, where a full status carries one per peer.
+# the Host the probe below asks tether to accept. `Self.DNSName`, minus its
+# trailing dot, which is the field and the treatment
+# server/src/machine/tailscale.ts uses. Deliberately not scraped out of
+# `tailscale funnel status`, whose `https://<name> (Funnel on)` line is prose
+# another tool owns and is free to reword.
 ts_dns_name() {
-	tailscale status --json --peers=false 2>/dev/null |
-		sed -n 's/.*"DNSName"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
+	ts_status | sed -n 's/.*"DNSName"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
 		head -n 1 | sed 's/\.$//'
 }
 
-# Whether Funnel already points at tether's port, which is what makes a re-run
-# skip the sudo rather than repeat it.
+# Whether Funnel is already published at tether's port, which is what makes a
+# re-run skip the sudo rather than repeat it. Structured for the same reason as
+# everything above, and here the reason is sharper than tidiness: `tailscale
+# funnel status` *is* `tailscale serve status`, so a tailnet-only
+# `tailscale serve --bg 8787` prints the identical `proxy http://127.0.0.1:8787`
+# line under a `(tailnet only)` heading. Reading that line would call Funnel
+# armed when it is not, skip the arm, and end the run telling someone to open a
+# link that answers nothing — and the Host probe cannot catch it, since it only
+# proves tether accepts the name, never that Funnel is in front of it.
+#
+# So both halves are asked, because they are different questions:
+# `AllowFunnel["<name>:443"]` is `true` when Funnel is on for this host, and
+# `Web["<name>:443"].Handlers["/"].Proxy` is what it points at. Note the two
+# ports: the key carries Funnel's own 443, the proxy value carries tether's.
+# Shape read off tailscale 1.98.10. Whitespace is stripped so the match does not
+# depend on how the JSON is laid out; anything unreadable answers "not armed",
+# which costs a re-run of a command the user has already consented to.
 funnel_armed() {
-	tailscale funnel status 2>/dev/null | grep -q "proxy http://127.0.0.1:$PORT\$"
+	local json
+	json=$(tailscale serve status --json 2>/dev/null | tr -d '[:space:]')
+	case "$json" in
+	*"\"AllowFunnel\":{"*"\"$1:443\":true"*) ;;
+	*) return 1 ;;
+	esac
+	case "$json" in
+	*"\"Proxy\":\"http://127.0.0.1:$PORT\""*) return 0 ;;
+	*) return 1 ;;
+	esac
 }
 
 # Which of the three things there is to say about PATH is true, decided from
@@ -392,7 +424,7 @@ reachability() {
 
 	# The sudo all of that was leading to — skipped whole when Funnel already
 	# points at the port, which is what makes a second run cheap and quiet.
-	if funnel_armed; then
+	if funnel_armed "$host"; then
 		note "Funnel already points at 127.0.0.1:$PORT."
 	else
 		step "This publishes this machine on the internet"

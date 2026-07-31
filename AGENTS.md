@@ -109,10 +109,18 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   `Self.Capabilities`; the precondition order is fixed, because a logged-out
   node reports **no** capabilities and asking about Funnel first tells someone
   to edit their ACLs when they need to sign in. `install.sh` reads that same
-  JSON for the same reason and derives the published address from
-  `Self.DNSName` (`--peers=false`, so exactly one is in the payload) rather
-  than scraping `tailscale funnel status` — human-readable output another tool
-  owns must never be what a flow is gated on. What proves the setup works is
+  JSON for the same reason, through the one `ts_status` helper so a fourth
+  reader cannot forget **`--peers=false`** — every question it asks is about
+  Self, and a full status carries a `DNSName` and a capability set per peer, so
+  a match found anywhere in it is not an answer. It derives the published
+  address from `Self.DNSName` there, and asks `tailscale serve status --json`
+  (`AllowFunnel["<name>:443"]` **and** the `/` handler's `Proxy`, two questions
+  and two different ports) whether Funnel is already armed. Neither is scraped
+  out of `tailscale funnel status` — human-readable output another tool owns
+  must never be what a flow is gated on, and here that is not tidiness:
+  `funnel status` _is_ `serve status`, so a tailnet-only `tailscale serve`
+  prints an identical proxy line and would make the installer skip arming and
+  publish a link to nothing. What proves the setup works is
   functional instead: one `curl` carrying the derived `Host`, which a plain
   `tether serve` refuses with the very 403 `--funnel` exists to prevent. And
   `tailscale funnel` **prompts**: without a terminal it waits rather than
