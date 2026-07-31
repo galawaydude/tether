@@ -60,7 +60,7 @@ Usage: install.sh [options]
 
   --dir <path>   Where to clone tether (default $DEFAULT_DIR)
   --yes          Do not prompt; accept the system packages this would install
-  --self-test    Check this script's own version parsing and exit
+  --self-test    Check the version parsing, PATH and Funnel probes, and exit
   --help         This message
 
 Environment:
@@ -188,15 +188,25 @@ ts_state() {
 # has, which is a dead end at the one step of this script that has no command to
 # offer. Advisory either way: the enforcing check is tether's own, in
 # server/src/machine/tailscale.ts, and it is the one with the tests.
+#
+# A field that is present but `null` is an absence, and is dropped below so it
+# answers `unknown` like a missing one — which is what tailscale.ts's `record()`
+# and `Array.isArray` already do with it. tailscale has not been observed
+# emitting null for either field; the parity is kept because the direction this
+# fails in matters, not because the shape was seen.
 ts_funnel_permission() {
-	case "$1" in
+	local json
+	json=$(printf '%s' "$1" | tr -d '[:space:]')
+	json=${json//\"CapMap\":null/}
+	json=${json//\"Capabilities\":null/}
+	case "$json" in
 	*'"CapMap"'* | *'"Capabilities"'*) ;;
 	*)
 		printf 'unknown\n'
 		return
 		;;
 	esac
-	case "$1" in
+	case "$json" in
 	*'"funnel"'*) printf 'yes\n' ;;
 	*) printf 'no\n' ;;
 	esac
@@ -359,6 +369,12 @@ self_test() {
 	# set is "tether cannot tell", never "your tailnet forbids it".
 	check_out unknown ts_funnel_permission "$no_caps"
 	check_out unknown ts_funnel_permission ''
+	# A present-but-null capability field is an absence too, and answers the same
+	# as a missing one — parity with tailscale.ts, which reads null as no set.
+	check_out unknown ts_funnel_permission '{"BackendState":"Running","Self":{"CapMap":null}}'
+	check_out unknown ts_funnel_permission '{"BackendState":"Running","Self":{"CapMap": null, "Capabilities": null}}'
+	# Null beside a real set is not an absence: the set still answers.
+	check_out yes ts_funnel_permission '{"BackendState":"Running","Self":{"CapMap":null,"Capabilities":["funnel"]}}'
 	check 0 ts_readable "$permitted"
 	check 1 ts_readable ''
 	check 1 ts_readable '{}'

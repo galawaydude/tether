@@ -677,6 +677,9 @@ npm run typecheck    # tsc --noEmit, per package
 npm run lint         # eslint
 npm run format:check # prettier --check   (npm run format to fix)
 
+shellcheck install.sh        # the installer is the only shell in the repo
+bash install.sh --self-test  # its own checks: version parsing, PATH, the Funnel probes
+
 npx playwright install chromium   # once; npm 12 blocks playwright's own postinstall
 npm run test:e2e                  # the end-to-end specs
 ```
