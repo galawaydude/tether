@@ -671,7 +671,10 @@ npm run dev -w @tether/web   # http://localhost:5173, hot reload, real server be
 `node-pty`'s install script is approved in the root `package.json` under
 `allowScripts`, because npm 12 blocks dependency install scripts by default. If
 `tether serve` reports that the native module is missing, install the toolchain
-and re-run `npm ci`; the message says so too.
+and re-run `npm ci`; the message says so too. The root `postinstall` then makes
+`node-pty`'s `spawn-helper` executable, which its macOS prebuild ships without —
+macOS starts every process through that helper, so without the bit every
+terminal attach fails with `posix_spawnp failed` and nothing else does.
 
 Other checks, all of which CI runs on every pull request:
 
@@ -679,9 +682,10 @@ Other checks, all of which CI runs on every pull request:
 npm run typecheck    # tsc --noEmit, per package
 npm run lint         # eslint
 npm run format:check # prettier --check   (npm run format to fix)
+npm run check:pty    # a terminal really starts here: the helper bit, and a live PTY
 
 shellcheck install.sh        # the installer is the only shell in the repo
-bash install.sh --self-test  # its own checks: version parsing, PATH, the Funnel probes
+bash install.sh --self-test  # version parsing, PATH, the Funnel probes, TETHER_VERSION
 
 npx playwright install chromium   # once; npm 12 blocks playwright's own postinstall
 npm run test:e2e                  # the end-to-end specs
@@ -701,7 +705,17 @@ gh release create v0.2.0 --generate-notes
 **tag** is what decides what gets installed and the GitHub release is the
 changelog beside it. Anything that is not three numbers behind a `v` — a `-rc1`,
 a branch — is ignored by that query and reachable only as `TETHER_VERSION`, which
-is also how you install an older release deliberately.
+is also how you install an older release deliberately. It works on an install
+that already exists, too, and on any ref rather than only a tag:
+
+```sh
+url=https://raw.githubusercontent.com/galawaydude/tether/main/install.sh
+curl -fsSL $url | TETHER_VERSION=v0.1.0 bash   # an older release
+curl -fsSL $url | TETHER_VERSION=main   bash   # an unreleased change, to test it
+```
+
+The checkout stays shallow either way, so moving between refs stays as fast as
+the first clone.
 
 `install.sh` itself is fetched from `main` rather than from the tag, as
 Homebrew's is: it is the thing that has to know how to find the current release,

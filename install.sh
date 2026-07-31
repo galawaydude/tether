@@ -60,12 +60,14 @@ Usage: install.sh [options]
 
   --dir <path>   Where to clone tether (default $DEFAULT_DIR)
   --yes          Do not prompt; accept the system packages this would install
-  --self-test    Check the version parsing, PATH and Funnel probes, and exit
+  --self-test    Check the version parsing, PATH, Funnel probes and TETHER_VERSION
+                 checkout moves, and exit
   --help         This message
 
 Environment:
 
-  TETHER_VERSION   Release tag to install (default: the latest one)
+  TETHER_VERSION   Release tag, or a branch to test, to install
+                   (default: the latest release tag)
 EOF
 }
 
@@ -75,6 +77,27 @@ EOF
 latest_version() {
 	git ls-remote --tags --refs "$REPO_URL" 2>/dev/null |
 		sed 's#.*/##' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1
+}
+
+# Move an existing install to whatever TETHER_VERSION names. Not a pull: the
+# clone below is shallow and detached, so there is no upstream branch to
+# fast-forward along — and it holds exactly one ref, so `git checkout <anything
+# else>` fails with "did not match any file(s) known to git" no matter how new
+# the ref is. Fetching by name and checking out FETCH_HEAD is what makes a newer
+# tag and a branch both work without giving up the shallow clone's speed.
+#
+# The tag refspec is tried first because it is the one that leaves a local tag
+# behind, so `git -C <dir> describe` still names the release that is installed.
+# A branch — how an unreleased change gets tested — has no such refspec and is
+# the fallback; its stderr is what gets shown, since a name that is neither is
+# the one this cannot do anything about.
+update_checkout() {
+	local dir=$1 ref=$2
+	GIT_TERMINAL_PROMPT=0 git -C "$dir" fetch --depth 1 --force origin \
+		"refs/tags/$ref:refs/tags/$ref" 2>/dev/null ||
+		GIT_TERMINAL_PROMPT=0 git -C "$dir" fetch --depth 1 --force origin "$ref" ||
+		return 1
+	git -C "$dir" checkout --quiet --force FETCH_HEAD
 }
 
 # `tmux -V` prints "tmux 3.7b", "tmux 3.4" or "tmux next-3.8". Succeeds iff that
@@ -398,6 +421,55 @@ self_test() {
 		my-box.tailnet-1234.ts.net
 	# Funnel on for a different host on this tailnet.
 	check 1 funnel_armed "$armed" other-box.tailnet-1234.ts.net
+
+	# Moving an existing install to another ref, which the shallow clone makes the
+	# non-obvious half of this script: a fresh clone can be told to fetch any ref,
+	# an existing one holds exactly the one it was cloned at. Both cases that
+	# matter are here — a newer tag, which is an upgrade, and a branch, which is
+	# how an unreleased change gets tested — against a local repository rather
+	# than the network, so what is under test is the refspec logic and nothing
+	# else. git is a hard requirement of this script, so this needs nothing CI
+	# does not already have.
+	#
+	# `quiet` because git's own progress output is not what is under test. It is
+	# invoked through `check` rather than directly, which shellcheck cannot see.
+	# Both codes, because which one it reports depends on the shellcheck version:
+	# SC2329 since 0.10, SC2317 before it.
+	# shellcheck disable=SC2317,SC2329
+	quiet() { "$@" >/dev/null 2>&1; }
+	local tmp
+	tmp=$(mktemp -d)
+	if (
+		set -e
+		export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+		git init -q -b main "$tmp/origin"
+		cd "$tmp/origin"
+		echo v1 >VERSION && git add -A && git commit -qm one && git tag v0.1.0
+		echo v2 >VERSION && git commit -qam two && git tag v0.2.0
+		echo tip >VERSION && git commit -qam three
+		git clone -q --branch v0.1.0 --depth 1 "file://$tmp/origin" "$tmp/clone"
+	) >/dev/null 2>&1; then
+		# An upgrade to a newer tag, which is the ordinary re-run.
+		check 0 quiet update_checkout "$tmp/clone" v0.2.0
+		check_out v2 cat "$tmp/clone/VERSION"
+		# The tag ref came with it, so the install directory can still say what it
+		# is — `git describe` there is how that question gets answered.
+		check_out v0.2.0 git -C "$tmp/clone" describe --tags
+		# A branch: no refs/tags/main to fetch, and the failure this all exists for
+		# was `git checkout main` on a checkout holding one tag.
+		check 0 quiet update_checkout "$tmp/clone" main
+		check_out tip cat "$tmp/clone/VERSION"
+		# A ref the remote does not have fails rather than silently building what
+		# is already there — main() is what turns that into a message.
+		check 1 quiet update_checkout "$tmp/clone" v9.9.9
+		check_out tip cat "$tmp/clone/VERSION"
+		# None of which may cost the shallow clone's speed.
+		check_out true git -C "$tmp/clone" rev-parse --is-shallow-repository
+	else
+		printf 'FAIL: could not build the self-test repository in %s\n' "$tmp"
+		fails=1
+	fi
+	rm -rf "$tmp"
 
 	if ((fails)); then die 'self-test failed'; fi
 	printf 'self-test ok\n'
@@ -762,14 +834,14 @@ main() {
 	elif ((FROM_CHECKOUT)); then
 		step "Installing this checkout: $TARGET_DIR"
 	else
-		# Not a pull: the clone above is shallow and on a tag rather than a branch,
-		# so there is no upstream to fast-forward along. Fetching the one tag keeps it
-		# shallow, and re-running the installer is how tether is upgraded.
+		# Re-running the installer is how tether is upgraded, and setting
+		# TETHER_VERSION on an existing install is how it moves to any other ref.
 		step "Updating $TARGET_DIR to $VERSION"
-		if ! GIT_TERMINAL_PROMPT=0 git -C "$TARGET_DIR" fetch --depth 1 --force origin \
-			"refs/tags/$VERSION:refs/tags/$VERSION" ||
-			! git -C "$TARGET_DIR" checkout --quiet "$VERSION"; then
-			note "could not check out $VERSION — leaving your checkout as it is and building that."
+		if ! update_checkout "$TARGET_DIR" "$VERSION"; then
+			# Which ref it is left at, rather than "as it is": the whole failure here
+			# is ending up on a version other than the one that was asked for, and a
+			# message that does not say which one leaves that invisible.
+			note "could not check out $VERSION — leaving $TARGET_DIR at $(git -C "$TARGET_DIR" describe --tags --always 2>/dev/null || echo 'its current ref') and building that."
 		fi
 	fi
 
@@ -943,6 +1015,24 @@ main() {
 	step "Installing dependencies and building"
 	npm ci
 
+	# node-pty's macOS prebuild ships `spawn-helper` without its executable bit,
+	# and macOS starts every process through that helper — so without this, every
+	# terminal attach fails with `posix_spawnp failed`, which is the only symptom
+	# there is. A chmod inside node_modules, so it is scoped to node-pty's own
+	# directory and to files named exactly that. All of node-pty's native
+	# directories rather than one: which of them is live (`build/Release` where it
+	# compiled here, `prebuilds/<platform>-<arch>` where it did not) is node-pty's
+	# decision, and an architecture guessed at here would be wrong on the next
+	# machine.
+	#
+	# The repo does the same on every `npm ci`, in the root package.json's
+	# `postinstall`. This is not that being duplicated for safety: this script is
+	# fetched from `main` and installs a *tag*, so the checkout it has just built
+	# can predate that postinstall entirely, and on a Mac that is the whole bug
+	# again. Which is also why the check below is written out here rather than
+	# calling the repo's own — a released tag has neither.
+	find node_modules/node-pty -type f -name spawn-helper -exec chmod +x {} + 2>/dev/null || true
+
 	step "Linking the tether command into $BIN_DIR"
 	# A symlink rather than `npm link`, which writes into npm's *global prefix* —
 	# root-owned whenever Node came from a distro package or a tarball, so it is an
@@ -954,6 +1044,37 @@ main() {
 	mkdir -p "$BIN_DIR" ||
 		die "could not create $BIN_DIR, which is where the tether command goes."
 	ln -sf "$TARGET_DIR/server/dist/cli.js" "$BIN_DIR/tether"
+
+	# The one thing every check above leaves untested: whether a terminal can
+	# start at all. Node and tmux are prerequisites; this is the product, and it
+	# is the check whose absence cost three hours of blind debugging on a Mac —
+	# the install said it was done, and the failure arrived later as a node-pty
+	# stack trace in the server log. `node` itself rather than a command from
+	# PATH: node-pty reports a refused `posix_spawnp` and a missing binary with
+	# the same message, and this one provably exists. The timeout is because a
+	# PTY that never exits would otherwise hang the install rather than fail it.
+	#
+	# It runs *after* the symlink and *before* the PATH block on purpose. On that
+	# Mac the terminal was the only broken part — the session list, the badges and
+	# the conversation view all worked — so dying before the link would take the
+	# command away from a machine that is otherwise fine, while dying after the
+	# PATH block would never run on a machine whose $BIN_DIR is not on PATH, which
+	# exits 1 there. It still dies: a terminal that cannot start fails the install.
+	step "Checking that a terminal can start"
+	if ! node -e "const p = require('node-pty').spawn(process.execPath, ['-e', ''], { cols: 80, rows: 24 });
+		setTimeout(() => { console.error('the process it started never exited'); process.exit(1); }, 20000);
+		p.onExit(({ exitCode, signal }) => process.exit(exitCode || signal ? 1 : 0));"; then
+		note "The error above is node-pty's, and node-pty is what tether starts every"
+		note "terminal through. On macOS the usual cause is"
+		note "node_modules/node-pty/prebuilds/<arch>/spawn-helper missing its executable"
+		note "bit — which this script has already set, so a failure here is something"
+		note "else."
+		note ""
+		note "The tether command is installed, at $BIN_DIR/tether, and the conversation"
+		note "view works: what will not work on this machine is the terminal. Re-run"
+		note "this installer to check it again."
+		die "tether cannot open a terminal on this machine."
+	fi
 
 	hash -r
 	# What `tether` resolves to need not be the symlink just written: an install

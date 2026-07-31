@@ -19,7 +19,9 @@
     "web"
   ],
   "scripts": {
+    "postinstall": "find node_modules/node-pty -type f -name spawn-helper -exec chmod +x {} + 2>/dev/null || true",
     "typecheck": "tsc --noEmit -p shared && tsc --noEmit -p server && tsc --noEmit -p web && tsc --noEmit -p web/tsconfig.node.json && tsc --noEmit -p e2e",
+    "check:pty": "node --disable-warning=ExperimentalWarning server/src/machine/pty-smoke.ts",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

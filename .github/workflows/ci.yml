@@ -28,9 +28,11 @@ jobs:
 
       # The installer is shell, so none of the checks below see it. Its own
       # --self-test covers the branches that can be silently wrong: the version
-      # parsing, the PATH message, and the two Funnel questions — whether the
+      # parsing, the PATH message, the two Funnel questions — whether the
       # tailnet permits it and whether it is already armed — neither of which
-      # may be answered from the other's field. Runs before anything expensive:
+      # may be answered from the other's field, and the TETHER_VERSION checkout
+      # moves, an existing shallow install sent to a newer tag or to a branch.
+      # Runs before anything expensive:
       # it needs nothing installed and takes milliseconds.
       - name: Installer
         run: |
@@ -66,12 +68,15 @@ jobs:
 
       - run: npm ci
 
-      # npm 12 blocks dependency install scripts unless approved, and an
-      # unapproved or unbuildable `node-pty` fails as a missing native module at
-      # the first attach — long after this job has gone green. Fail here instead.
-      - name: Verify node-pty built
-        run: |
-          node -e "require('node-pty').spawn('/bin/true', [], { cols: 80, rows: 24 })"
+      # Whether a terminal can start at all — an unbuildable `node-pty`, or a
+      # `spawn-helper` without its executable bit, otherwise fails at the first
+      # attach, long after this job has gone green. The same command `install.sh`
+      # runs on a user's machine, and the same one that carries the only evidence
+      # about macOS obtainable here: this runner holds the darwin prebuilds, so
+      # it can prove the root postinstall set their bit even though it cannot use
+      # them. server/src/machine/pty-smoke.ts says what it checks and why.
+      - name: Verify a terminal can start
+        run: npm run check:pty
 
       - name: Typecheck
         run: npm run typecheck
