@@ -97,6 +97,35 @@ node_version_ok() {
 	((major >= want))
 }
 
+# The one definition of how to get a new enough tmux by hand. Printed both where
+# the plan is declined and where there is no apt-get to build it with, which are
+# the same instruction and must not be able to drift apart.
+tmux_build_recipe() {
+	note "  curl -sSfL -O https://github.com/tmux/tmux/releases/download/$TMUX_VERSION/tmux-$TMUX_VERSION.tar.gz"
+	note "  tar -xzf tmux-$TMUX_VERSION.tar.gz && cd tmux-$TMUX_VERSION"
+	note "  ./configure && make && sudo make install"
+}
+
+# Which of the three things there is to say about PATH is true, decided from
+# strings alone so the self-test can ask it. `first` is the symlink this script
+# wrote being what runs, `later` is it being on PATH behind something else, and
+# `absent` is it not being on PATH at all — which is also the answer when nothing
+# resolved, since that is the same message. The `:` on both sides is what keeps
+# /home/u/.local/binx from matching /home/u/.local/bin.
+path_message_state() {
+	local bin_dir=$1 resolved=$2 path=$3
+	if [ -z "$resolved" ]; then
+		printf 'absent\n'
+	elif [ "$resolved" = "$bin_dir/tether" ]; then
+		printf 'first\n'
+	else
+		case ":$path:" in
+		*":$bin_dir:"*) printf 'later\n' ;;
+		*) printf 'absent\n' ;;
+		esac
+	fi
+}
+
 # curl | bash leaves stdin holding the script, so a prompt has to come from the
 # terminal itself. No terminal and no --yes means no consent, which is a no.
 confirm() {
@@ -116,7 +145,7 @@ confirm() {
 }
 
 self_test() {
-	local fails=0 want got
+	local fails=0 want got bin=/home/u/.local/bin
 	check() {
 		want=$1
 		shift
@@ -140,6 +169,22 @@ self_test() {
 	check 0 node_version_ok 'v25.0.0' 24
 	check 1 node_version_ok 'v22.14.0' 24
 	check 1 node_version_ok 'not a version' 24
+	check_out() {
+		want=$1
+		shift
+		got=$("$@")
+		if [ "$got" != "$want" ]; then
+			printf 'FAIL (want %s, got %s): %s\n' "$want" "$got" "$*"
+			fails=1
+		fi
+	}
+	check_out first path_message_state "$bin" "$bin/tether" "$bin:/usr/bin"
+	check_out later path_message_state "$bin" /home/u/.nvm/bin/tether "/home/u/.nvm/bin:$bin:/usr/bin"
+	check_out absent path_message_state "$bin" /home/u/.nvm/bin/tether /home/u/.nvm/bin:/usr/bin
+	check_out absent path_message_state "$bin" '' /usr/bin
+	check_out absent path_message_state "$bin" /usr/bin/tether /home/u/.local/binx:/usr/bin
+	check_out later path_message_state "$bin" /usr/bin/tether "/usr/bin:$bin"
+	check_out later path_message_state "$bin" /usr/bin/tether "$bin"
 	if ((fails)); then die 'self-test failed'; fi
 	printf 'self-test ok\n'
 }
@@ -308,8 +353,32 @@ main() {
 			# Before the plan rather than before the install: a plan quoting apt-get
 			# to a machine that has no apt-get asks for consent to something that
 			# cannot happen, and tells the user so only once they have said yes.
-			command -v apt-get >/dev/null 2>&1 ||
-				die "no apt-get on this system. Install the equivalents of ${apt_packages[*]} with your package manager and re-run."
+			# What it says instead has to be a way out rather than a loop — these
+			# package names are re-derived from the same state on every run, so
+			# "install the equivalents and re-run" alone lands back here unchanged.
+			if ! command -v apt-get >/dev/null 2>&1; then
+				step "This script installs system packages with apt-get, and there is none here"
+				note "It installs them no other way, and does not know your package manager's"
+				note "names for them. In Debian's names, what it would have installed:"
+				note ""
+				note "  ${apt_packages[*]}"
+				note ""
+				if ((need_toolchain)); then
+					note "cc, c++, make and python3 have to be on PATH before the build: node-pty"
+					note "ships no Linux prebuild and is compiled here. That half is your own"
+					note "package manager's, and this script cannot do it for you."
+					note ""
+				fi
+				if [ "$tmux_state" != ok ]; then
+					note "tmux is the half this script can be exact about. Installing $TMUX_VERSION"
+					note "yourself satisfies the version check above — the packages listed are what"
+					note "building it needs, under whatever names your distribution gives them:"
+					note ""
+					tmux_build_recipe
+					note ""
+				fi
+				die "install what is missing with your own package manager, then re-run this script."
+			fi
 			plan+=("install these packages: ${apt_packages[*]}")
 		fi
 		if [ "$tmux_state" != ok ]; then
@@ -358,9 +427,7 @@ main() {
 				note "  sudo apt-get update && sudo apt-get install -y ${apt_packages[*]}"
 			fi
 			if [ "$OS" = linux ] && [ "$tmux_state" != ok ]; then
-				note "  curl -sSfL -O https://github.com/tmux/tmux/releases/download/$TMUX_VERSION/tmux-$TMUX_VERSION.tar.gz"
-				note "  tar -xzf tmux-$TMUX_VERSION.tar.gz && cd tmux-$TMUX_VERSION"
-				note "  ./configure && make && sudo make install"
+				tmux_build_recipe
 			elif ((${#brew_cmd[@]})); then
 				note "  ${brew_cmd[*]}"
 			fi
@@ -416,13 +483,39 @@ main() {
 	ln -sf "$TARGET_DIR/server/dist/cli.js" "$BIN_DIR/tether"
 
 	hash -r
-	if ! command -v tether >/dev/null 2>&1; then
+	# What `tether` resolves to need not be the symlink just written: an install
+	# from before this script used ~/.local/bin left one in npm's global prefix,
+	# which nvm, fnm, volta and asdf all put ahead of it on PATH. `-ef` rather than
+	# a string compare, so a leftover pointing at *this* checkout — which runs the
+	# right thing — is not reported as a different install.
+	resolved=$(command -v tether || true)
+	if [ -n "$resolved" ] && [ "$resolved" -ef "$BIN_DIR/tether" ]; then
+		resolved="$BIN_DIR/tether"
+	fi
+	case "$(path_message_state "$BIN_DIR" "$resolved" "$PATH")" in
+	later)
+		step "tether is installed, but a different one is what runs"
+		note "This script wrote $BIN_DIR/tether."
+		note "$BIN_DIR is on your PATH, but $resolved comes before it"
+		note "and is another file. A previous install of tether used npm link, which is"
+		note "the likely source. Remove it (npm unlink -g @tether/server, or delete that"
+		note "file), or move $BIN_DIR ahead of it on your PATH."
+		note ""
+		note "This script does not remove a command it did not create."
+		exit 1
+		;;
+	absent)
 		step "tether is installed, but not on your PATH"
 		note "It is at $BIN_DIR/tether. Add this line to your shell's startup file:"
 		note ""
 		note "  export PATH=\"$BIN_DIR:\$PATH\""
 		note ""
-		if ((BIN_DIR_EXISTED == 0)); then
+		if [ -n "$resolved" ]; then
+			note "Until then \`tether\` runs $resolved, which is another"
+			note "file — most likely a previous install that used npm link. The line above"
+			note "puts $BIN_DIR ahead of it."
+			note ""
+		elif ((BIN_DIR_EXISTED == 0)); then
 			note "On Debian and Ubuntu ~/.profile adds that directory when it exists, and"
 			note "this run created it — so if your login shell reads ~/.profile (bash does,"
 			note "zsh does not), logging out and back in does the same thing."
@@ -430,24 +523,8 @@ main() {
 		fi
 		note "This script does not edit shell startup files."
 		exit 1
-	fi
-
-	# What `tether` resolves to need not be the symlink just written: an install
-	# from before this script used ~/.local/bin left one in npm's global prefix,
-	# which nvm, fnm, volta and asdf all put ahead of it on PATH. `-ef` rather than
-	# a string compare, so a leftover pointing at *this* checkout is not reported.
-	resolved=$(command -v tether)
-	if ! [ "$resolved" -ef "$BIN_DIR/tether" ]; then
-		step "tether is installed, but a different one is what runs"
-		note "This script wrote $BIN_DIR/tether."
-		note "Your PATH finds $resolved first, and that is another file."
-		note "A previous install of tether used npm link, which is the likely source."
-		note "Remove it (npm unlink -g @tether/server, or delete that file), or put"
-		note "$BIN_DIR earlier on PATH."
-		note ""
-		note "This script does not remove a command it did not create."
-		exit 1
-	fi
+		;;
+	esac
 
 	step "Done — tether is at $resolved"
 	cat <<-'EOF'
