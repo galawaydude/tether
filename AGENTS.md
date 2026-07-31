@@ -41,6 +41,17 @@ locally.
   so `npm ci` compiles it and a machine with no C++ toolchain gets no PTY at all.
   `machine/terminal.ts` imports it lazily and `tether serve` then refuses to start with an
   instruction instead of an import crash; CI proves it built before running anything else.
+  **macOS has the opposite failure and it is silent.** There node-pty uses a prebuild, and
+  that prebuild ships `spawn-helper` — which macOS starts _every_ process through — without
+  its executable bit, so `posix_spawnp` refuses and every terminal attach dies while nothing
+  else is wrong. The bit is set in three places on purpose, not by accident: the root
+  `postinstall` on every `npm ci`, `install.sh` again for the tag it just built (see the
+  installer entry below for why it cannot rely on the first), and `npm run check:pty` —
+  `machine/pty-smoke.ts` — is what _fails_ when a PTY cannot start. That check asserts the
+  bit as well as spawning, because a Linux CI runner carries the darwin prebuilds and is
+  therefore the only place this can be proven without a Mac. It looks in every directory
+  node-pty resolves from (`build/Release`, `build/Debug`, `prebuilds/<platform>-<arch>`) and
+  names no architecture; anything that starts hardcoding one has gone wrong.
 - **`npx tether` only works because `server`'s `prepare` builds during `npm ci`.** npm links
   workspace bins before install finishes and skips a bin whose target is missing, so
   `dist/cli.js` has to exist by then — and it has to carry the exec bit itself, which is why
@@ -87,6 +98,17 @@ locally.
   a change reaches the public install line only when a release is cut (README's
   Development → _Cutting a release_), and `install.sh` itself is the one exception,
   being fetched from `main` so that it is what knows how to find the current release.
+  That exception is also a **constraint on the script**: it runs from `main` against a
+  checkout at an older tag, so it may never call anything that exists only in newer code.
+  The `spawn-helper` chmod and the terminal check are therefore written out inside it,
+  duplicating what the repo does for itself — a released tag has neither, and on a Mac
+  that gap is the whole bug. `TETHER_VERSION` moves an **existing** install, not only a
+  fresh one, and to a branch as well as a tag: the clone is shallow and holds exactly one
+  ref, so `update_checkout` fetches the ref by name — tag refspec first, which is what
+  keeps `git describe` in the install directory naming the release — and checks out
+  `FETCH_HEAD`. `git checkout <some other tag>` there fails with "did not match any
+  file(s) known to git" no matter how new the ref is; `--self-test` covers both moves
+  against a throwaway local repository, so it needs no network.
   And the `tether` command is a **symlink into `~/.local/bin`**, not `npm link`: npm's
   global prefix is root-owned wherever Node came from a distro package or a tarball,
   which made the last step of the script the one that failed after every expensive
