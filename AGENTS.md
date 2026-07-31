@@ -87,6 +87,28 @@ CI runs exactly those (`.github/workflows/ci.yml`).
   which made the last step of the script the one that failed after every expensive
   consented thing had already been spent. Anything that moves `server/dist/cli.js`
   moves that symlink's target.
+- **Tailscale Funnel is the documented default, and `--funnel` is composition
+  rather than control.** `machine/tailscale.ts` only ever _reads_ — one
+  `tailscale status --json`, four fields — and `install.sh` is what turns Funnel
+  on, because `tailscale funnel` needs root or an operator (`Access denied:
+serve config denied` otherwise) and sets a machine-wide thing that outlives
+  the server. So there is no Tailscale client here and none is wanted; adding
+  one is the "network manager" this was scoped against. Three facts established
+  by putting a header echo behind a real Funnel (tailscale 1.98.10, captured in
+  the PR): it forwards `Host: <name>.ts.net` with **no port**, sets
+  `X-Forwarded-Proto: https` and a real client `X-Forwarded-For`, and marks
+  itself with `Tailscale-Funnel-Request: ?1`. That is why the composition is
+  bind `127.0.0.1` + allow the derived name + trust `127.0.0.1`, and the three
+  are one decision: the loopback bind is what makes trusting that proxy's
+  `X-Forwarded-*` safe, and the trust is what gets the session cookie its
+  `Secure` flag. **The password rule is extended, never excepted** — the check
+  is no longer "off-loopback", because `--funnel` binds loopback and is the most
+  exposed tether can be. A `--funnel` that could start without a password is the
+  one regression here that publishes a shell. `Self.DNSName` carries a trailing
+  dot and the capability set appears in both `Self.CapMap` and the deprecated
+  `Self.Capabilities`; the precondition order is fixed, because a logged-out
+  node reports **no** capabilities and asking about Funnel first tells someone
+  to edit their ACLs when they need to sign in.
 - **`cwd` is a trust boundary and `resolveCwd` in `machine/tmux.ts` is the only
   gate.** It resolves the path (symlinks included) _before_ checking it, and confines
   the result to `allowedRoots()` — the user's home unless `TETHER_ALLOWED_ROOTS` (a
