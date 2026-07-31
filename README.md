@@ -568,9 +568,9 @@ Ubuntu). tmux, because the driver's tests drive a real server on a private
 socket, not a mock, and older tmux crashes on the `window-size manual` that
 `tether.conf` sets (so does tether itself; 3.7 is a hard floor, not just a test
 one). A toolchain, because `node-pty` ships no Linux prebuild and is compiled
-during install. [`install.sh`](install.sh) sets all three up, and
-`./install.sh` inside a checkout installs that checkout rather than cloning
-another.
+during install. [`install.sh`](install.sh) sets up tmux and the toolchain and
+checks Node — it does not install Node — and `./install.sh` inside a checkout
+installs that checkout rather than cloning another.
 
 ```sh
 npm ci        # installs all workspaces; builds shared/, server/ (the CLI), web/ and node-pty

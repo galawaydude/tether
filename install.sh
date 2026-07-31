@@ -221,6 +221,7 @@ main() {
 	fi
 
 	apt_packages=()
+	brew_cmd=()
 	plan=()
 	if [ "$OS" = linux ]; then
 		if ((need_toolchain)); then
@@ -239,11 +240,17 @@ main() {
 	elif [ "$tmux_state" != ok ]; then
 		command -v brew >/dev/null 2>&1 ||
 			die "tmux $TMUX_MIN_MAJOR.$TMUX_MIN_MINOR or newer is required and Homebrew is not installed. Install Homebrew from https://brew.sh and re-run, or build tmux $TMUX_VERSION yourself."
-		if [ "$tmux_state" = missing ]; then
-			plan+=("brew install tmux")
+		# `brew upgrade` refuses a formula Homebrew does not have installed, and the
+		# too-old tmux on PATH is as likely to be MacPorts', Nix's or a hand-built one.
+		# So the choice is Homebrew's own answer about what it owns, not an inference
+		# from what PATH reports. Decided once here: the plan, the decline path and
+		# what actually runs are all this one array.
+		if brew list --formula tmux >/dev/null 2>&1; then
+			brew_cmd=(brew upgrade tmux)
 		else
-			plan+=("brew upgrade tmux")
+			brew_cmd=(brew install tmux)
 		fi
+		plan+=("${brew_cmd[*]}")
 	fi
 
 	if ((${#plan[@]})); then
@@ -275,8 +282,8 @@ main() {
 				note "  curl -sSfL -O https://github.com/tmux/tmux/releases/download/$TMUX_VERSION/tmux-$TMUX_VERSION.tar.gz"
 				note "  tar -xzf tmux-$TMUX_VERSION.tar.gz && cd tmux-$TMUX_VERSION"
 				note "  ./configure && make && sudo make install"
-			elif [ "$OS" = macos ]; then
-				note "  ${plan[0]}"
+			elif ((${#brew_cmd[@]})); then
+				note "  ${brew_cmd[*]}"
 			fi
 			exit 1
 		fi
@@ -293,7 +300,8 @@ main() {
 	if [ "$tmux_state" != ok ]; then
 		if [ "$OS" = macos ]; then
 			step "Installing tmux with Homebrew"
-			if [ "$tmux_state" = missing ]; then brew install tmux; else brew upgrade tmux; fi
+			"${brew_cmd[@]}" ||
+				die "Homebrew failed (${brew_cmd[*]}). Run it yourself and re-run this script, or build tmux $TMUX_VERSION from source."
 		else
 			step "Building tmux $TMUX_VERSION"
 			build=$(mktemp -d)
@@ -317,7 +325,22 @@ main() {
 	npm ci
 
 	step "Linking the tether command"
-	npm link --workspace @tether/server
+	# The one step on the happy path that writes outside tether's own directory. A
+	# Node installed from a tarball or a distro package has a root-owned global
+	# prefix, so this is an EACCES for an ordinary user — and sudo-ing it silently is
+	# the one thing the rest of this script never does without asking.
+	if ! npm link --workspace @tether/server; then
+		npm_prefix=$(npm prefix -g 2>/dev/null || true)
+		step "Could not link the tether command"
+		note "npm could not write to its global prefix${npm_prefix:+ ($npm_prefix)}. Either:"
+		note ""
+		note "  - re-run this script with sudo, or"
+		note "  - install Node with nvm (nvm install $(cat .nvmrc)), which puts the"
+		note "    prefix under your own home, and re-run this script."
+		note ""
+		note "This script does not run sudo for you here."
+		exit 1
+	fi
 
 	hash -r
 	if ! command -v tether >/dev/null 2>&1; then
