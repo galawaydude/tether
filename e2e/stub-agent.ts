@@ -129,13 +129,29 @@ function record(type: 'user' | 'assistant', text: string): void {
 /**
  * `~/.claude/sessions/<pid>.json`, which tether's badge polls. The pid is this
  * process's own — tmux `execvp`s the shim and the shim `exec`s node, so it is
- * the pane's pid — and `procStart` is `/proc/<pid>/stat` field 22, found from
- * the last `") "` because field 2 can contain spaces and a `)`.
+ * the pane's pid. Claude Code records `/proc/<pid>/stat` field 22 on Linux and
+ * the UTC `ps -o lstart=` value on macOS; both were captured from 2.1.220.
  */
 const registry = join(homedir(), '.claude', 'sessions');
 mkdirSync(registry, { recursive: true });
-const stat = readFileSync(`/proc/${process.pid}/stat`, 'utf8');
-const procStart = stat.slice(stat.lastIndexOf(') ') + 2).split(' ')[19];
+
+function processStart(pid: number): string {
+  if (process.platform === 'linux') {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    return stat.slice(stat.lastIndexOf(') ') + 2).split(' ')[19]!;
+  }
+  if (process.platform === 'darwin') {
+    const result = spawnSync('ps', ['-p', String(pid), '-o', 'lstart='], {
+      encoding: 'utf8',
+      env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' },
+    });
+    const started = result.stdout.trim();
+    if (started !== '') return started;
+  }
+  throw new Error(`the e2e stub does not know ${process.platform}'s process start identity`);
+}
+
+const procStart = processStart(process.pid);
 
 function publish(status: 'busy' | 'idle' | 'waiting'): void {
   writeFileSync(
@@ -371,7 +387,9 @@ rl.on('line', (line) => {
     return;
   }
 
-  const reply = `echo ${text}`;
+  const reply = /^\[Image attached: [0-9a-f-]{36}\.(?:png|jpg|webp|gif) at ".*"\]$/.test(text)
+    ? 'echo image received'
+    : `echo ${text}`;
   record('assistant', reply);
   process.stdout.write(`${reply}\n`);
 });

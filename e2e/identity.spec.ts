@@ -102,6 +102,15 @@ test('two sessions in one directory each show their own conversation, and follow
   await expect(conversation.getByText(SECOND, { exact: true })).toHaveCount(0);
   await shoot(page, '2-after-a-resume-at-the-pane');
 
+  // The browser then loses every in-memory row and socket. The URL restores the
+  // same tether session, and its database binding must already name the resumed
+  // transcript — this is the live failure where the terminal came back and the
+  // conversation came back empty.
+  await page.reload();
+  await expect(conversation.getByText(RESUMED, { exact: true })).toHaveCount(1);
+  await expect(conversation.getByText(SECOND, { exact: true })).toHaveCount(0);
+  await shoot(page, '2b-resume-survives-a-reload');
+
   // The neighbour was never touched by any of it.
   await page.getByRole('button', { name: 'Back to sessions' }).click();
   await page.getByRole('button', { name: `alpha ${project}` }).click();

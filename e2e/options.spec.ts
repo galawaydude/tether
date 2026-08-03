@@ -69,6 +69,14 @@ const rows = (page: Page): Locator => page.locator('.xterm-rows');
  */
 const conversation = (page: Page): Locator => page.locator('.conv');
 
+async function openOptions(page: Page): Promise<void> {
+  const panel = page.locator('.composer-settings');
+  if ((await panel.getAttribute('open')) === null) {
+    await panel.locator('summary').click();
+  }
+  await expect(panel).toHaveAttribute('open', '');
+}
+
 /**
  * Ready is the *terminal* being attached, not the conversation having a line in
  * it. The stub writes a Claude-Code-shaped transcript whichever name it is run
@@ -102,6 +110,7 @@ test('each provider offers its own controls, and they reach the pane', async ({ 
   await expect(page.getByLabel('Permissions')).toHaveCount(0);
   await shoot(page, '1-claude-composer');
 
+  await openOptions(page);
   await page.getByLabel('Effort').selectOption('medium');
   // The control is a menu, not a display of the agent's state — tether cannot
   // read most of these back from a running pane, so it resets rather than
@@ -128,9 +137,9 @@ test('each provider offers its own controls, and they reach the pane', async ({ 
   await dismiss(page);
 
   // ── the narrowest phone, and then its keyboard ─────────────────────────────
-  // Three controls plus Send do not fit one line at 360px, so the row wraps —
-  // and what has to hold is that wrapping never costs the two things a phone
-  // cannot do without.
+  // Agent settings are collapsed by default so they do not permanently take
+  // half the composer. While deliberately open at 360px, every native control
+  // and Send still has to remain reachable.
   await page.setViewportSize({ width: 360, height: 640 });
   // The placeholder fits the single row a textarea has before it is typed in,
   // so its second half is not simply cut off.
@@ -156,9 +165,8 @@ test('each provider offers its own controls, and they reach the pane', async ({ 
   await shoot(page, '5-claude-360');
 
   // 360×340 is this phone with its keyboard up, and it is the size that finds a
-  // composer able to eat the conversation it belongs to. The wrapped row costs
-  // 52px there, which is why the message box gives height back below 420px —
-  // Send must still be on screen, which is the failure PR #16 shipped once. And
+  // composer able to eat the conversation it belongs to. The expanded settings
+  // are intentionally temporary, but Send must still be on screen. And
   // not Send alone: every control in the panel, by the same rule the sheet and
   // the permission card are held to.
   await page.setViewportSize(KEYBOARD_UP);
@@ -208,6 +216,7 @@ test('an unreadable pane is reported, never dressed up as a mode that was set', 
 }) => {
   await signIn(page);
   await start(page, join(dir, 'options-mode'), 'claude-code');
+  await openOptions(page);
 
   // `plan` lowers nothing, so it applies without a gate — and still must not
   // claim to have worked when the server could not read the pane.
@@ -224,6 +233,7 @@ test('an unreadable pane is reported, never dressed up as a mode that was set', 
 test('a mode that lowers the permission bar is held until it is acknowledged', async ({ page }) => {
   await signIn(page);
   await start(page, join(dir, 'options-mode-warn'), 'claude-code');
+  await openOptions(page);
 
   // `acceptEdits` stops Claude Code asking before it writes to files, so it gets
   // the same treatment as Codex's presets rather than being a quiet list entry.
@@ -260,6 +270,7 @@ test('a Codex composer offers Codex’s axis, and warns before it lowers the bar
   await expect(page.getByLabel('Permission mode')).toHaveCount(0);
   await shoot(page, '2-codex-composer');
 
+  await openOptions(page);
   // The value that asks for everything applies straight away: there is nothing
   // to warn about, and a warning there would teach a user to click past the
   // ones that matter.

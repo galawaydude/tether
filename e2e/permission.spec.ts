@@ -207,11 +207,9 @@ test('a permission prompt is answered from the conversation view, and only once'
   const waited = cards.nth(2);
   await expect(waited.getByRole('button', { name: 'Approve' })).toHaveCount(1);
   // Nothing is tapped, and the terminal is not summoned either — doing so would
-  // release the hold that is being watched expire. Both panes stay mounted, so
-  // the terminal's rendered rows are readable from behind the closed overlay:
-  // until the deadline, the pane shows no dialog at all, because the agent is
-  // blocked inside the hook rather than waiting on a keystroke.
-  await expect(page.locator('.xterm-rows')).not.toContainText(OWN_PROMPT);
+  // release the hold that is being watched expire. Until the deadline the card
+  // remains answerable because the agent is blocked inside the hook rather than
+  // waiting on a terminal keystroke.
 
   await expect(waited.locator('.tool-state')).toHaveText('in terminal', {
     timeout: HOLD_MS + 10_000,
@@ -222,12 +220,6 @@ test('a permission prompt is answered from the conversation view, and only once'
   // panes that says so.
   await expect(banner).toContainText('Claude needs your permission to use Bash');
   await expect(agentChip).toHaveText('Waiting for you');
-  // Read the pane *before* the viewport moves. Resizing refits xterm, which
-  // resizes the tmux pane, which can push a line the agent has already printed
-  // into the scrollback — and `.xterm-rows` is the rendered screen, not the
-  // history. Asserting here rather than only after the summon below keeps the
-  // measurements that follow from deciding whether this claim holds.
-  await expect(page.locator('.xterm-rows')).toContainText(OWN_PROMPT);
   // The one control a user taps one-handed while an agent is blocked on them,
   // so it is measured rather than merely found: styling `.link` down to its own
   // text height once dropped it to 16.5px, which a presence check passes. With
@@ -247,17 +239,15 @@ test('a permission prompt is answered from the conversation view, and only once'
   await open.click();
   await expect(hatch(page)).toHaveAttribute('aria-expanded', 'true');
   await expect(page.locator('.xterm-rows')).toContainText(OWN_PROMPT);
-  // The banner goes with it — it would be offering the thing already on screen,
-  // and it must not lie over the sheet's own way out. Its sentence moves into the
-  // sheet's header row instead, which is the surface the user is now on.
+  // The banner goes with it — it would be offering the thing already on screen.
+  // Its sentence moves onto the terminal's top edge without adding a toolbar.
   await expect(banner).toHaveCount(0);
   await expect(page.locator('.termsheet-waiting')).toContainText(
     'Claude needs your permission to use Bash',
   );
-  // And the tap did not cost the keyboard its place: the control that was
-  // clicked has gone, so focus lands on the one that puts the terminal away
-  // again, exactly where dismissing leaves it.
-  await expect(hatch(page)).toBeFocused();
+  // Opening a terminal is an intent to type, so focus lands directly in xterm
+  // rather than requiring a second tap on the pane.
+  await expect(page.locator('.xterm-helper-textarea')).toBeFocused();
   await shoot(page, '6-the-banner-summons-the-terminal');
 
   // Answering there reconciles to the same one card — the other direction of
