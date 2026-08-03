@@ -190,10 +190,15 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   failure is silent — tmux 3.7b strips a trailing `;`, eats the backslash of a
   trailing `\;`, and exits 0 either way, so `git status;` loses its `;` with
   nothing to catch. The rule has exactly one home, behind `checkArgs` and the
-  exported `isSeparatorArgument`; `machine/terminal.ts` asks it, and routes what it
-  flags — plus anything with a line break — through the paste buffer, which reaches
-  tmux on stdin and is never argv. The guard is not relaxed for this and must not
-  be. Its other half is blast radius: a frame the guard refuses is an undeliverable
+  exported `isSeparatorArgument`, and every argument-bearing tmux command remains
+  under it. Ordinary `text` no longer builds such a command at all: it writes to
+  the already-attached PTY, which both bypasses the lexer and removes one process
+  spawn per character. Text with a line break still goes through the paste buffer
+  so bracketed paste is not submitted line by line. Unambiguous controls (Enter,
+  Tab, Backspace, Escape and `C-a`–`C-z`) take the same PTY fast path; cursor and
+  navigation keys remain tmux key names because application-key mode decides
+  their bytes. The guard is not relaxed for those. Its other half is blast radius:
+  a frame the guard refuses is an undeliverable
   **frame**, not a dead attach, so `web/term-socket.ts` logs, ACKs and drops it and
   keeps the socket open — only a genuinely gone attach closes at all, and it
   closes with **no code**, so the client reconnects: `CLOSE_ATTACH_FAILED` is the
@@ -223,10 +228,11 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   in by that same effect) while its conversation pane worked perfectly.
   `keys.ts`'s `newClientId` — `getRandomValues`, which carries no gate — and its
   test in `keys.test.ts` are the guard for that one; a new one needs its own.
-  The second one is `copyText` in `conversation.tsx`, which is `execCommand`
-  rather than `navigator.clipboard` for exactly this reason and says so — a
-  deprecated API that works everywhere the app loads beats a modern one that is
-  `undefined` on every device but the host.
+  The second one is `copyText` in `conversation.tsx`: it uses
+  `navigator.clipboard` only when that property exists and falls through on an
+  absent **or refused** modern API to `execCommand`, which carries no secure-context
+  gate. The visible Copy control and its Copied feedback exist on touch too; a
+  hover-only action removes copying from the phone this product is for.
 - **The `term` socket's handshake completes before its route handler runs.**
   `@fastify/websocket` upgrades and _then_ calls the handler, so the browser's
   `onopen` has already fired — and its first act is to send its size and re-send
@@ -246,9 +252,13 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   unauthenticated but authenticated differently (loopback plus the `0600` secret,
   see the hook entry below). A wildcard would answer every
   unmatched path publicly and hand an unauthenticated caller a 404-vs-401 oracle
-  for which API routes exist. `web`'s `prepare` builds `web/dist` on `npm ci` for
-  the same reason `server`'s does — `tether serve` reads it at startup and only
-  warns if it is absent.
+  for which API routes exist. Hashed assets are immutable for a year and ordinary
+  HTTP responses are compressed by `@fastify/compress`; its `onRoute` hook only
+  reaches routes declared after the plugin loads, so `server.ts` registers **all**
+  routes inside the one `app.after()` that already made WebSockets work. Moving a
+  route back out silently sends the full browser bundle over Funnel. `web`'s
+  `prepare` builds `web/dist` on `npm ci` for the same reason `server`'s does —
+  `tether serve` reads it at startup and only warns if it is absent.
 - **All persistent state lives outside the repo, and nearly all of it is one SQLite
   file**, opened by `server/src/db.ts` — `~/.local/state/tether/tether.sqlite`, file
   `0600` in a `0700` directory (`$XDG_STATE_HOME`, or `$TETHER_STATE_DIR`, which tests
@@ -276,12 +286,24 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   guard: the pid is a tether pane's, so a hand-run agent is in no pane and is never
   reached, and `status.ts`'s liveness and `procStart` checks are what say the file
   under that pid is really that pane's.
-  Rows are marked dead, never deleted: a dead row
+  Rows are marked dead, never physically deleted: a dead row
   is what `resumeSession` (`machine/sessions.ts`) restarts through the provider's own
-  resume, and `revive` is the only thing that clears `dead_at`. A row whose
-  `provider_session_id` is still null has no conversation to restore, and resume refuses
-  it rather than starting fresh — a new session presented as a resumed one is the failure
-  mode that silently costs a user their work.
+  resume, and `revive` is the only thing that clears `dead_at`. **Remove** on a dead
+  list row sets nullable `removed_at`, which hides it from every ordinary registry
+  read and makes it unresumable while retaining its tombstone and provider session id;
+  the provider owns the transcript and tether never deletes it, and retaining the id
+  keeps discovery from assigning that conversation elsewhere. Existing databases gain
+  the column in `applyRegistrySchema`'s one compatible `ALTER`; two processes racing the
+  ALTER re-check its postcondition. A live row cannot be removed, and `resumeSession`
+  checks that `revive` changed a row after its awaited spawn, rolling the pane back if a
+  concurrent Remove won. A row whose `provider_session_id` is still null has no
+  conversation to restore, and resume refuses it rather than starting fresh — a new
+  session presented as a resumed one is the failure mode that silently costs a user
+  their work. The browser exposes that same operation on
+  the dead conversation screen, never as a `/resume` typed into a terminal chooser: the
+  row already identifies the exact provider conversation. A successful resume updates the
+  open `Session` and remounts both sockets although its registry id did not change; while
+  it is dead, `SessionScreen` starts no terminal attach at all.
 - **Tests run straight from TypeScript** via `node --test` and Node's built-in type
   stripping. There is no test build step; relative imports carry the `.ts` extension.
 - **HTTP routes are default-deny.** A `preParsing` hook in `server/src/web/server.ts` rejects
@@ -604,10 +626,12 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
 - **`~/.claude/sessions/<pid>.json` outlives its process, so both guards in
   `providers/claude-code/status.ts` are mandatory.** It is deleted on a graceful
   exit and left behind by a `SIGKILL` or a reboot, and pids are reused — so
-  `kill(pid, 0)` is not enough on its own. `procStart` is the identity check,
-  and it is verified to be `/proc/<pid>/stat` **field 22** (`starttime`), found
-  from the **last** `") "` because field 2 is a comm that can contain spaces and
-  `)`. Anything unreadable or unverifiable is `undefined` — "tether cannot say"
+  `kill(pid, 0)` is not enough on its own. `procStart` is the identity check:
+  Linux records `/proc/<pid>/stat` **field 22** (`starttime`), found from the
+  **last** `") "` because field 2 is a comm that can contain spaces and `)`;
+  macOS records the UTC, C-locale output of `ps -o lstart=`. Both are verified
+  against Claude Code 2.1.220, and `processStart` is the one reader. Anything
+  unreadable or unverifiable is `undefined` — "tether cannot say"
   — never a guess: a session wrongly reported `waiting` is a phone notification
   that should not have fired. The file also carries `waitingFor`, which nothing
   reads yet. `undefined` is the _only_ thing the poller may not announce: a
@@ -634,9 +658,22 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   The asymmetry is deliberate: tmux re-derives the terminal exactly on every
   attach, conversation events are re-derivable from nothing the client holds.
   `seq` is the event's position in the mapped stream, which is why the HTTP
-  history route and a live tailer agree without either persisting anything. A
-  `since` older than the in-memory tail is answered with `refetch`, never with a
-  partial history. What decides a `refetch` when the row is re-bound is **what
+  history route and a live tailer agree without either persisting anything. The
+  default history response carries only its latest `TAIL_EVENTS`, with their
+  **absolute** sequence numbers and `truncated: true`; a real Mac transcript
+  reached 5,079 events / 4.1MB mapped JSON and mounting it all made reload look
+  blank. Older history remains reachable without undoing that fix:
+  `?before=<first-seq>` returns the one bounded page immediately before it while
+  `seq` still names the live transcript end, and the browser replaces one archive
+  page with the next rather than accumulating thousands of mounted rows. “Back
+  to latest” returns to the live state, whose socket kept following throughout.
+  `historyPage` in `web/src/conversation.ts` owns the archive page shape so that
+  decision is testable outside JSX. The browser independently caps live `Rows`
+  at `MAX_CONVERSATION_ROWS`, pruning its `byCall` index with them but **never
+  dropping an answerable card**. Every page leaves the provider transcript
+  untouched. A `since` older than the
+  in-memory tail is answered with `refetch`, never with a partial history. What
+  decides a `refetch` when the row is re-bound is **what
   was published, not how the row got bound**: `#restart` asks `live.following`
   (the transcript `#start` really attached to) and `live.seq`, because a bind can
   land while a search is still in flight — a client can hold event 1 from the
@@ -653,7 +690,12 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   and `conversation.tsx` only picks elements. Put a rendering decision in the
   `.tsx` and it silently leaves the test suite. `addEvents` is append-only and
   drops any `seq` at or below the highest applied, which is what makes the
-  `since` replay after a reconnect free of duplicates. The mirror of the data
+  `since` replay after a reconnect free of duplicates. Its rows are also
+  immutable: `conversation.tsx` memoizes `RowView`, and transcript frames are
+  coalesced for one browser frame, so an arriving burst renders once and a tool
+  result replaces only its own card. Mutating a row makes the memo hide the
+  update; removing the memo makes every markdown tree in a long conversation
+  rebuild per event. The mirror of the data
   layer's rule holds here too: an **unknown event kind becomes a grey note, never
   a throw** — one uncaught kind would blank the whole page. The same split holds
   for the session list: `web/src/sessions.ts` owns the search filter, the day
@@ -769,6 +811,21 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   the other direction. `busy` and `retrying` are **not** refused: both
   providers queue a message mid-turn, the unacked set carries one across a
   reconnect, and that is the most valuable thing a phone can do.
+- **A pasted image is a private file plus an ordinary prompt, not a new provider
+  protocol.** `POST /api/sessions/:id/images` accepts only byte-bounded PNG,
+  JPEG, WebP or GIF bodies, checks their signatures, and writes a generated name
+  `0600` under `<state>/attachments/<session-id>/`; SVG is active markup and is
+  never accepted. The browser keeps a local object-URL preview until Send, then
+  uploads before sending one `input` frame carrying the generated id and the
+  absolute path the provider can read. `messageContent` removes that private
+  marker from visible/copyable text and turns only its UUID filename into the
+  authenticated same-session GET URL; the marker in the provider transcript is
+  what makes the image survive reload, with no attachment metadata database and
+  no write into the user's repository. An image makes a leading-slash draft a
+  prompt rather than a command, and image-only prompts are valid. Four images at
+  8 MiB each is the browser and server bound. Removed registry rows expose no
+  image route, but the attachment bytes and provider transcript remain on disk;
+  removing a list entry never silently deletes either.
 - **A slash command from the composer is just text on the terminal socket; the
   whole feature is knowing where its answer will show up.** `submit` in
   `conversation.tsx` branches on `planSend`, and a command
@@ -867,25 +924,34 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   browser); and a `not_confirmed` **names the mode the pane was left in**, which
   is why `ApiError` carries the refusal's body at all — reaching `plan` cycles
   through `acceptEdits`, so a stalled cycle can lower the bar with no warning
-  shown. The composer is also `flex: 0 1 auto` with `overflow-y: auto`: the
-  warning is a third child outside the message box's height budget, and
+  shown. The composer is also `flex: 0 1 auto` with `overflow-y: auto`; its
+  `.composer-shell` is one visual boundary around the borderless textarea,
+  preview/warning and toolbar rather than one outlined box per control. The
+  warning remains outside the textarea's height budget inside that shell, and
   `e2e/options.spec.ts` asserts at 360×340 that the document never grew and that
   Cancel, the confirm and Send are each fully in the viewport.
 - **The conversation is the interface and the terminal is summoned over it.**
   There is no tab pair: opening a session lands on the conversation, and
-  `.termsheet` (`app.tsx`, `style.css`) is an overlay a header control raises and
-  its own Close puts away. Both panes still stay mounted and the one behind is
-  hidden with `visibility: hidden` (`.pane-off`) — that one property is the whole
-  of "summoning preserves both scroll positions", and it also keeps the hidden
-  pane out of the tab order and the accessibility tree. `display: none` resets
-  `scrollTop` and refits xterm to 0×0 and back on every tap, which resizes the
-  tmux pane for every other viewer too; unmounting costs a full tmux replay or a
-  conversation refetch. The overlay's box is therefore **identical open and
-  closed** — only `visibility` changes — and it is inset at the top so a strip of
-  the conversation shows, which is what makes it read as summoned rather than as
-  the other half of a pair. Two consequences: nothing inside a hidden pane is
-  focusable, so anything driving xterm's textarea has to summon first; and the
-  conversation is visible-but-covered while the overlay is up, so it carries
+  `.termsheet` (`app.tsx`, `style.css`) is an overlay controlled by one header
+  toggle: it says Terminal while closed and Conversation while open. Both pane
+  **boxes** stay mounted and the one behind is
+  hidden with `visibility: hidden` (`.pane-off`), which preserves both scroll
+  positions and keeps the hidden pane out of the tab order and accessibility
+  tree. The expensive exception is deliberate: `terminal.tsx` dynamically loads
+  and creates xterm only on the first summon and sends `{c:'output'}` on the same
+  term socket the composer keeps for sequenced input. `output=0` on its initial
+  URL makes `terminal.ts` skip the 5,000-line replay, live bytes stop at
+  `term-socket.ts`, and enabling output starts with `Terminals.refresh` plus
+  tmux's exact replay. Without that split the 339KB xterm module, the initial
+  replay and every live TUI repaint cross Funnel and are parsed under the
+  conversation nobody can see; `visibility` prevents paint, not work. After
+  xterm exists its DOM is never unmounted or fitted to 0×0. The overlay's
+  box is therefore **identical open and closed** — only `visibility` changes —
+  and it fills `.panes`; the session header's toggle is the whole navigation,
+  rather than a second toolbar or an unexplained strip of covered conversation. Two
+  consequences: nothing inside a hidden pane is focusable, so anything driving
+  xterm's textarea has to summon first; and the
+  conversation is covered while the overlay is up, so it carries
   `inert` — the platform's own word for it, and the one thing that takes it out
   of the tab order without touching layout. The two views share nothing else —
   they are two renderings of one process from two independent sources (report
@@ -960,7 +1026,11 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   (900px) it renders `.workspace`: the session list as a rail beside the open
   session. A media query cannot do that, because it cannot mount a component,
   which is why `useWide` exists — and it uses `matchMedia`, which carries no
-  secure-context gate. Crossing the breakpoint remounts the session screen, so
+  secure-context gate. There is still no router, but the open row writes
+  `?session=<id>` with `replaceState`; authentication restores that row before it
+  reveals the app, so reload neither flashes the list nor makes the user find a
+  running agent again. Back and sign-out remove it, and a stale id degrades to the
+  list. Crossing the breakpoint remounts the session screen, so
   it costs one tmux replay and one conversation refetch; that is acceptable
   because a phone never crosses it (390×844 rotated is still 844) and nothing
   is lost, only re-derived. Which element is the `<main>` follows the shape, so
@@ -969,7 +1039,14 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   `<main>` — the open session, or `.blank` when nothing is open — and the list
   becomes a complementary landmark named "Sessions" (`rail` is the only thing
   that prop decides). The rail's border keys off `.rail`, never off `main`: a
-  border that follows the landmark moves the day the landmark does.
+  border that follows the landmark moves the day the landmark does. The desktop
+  rail may collapse, but it remains mounted in a zero-width grid track with
+  `visibility: hidden`/`inert`: its poll, state and scroll position survive while
+  its whole subtree leaves hit testing and the accessibility tree. The session
+  header owns the restore control because it is the one surface still visible;
+  localStorage persistence is feature-detected and failure is harmless. No open
+  session means no collapse control, so the blank workspace can never hide the
+  only way to choose one.
 - **The desktop rail keeps the session list mounted beside the open session, so
   its 5s poll no longer stops when a session is opened.** On a phone `Sessions`
   unmounts and `clearInterval` runs; past `WIDE` it does not, so every tick is a
@@ -986,9 +1063,11 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   only when its own text happens to be long changes height as a session runs —
   which resizes the terminal, which resizes the tmux pane, which makes the agent
   redraw its prompt into the scrollback. `e2e/session.spec.ts`'s reload
-  comparison is what catches it, as one stray line in the "after" screen. Hence
-  `.bar-chips` takes a whole row below 600px and `.bar` is `nowrap` above it:
-  both heights are constant for every status word.
+  comparison is what catches it, as one stray line in the "after" screen. The
+  bar is therefore one `nowrap` row at every width: mobile Back is a chevron, a
+  healthy channel is a dot beside the agent state, an unhealthy channel replaces
+  that state with its own word, and the title takes only what remains. Those
+  bounded pieces keep the height constant for every status.
 - **A `.conv` child needs `flex: none`.** The list is a column flex container,
   which shrinks its items to fit rather than overflowing; a collapsed tool card
   has no text holding it open, so every card renders as a 6px stripe without it.
@@ -1077,10 +1156,12 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
     fires it, because the hold needs the conversation on screen and typing needs the
     terminal over it; it fires when both have landed, in either order, so nothing depends
     on which round-trip won. Writing the trigger _without_ dismissing is how the
-    watch/hold test gets the opposite case, and the timeout case never summons the
-    terminal — that would release the hold it is watching expire — reading `.xterm-rows`
-    through the hidden pane instead. A spec that needs new agent behaviour appends to the
-    transcript the stub already opened rather than teaching the stub a new trick.
+    watch/hold test gets the opposite case, and the timeout case does not summon the
+    terminal until the hold has expired — doing so earlier would release what it is
+    watching. Hidden xterm output is deliberately dropped for performance, so the
+    positive pane assertion happens after that first summon and its tmux replay. A spec
+    that needs new agent behaviour appends to the transcript the stub already opened
+    rather than teaching the stub a new trick.
   - Two Playwright projects, `phone` and `desktop`, each with a `testIgnore`/`testMatch`
     so neither runs the other's spec at the wrong width. `e2e/ui.ts` is the harness beside
     `serve.ts`: the summon/dismiss recipe is spelled there once rather than in every spec

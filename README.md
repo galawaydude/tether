@@ -151,7 +151,10 @@ reboot destroys every tmux session, so `resume` is how a machine restart stops
 being data loss — it starts the provider's own resume (`claude --resume <id>`,
 `codex resume <id>`) in a fresh tmux session under the same registry row, so it
 is the same conversation. The terminal scrollback is genuinely gone; the
-conversation is not. A session that died before its first message has no
+conversation is not. The browser offers the same operation directly on a dead
+conversation: open its saved history and tap **Resume**. That row already names
+the exact provider conversation, so there is no terminal chooser and no second
+selection to make. A session that died before its first message has no
 conversation to restore, and `resume` says so and refuses rather than handing
 back a fresh session dressed up as the old one.
 
@@ -163,13 +166,20 @@ Every session on the machine, live and dead, each tagged with the agent it is
 running and grouped under the day it was last worked on, with a search box over
 it that filters on title and directory. A live session shows what its agent is
 doing — _Working_, _Idle_ or _Waiting for you_ — and just **live** where the
-provider is not saying, rather than a badge that would be a guess.
+provider is not saying, rather than a badge that would be a guess. A live row
+must be **Kill**ed before it can be removed. Dead rows carry **Remove**: after a
+confirmation they disappear from tether's list and can no longer be resumed,
+while the provider-owned Claude Code or Codex transcript stays untouched.
 
 ### The conversation
 
 Opening a session lands you in the conversation, not a terminal: your prompts,
 the agent's replies, and a collapsed card per tool call that opens onto its
-input and result.
+input and result. A long session initially opens at its latest 512 events so a
+phone never has to download and mount thousands of rows at once. **Load earlier**
+walks backward through the complete transcript one bounded page at a time, and
+**Back to latest** returns to the live conversation; history is accessible, not
+deleted or accumulated into another multi-megabyte screen.
 
 Messages are rendered as the markdown they are written in — headings, lists,
 links, emphasis, quotes and above all **fenced code**, in a monospace box that
@@ -188,11 +198,15 @@ itself the news.
 
 ### The terminal
 
-There is no second tab to choose. **Terminal** in the header summons the real
-TUI over the conversation, with a bar for the keys a phone keyboard has not got
-(Esc, Tab, arrows, Ctrl-C), and Close puts it away with both views exactly where
-you left them. It is the real terminal over tmux, it is always correct, and it is
-the complete fallback for anything the conversation view cannot draw.
+There is no second tab to choose. **Terminal** in the header opens the real TUI
+as one full, uncluttered pane; that same control becomes **Conversation**, which
+puts it away with both views exactly where you left them. The seven keys a phone
+keyboard has not got (Esc, Tab, arrows, Ctrl-C) all fit in one fixed bar without
+a sideways tray, and opening the pane focuses it for typing. Ordinary text,
+Enter, Backspace, Tab, Escape and Ctrl keys write through the already-attached
+PTY rather than spawning a tmux command for every press, so fast typing does not
+build a server-side queue. It remains the complete fallback for anything the
+conversation view cannot draw.
 
 ### Sending a message
 
@@ -201,7 +215,16 @@ composed on the phone and sent as one unit rather than a round trip per keystrok
 with autocorrect fighting a raw byte stream. **Enter inserts a line break** — the
 Send button is what sends — and a multi-line prompt arrives whole. It shows the
 moment you send it and is replaced, not duplicated, by the transcript's own
-record a moment later.
+record a moment later. **Copy** is available on touch screens as well as on
+hover, copies the visible text (never an internal attachment path), and changes
+to **Copied** so the tap is not silent.
+
+Paste an image directly into that box, or choose **Image**. A local thumbnail
+appears before anything is sent, can be opened full-size or removed, and up to
+four PNG, JPEG, WebP or GIF images (8 MB each) may accompany one prompt. On Send,
+tether stores the bytes privately under its state directory, passes the agent an
+absolute readable path, and renders the image from an authenticated URL in the
+conversation; it remains viewable after reload without writing into the project.
 
 Send is refused, with the reason, while the agent is waiting on a permission
 prompt, where a message would answer the dialog rather than the agent; when the
@@ -210,8 +233,10 @@ server no longer has it. Mid-turn is fine — the agent queues it.
 
 ### The option controls, and slash commands
 
-Beside Send is a row of option controls, and they are deliberately **not the same
-for both agents**. An axis is offered only where changing it was verified to move
+Beside Send, **Agent options** expands the controls only while they are needed;
+on a laptop the open controls share one compact horizontal tray. They are
+deliberately **not the same for both agents**. An axis is offered
+only where changing it was verified to move
 a running session, so Claude Code gets **Permission mode**, **Model** and
 **Effort**, Codex gets its fixed three-preset **Permissions** — and an axis an
 agent cannot be moved along mid-session, or can only be moved along by guessing
@@ -248,7 +273,10 @@ The phone is the primary target and gets one screen at a time — the list, then
 the session you opened. A laptop gets a different shape rather than a stretched
 one: past 900px the session list stays on screen as a rail beside the open
 session, so switching sessions costs no trip back, and the conversation is capped
-to a readable column instead of running the full width of the window.
+to a readable column instead of running the full width of the window. The panel
+button beside **tether** collapses that rail when the conversation needs the full
+window; the matching button beside the session title restores it, and the choice
+survives reload.
 
 ## Answering a permission prompt from your phone
 
@@ -740,7 +768,7 @@ is always `local`. That one path segment is what makes a second machine a later
 split rather than a rewrite.
 
 ```
-GET    /api/machines/local/sessions            every session, live and dead, with each live one's state
+GET    /api/machines/local/sessions            every listed session, live and dead, with each live one's state
 GET    /api/machines/local/folder-trust?cwd=…&provider=…
                                                whether that agent already trusts that directory,
                                                and which directory the answer is about
@@ -749,11 +777,14 @@ POST   /api/machines/local/sessions            {"cwd": "…", "title"?: "…", "
                                                 thing that ever records a folder as trusted
 GET    /api/machines/local/sessions/:id
 POST   /api/machines/local/sessions/:id/resume restarts a dead session's conversation
+POST   /api/machines/local/sessions/:id/forget removes a dead row from tether's list; transcript untouched
 DELETE /api/machines/local/sessions/:id        kills the tmux session and marks the row dead
 POST   /api/machines/local/sessions/:id/permission-mode
                                                {"mode": "default"|"acceptEdits"|"plan"|"auto"} — Claude
                                                Code only; answers with the mode read back off the pane
-GET    /api/sessions/:id/conversation          the whole conversation, with sequence numbers
+GET    /api/sessions/:id/conversation?before=… one bounded history page, with absolute sequence numbers
+POST   /api/sessions/:id/images                stores one private pasted image (raw supported image bytes)
+GET    /api/sessions/:id/images/:file          serves it inline to an authenticated viewer
 POST   /api/sessions/:id/permission            {"callId": "…", "decision": "allow" | "deny"}
 WS     /api/sessions/:id/conv?since=<seq>      conversation events after `seq`, the last one you hold
 WS     /api/sessions/:name/term                terminal bytes, both ways
@@ -785,16 +816,20 @@ which means "fetch the history route again"; it never sends a partial history.
 
 ### The end-to-end specs
 
-`e2e/` is seven Playwright specs, and they are the only tests here that are not
-unit tests. Six run at a phone viewport, which is the client tether is designed
+`e2e/` is eight Playwright specs, and they are the only tests here that are not
+unit tests. Seven run at a phone viewport, which is the client tether is designed
 for.
 
 - **`session.spec.ts`** logs in, starts a session, watches it, types at it,
-  **reloads the page**, and asserts the conversation and the terminal come back
-  intact and exactly once. It summons the terminal over the conversation and
-  dismisses it, asserting both keep their scroll position and that the terminal
-  is not re-attached; it measures at 360×640 that nothing tether draws — the
-  waiting banner included — changes the terminal's box or its row count, since a
+  **reloads the page**, and asserts the URL restores that same open session and
+  the conversation and terminal come back intact and exactly once. It summons
+  the terminal over the conversation and
+  dismisses it, asserting both keep their scroll position, that all seven phone
+  keys fit without sideways scrolling and that the terminal is not re-attached.
+  It kills another session, reviews its saved conversation and resumes it from
+  that screen, then sends a new prompt without ever opening the terminal. It
+  measures at 360×640 that nothing tether draws — the waiting banner included —
+  changes the terminal's box or its row count, since a
   change there resizes the tmux pane for every other viewer; and it opens the New
   session sheet at the shortest full-height phones **and at a phone with its
   keyboard up** (360×340) and asserts that both ends of its card — the **Agent**
@@ -816,15 +851,22 @@ for.
   with the keyboard up (360×340).
 - **`composer.spec.ts`** composes a message and asserts it reaches the agent and
   appears exactly once, that Enter in the box is a line break rather than a send,
-  and that the composer leaves Send on screen with the keyboard up. It also sends
-  **slash commands** from that box: that one is not drawn as a message, that a
+  and that the composer leaves Send on screen with the keyboard up. It verifies
+  that Copy is visible, writes the exact text and confirms success; pastes a real
+  PNG, checks its local preview, private upload, rendered image and reload; and
+  also sends **slash commands** from that box: that one is not drawn as a message, that a
   recorded one really arrives in the conversation, that a chooser's reaches the
   pane and is reported rather than claimed, and that the command list gives way
   rather than pushing Send off a 360×340 screen.
 - **`identity.spec.ts`** starts two sessions in **one** directory and asserts each
   shows its own conversation and neither shows the other's, then acts out a
-  `/resume` at one of their panes and asserts that view follows the agent to the
-  conversation it resumed into.
+  `/resume` at one of their panes, asserts that view follows the agent to the
+  conversation it resumed into, then reloads and proves the resumed binding
+  survives with it.
+- **`history.spec.ts`** opens a transcript longer than the browser's row bound and
+  reloads it. The newest conversation returns directly rather than a blank page,
+  the cursor still covers the whole transcript, and the view says that older rows
+  are hidden instead of mounting thousands of markdown trees on a phone.
 - **`render.spec.ts`** writes what an agent actually writes into the transcript
   and asserts what the conversation makes of it: markdown rather than a wall of
   characters, a `<script>` in a fenced block that is text in the page rather than
@@ -842,11 +884,13 @@ for.
   Send are all still on screen.
 - **`desktop.spec.ts`** is the only one that runs at a laptop viewport
   (1280×800), because past 900px the app is a different shape rather than a wider
-  phone: it measures the rail's box against the open session's, asserts the back
-  button is **gone** rather than merely invisible, that the page has exactly one
-  `<main>`, and that nothing makes it scroll sideways.
+  phone: it measures the rail's box against the open session's, collapses and
+  reloads it, restores it with the same selected row, asserts the back button is
+  **gone** rather than merely invisible, checks the open Agent options share one
+  compact row, that the page has exactly one `<main>`, and that nothing makes it
+  scroll sideways.
 
-All seven run against `e2e/stub-agent.ts` — a script that prints, echoes what you
+All eight run against `e2e/stub-agent.ts` — a script that prints, echoes what you
 type at it, writes a Claude-Code-shaped transcript, publishes its own status
 file, acts out a slash command the three ways the real one does (applied and
 recorded, a chooser in the pane and nothing on disk, or refused locally), moves
