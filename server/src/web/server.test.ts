@@ -34,7 +34,7 @@ const HOST = 'localhost:8787';
  * the socket's guards and framing; `machine/terminal.test.ts` drives the real
  * thing against a real tmux.
  */
-function recordingTerminals(refusedKey?: string) {
+function recordingTerminals(refusedKey?: string, refreshGate?: Promise<void>) {
   const calls: string[] = [];
   let emit: ((bytes: Uint8Array) => void) | undefined;
   let ended: (() => void) | undefined;
@@ -49,6 +49,7 @@ function recordingTerminals(refusedKey?: string) {
     },
     async refresh(session, viewer) {
       calls.push(`refresh ${session}`);
+      await refreshGate;
       viewer(Buffer.from('replay-héllo', 'utf8'));
     },
     async resize(session, cols, rows) {
@@ -80,14 +81,18 @@ function recordingTerminals(refusedKey?: string) {
   };
 }
 
-async function harness(overrides: Partial<ServerOptions> = {}, refusedKey?: string) {
+async function harness(
+  overrides: Partial<ServerOptions> = {},
+  refusedKey?: string,
+  refreshGate?: Promise<void>,
+) {
   // One database for both, as in production: the auth store and the registry share
   // the single SQLite file.
   const db = new DatabaseSync(':memory:');
   applyRegistrySchema(db);
   const auth = createAuthStore(db);
   await auth.setPassword(PASSWORD);
-  const recorder = recordingTerminals(refusedKey);
+  const recorder = recordingTerminals(refusedKey, refreshGate);
   const app = buildServer({
     auth,
     db,
@@ -640,6 +645,31 @@ test('a hidden terminal sends no replay or live bytes until output is enabled', 
   terminal.push(Buffer.from('visible-now'));
   assert.equal((await term.next()).data.toString(), 'visible-now');
   assert.deepEqual(terminal.calls, ['attach s1', 'refresh s1']);
+});
+
+test('live bytes stay muted until the refresh replay is sent', async (t) => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const { app, terminal } = await harness({}, undefined, gate);
+  t.after(() => app.close());
+  await app.ready();
+
+  const term = openTerm(
+    app,
+    { cookie: `${SESSION_COOKIE}=${await sessionToken(app)}` },
+    `${TERM_URL}&output=0`,
+  );
+  const socket = await term.socket;
+  t.after(() => socket.close());
+  const first = term.next();
+  socket.send(JSON.stringify({ c: 'output', enabled: true }));
+  await delay(10);
+  terminal.push(Buffer.from('newer-live-output'));
+  release();
+
+  assert.equal((await first).data.toString(), 'replay-héllo');
 });
 
 test('a key the argv guard refuses costs one keystroke, not the session', async (t) => {

@@ -124,6 +124,29 @@ test('a reload loses nothing: scrollback and conversation come back intact and o
   expect(await screen(rows)).toBe(before);
 });
 
+test('a transient restore failure keeps the selected session retryable', async ({ page }) => {
+  await page.goto('/');
+  await page.getByLabel('Password').fill(process.env['TETHER_E2E_PASSWORD'] as string);
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await page.getByRole('button', { name: 'New session' }).click();
+  await page.getByLabel('Working directory').fill(project);
+  await page.getByRole('button', { name: 'Start' }).click();
+  const selected = page.url();
+  let failed = false;
+  await page.route('**/api/machines/local/sessions/*', async (route) => {
+    if (!failed && route.request().method() === 'GET') {
+      failed = true;
+      await route.fulfill({ status: 503, contentType: 'application/json', body: '{}' });
+    } else await route.continue();
+  });
+
+  await page.reload();
+  await expect(page.getByRole('alert')).toContainText('server failed');
+  expect(page.url()).toBe(selected);
+  await page.getByRole('button', { name: 'Retry' }).click();
+  await expect(page.getByRole('button', { name: 'Back to sessions' })).toHaveCount(1);
+});
+
 test('a dead conversation resumes from its own screen without opening a terminal chooser', async ({
   page,
 }) => {

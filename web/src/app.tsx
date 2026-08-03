@@ -74,7 +74,8 @@ async function restoreSession(): Promise<Session | null> {
   if (id === null) return null;
   try {
     return await api.getSession(id);
-  } catch {
+  } catch (error) {
+    if (!(error instanceof ApiError) || error.status !== 404) throw error;
     // A stale bookmark is the session list, not a reload loop against a 404.
     rememberSession(null);
     return null;
@@ -156,6 +157,7 @@ export function App() {
   // replacing it a moment later is a flash of the wrong screen on every load.
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [open, setOpen] = useState<Session | null>(null);
+  const [restoreError, setRestoreError] = useState<string | null>(null);
   const [railCollapsed, setRailCollapsed] = useState(savedRailPreference);
   const wide = useWide();
   const railClosed = wide && open !== null && railCollapsed;
@@ -181,16 +183,26 @@ export function App() {
     },
     [closeSession, open?.id],
   );
+  const loadSelected = useCallback(async () => {
+    try {
+      setOpen(await restoreSession());
+      setRestoreError(null);
+      setAuthenticated(true);
+    } catch (failure) {
+      if (failure instanceof ApiError && failure.status === 401) setAuthenticated(false);
+      else {
+        setRestoreError(messageOf(failure));
+        setAuthenticated(true);
+      }
+    }
+  }, []);
 
   useEffect(() => {
     let live = true;
     api.checkSession().then(
-      () =>
-        void restoreSession().then((session) => {
-          if (!live) return;
-          setOpen(session);
-          setAuthenticated(true);
-        }),
+      () => {
+        if (live) void loadSelected();
+      },
       () => {
         if (live) setAuthenticated(false);
       },
@@ -198,19 +210,28 @@ export function App() {
     return () => {
       live = false;
     };
-  }, []);
+  }, [loadSelected]);
 
   if (authenticated === null) return <p class="centre muted">Loading tether…</p>;
   if (!authenticated) {
     return (
       <Login
-        onDone={() =>
-          void restoreSession().then((session) => {
-            setOpen(session);
-            setAuthenticated(true);
-          })
-        }
+        onDone={() => void loadSelected()}
       />
+    );
+  }
+  if (restoreError !== null) {
+    return (
+      <main class="centre">
+        <div class="card">
+          <p class="error" role="alert">
+            {restoreError}
+          </p>
+          <button class="primary" onClick={() => void loadSelected()}>
+            Retry
+          </button>
+        </div>
+      </main>
     );
   }
   const list = (

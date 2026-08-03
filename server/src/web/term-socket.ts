@@ -263,8 +263,12 @@ export function registerTermSocket(
       async function apply(frame: ClientFrame): Promise<void> {
         if (frame.c === 'output') {
           if (frame.enabled === output) return;
-          output = frame.enabled;
-          if (output) await terminals.refresh(session, viewer);
+          if (frame.enabled) {
+            await terminals.refresh(session, (bytes) => {
+              if (alive()) socket.send(bytes);
+            });
+            output = true;
+          } else output = false;
           return;
         }
         if (frame.c === 'resize') return terminals.resize(session, frame.cols, frame.rows);

@@ -522,7 +522,21 @@ export class Conversations {
       before === undefined
         ? mapped.events.length
         : Math.min(mapped.events.length, Math.max(0, before - 1));
-    const start = Math.max(0, end - TAIL_EVENTS);
+    let start = Math.max(0, end - TAIL_EVENTS);
+    if (start > 0) {
+      const earlierCalls = new Set(
+        mapped.events
+          .slice(0, start)
+          .filter((event) => event.kind === 'tool_call')
+          .map((event) => event.callId),
+      );
+      let splitResult = -1;
+      for (let index = start; index < end; index += 1) {
+        const event = mapped.events[index];
+        if (event?.kind === 'tool_result' && earlierCalls.has(event.callId)) splitResult = index;
+      }
+      if (splitResult >= 0 && splitResult + 1 < end) start = splitResult + 1;
+    }
     return {
       seq: mapped.events.length,
       events: mapped.events.slice(start, end).map((e, index) => ({ seq: start + index + 1, e })),

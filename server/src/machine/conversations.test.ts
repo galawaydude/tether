@@ -177,6 +177,26 @@ test('history keeps an absolute cursor and pages backward in bounded slices', as
   assert.equal(first.truncated, undefined, 'the first page says there is nothing before it');
 });
 
+test('history pages do not split a tool call from its result', async (t) => {
+  const h = await harness(t);
+  await writeFile(
+    h.transcript,
+    toolUseRecord(1) +
+      toolResultRecord(2) +
+      Array.from({ length: TAIL_EVENTS - 1 }, (_, index) => userRecord(index + 3)).join(''),
+  );
+
+  const latest = await h.conversations.history(h.session);
+  assert.equal(latest.events[0]?.seq, 3);
+  assert.ok(latest.events.length <= TAIL_EVENTS);
+
+  const earlier = await h.conversations.history(h.session, 3);
+  assert.deepEqual(
+    earlier.events.map(({ e }) => e.kind),
+    ['tool_call', 'tool_result'],
+  );
+});
+
 test('a live subscriber is sent each new event exactly once, in order', async (t) => {
   const h = await harness(t);
   await writeFile(h.transcript, userRecord(1));
@@ -524,6 +544,19 @@ function toolUseRecord(n: number, callId = CALL_ID): string {
       content: [
         { type: 'tool_use', id: callId, name: 'Write', input: { file_path: '/tmp/out.txt' } },
       ],
+    },
+  })}\n`;
+}
+
+function toolResultRecord(n: number, callId = CALL_ID): string {
+  return `${JSON.stringify({
+    type: 'user',
+    uuid: `uuid-${n}`,
+    timestamp: new Date(Date.now() + n).toISOString(),
+    version: '2.1.220',
+    message: {
+      role: 'user',
+      content: [{ type: 'tool_result', tool_use_id: callId, content: 'done' }],
     },
   })}\n`;
 }
