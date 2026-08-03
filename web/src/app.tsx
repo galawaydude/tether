@@ -214,11 +214,7 @@ export function App() {
 
   if (authenticated === null) return <p class="centre muted">Loading tether…</p>;
   if (!authenticated) {
-    return (
-      <Login
-        onDone={() => void loadSelected()}
-      />
-    );
+    return <Login onDone={() => void loadSelected()} />;
   }
   if (restoreError !== null) {
     return (

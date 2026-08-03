@@ -268,14 +268,10 @@ export function registerTermSocket(
             if (output === 'enabling') return;
             output = 'enabling';
             try {
-              await terminals.refresh(
-                session,
-                viewer,
-                (bytes) => {
-                  if (output === 'enabling' && alive()) socket.send(bytes);
-                  if (output === 'enabling') output = true;
-                },
-              );
+              await terminals.refresh(session, viewer, (bytes) => {
+                if (output === 'enabling' && alive()) socket.send(bytes);
+                if (output === 'enabling') output = true;
+              });
             } finally {
               if (output === 'enabling') output = false;
             }

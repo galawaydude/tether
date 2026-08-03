@@ -234,7 +234,10 @@ test('a bounded page carries context for every split tool result', async (t) => 
   assert.deepEqual(seqsOf(latest.events.slice(0, 3)), [1, 2, 5]);
   assert.equal(latest.events.at(-1)?.seq, TAIL_EVENTS + 2);
   assert.equal(latest.before, 5);
-  assert.deepEqual(seqsOf((await h.conversations.history(h.session, latest.before)).events), [1, 2, 3, 4]);
+  assert.deepEqual(
+    seqsOf((await h.conversations.history(h.session, latest.before)).events),
+    [1, 2, 3, 4],
+  );
 });
 
 test('a live subscriber is sent each new event exactly once, in order', async (t) => {

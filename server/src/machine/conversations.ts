@@ -544,7 +544,9 @@ export class Conversations {
       start += 1;
       context = contextFor(start);
     }
-    const events = mapped.events.slice(start, end).map((e, index) => ({ seq: start + index + 1, e }));
+    const events = mapped.events
+      .slice(start, end)
+      .map((e, index) => ({ seq: start + index + 1, e }));
     events.unshift(...context.map((index) => ({ seq: index + 1, e: mapped.events[index]! })));
     return {
       seq: mapped.events.length,
