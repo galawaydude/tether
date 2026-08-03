@@ -217,7 +217,7 @@ export function ConversationView({
         // the documented handshake, and `connect` needs it now, whereas an
         // updater does not run until the next render.
         since = history.seq;
-        setEarliest(history.events[0]?.seq ?? null);
+        setEarliest(history.before ?? history.events[0]?.seq ?? null);
         setArchive(null);
         setHistoryError(null);
         setState((current) => rebuild(current, history.events, history.truncated === true));
@@ -343,7 +343,7 @@ export function ConversationView({
     setHistoryError(null);
     try {
       const history = await fetchConversation(sessionId, before);
-      const page = historyPage(history.events, history.truncated === true);
+      const page = historyPage(history.events, history.truncated === true, history.before);
       if (page === null) {
         setHistoryError('No earlier history was found.');
         return;

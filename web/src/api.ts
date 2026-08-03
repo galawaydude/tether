@@ -270,6 +270,7 @@ export type ConversationHistory = {
   seq: number;
   events: SeqEvent[];
   truncated?: true;
+  before?: number;
   title?: string;
   version?: string;
 };

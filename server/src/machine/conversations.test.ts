@@ -197,6 +197,25 @@ test('history pages do not split a tool call from its result', async (t) => {
   );
 });
 
+test('a final tool result keeps bounded call context and a reachable cursor', async (t) => {
+  const h = await harness(t);
+  await writeFile(
+    h.transcript,
+    toolUseRecord(1) +
+      Array.from({ length: TAIL_EVENTS - 1 }, (_, index) => userRecord(index + 2)).join('') +
+      toolResultRecord(TAIL_EVENTS + 1),
+  );
+
+  const latest = await h.conversations.history(h.session);
+  assert.equal(latest.events.length, TAIL_EVENTS);
+  assert.equal(latest.events[0]?.e.kind, 'tool_call');
+  assert.equal(latest.events.at(-1)?.e.kind, 'tool_result');
+  assert.equal(latest.before, 3);
+
+  const earlier = await h.conversations.history(h.session, latest.before);
+  assert.deepEqual(seqsOf(earlier.events), [1, 2]);
+});
+
 test('a live subscriber is sent each new event exactly once, in order', async (t) => {
   const h = await harness(t);
   await writeFile(h.transcript, userRecord(1));

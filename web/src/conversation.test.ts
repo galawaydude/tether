@@ -420,6 +420,15 @@ test('an archive response becomes one bounded, labelled page', () => {
   assert.equal(historyPage([], false), null);
 });
 
+test('archive navigation uses its cursor instead of pairing context', () => {
+  const events = stream(
+    { kind: 'tool_call', id: 'a1', at: AT, tool: 'Bash', input: {}, callId: 'c' },
+    { kind: 'tool_result', id: 'u1', at: AT + 1, callId: 'c', output: 'ok', isError: false },
+  ).map((event, index) => ({ ...event, seq: index === 0 ? 1 : 513 }));
+
+  assert.equal(historyPage(events, true, 3)?.first, 3);
+});
+
 test('a result arriving later replaces only its card, keeping the list stable', () => {
   const call = addEvents(noRows(), [
     { seq: 1, e: { kind: 'tool_call', id: 'a#0', at: AT, tool: 'Bash', input: {}, callId: 'c' } },

@@ -47,10 +47,12 @@ function recordingTerminals(refusedKey?: string, refreshGate?: Promise<void>) {
       if (initialReplay) viewer(Buffer.from('replay-héllo', 'utf8'));
       return () => calls.push(`detach ${session}`);
     },
-    async refresh(session, viewer) {
+    async refresh(session, viewer, onReplay) {
       calls.push(`refresh ${session}`);
       await refreshGate;
       viewer(Buffer.from('replay-héllo', 'utf8'));
+      onReplay?.();
+      emit?.(Buffer.from('repaint'));
     },
     async resize(session, cols, rows) {
       calls.push(`resize ${session} ${cols}x${rows}`);
@@ -641,6 +643,7 @@ test('a hidden terminal sends no replay or live bytes until output is enabled', 
   const replay = await first;
   assert.equal(replay.binary, true);
   assert.equal(replay.data.toString(), 'replay-héllo');
+  assert.equal((await term.next()).data.toString(), 'repaint');
 
   terminal.push(Buffer.from('visible-now'));
   assert.equal((await term.next()).data.toString(), 'visible-now');
@@ -670,6 +673,7 @@ test('live bytes stay muted until the refresh replay is sent', async (t) => {
   release();
 
   assert.equal((await first).data.toString(), 'replay-héllo');
+  assert.equal((await term.next()).data.toString(), 'repaint');
 });
 
 test('a key the argv guard refuses costs one keystroke, not the session', async (t) => {

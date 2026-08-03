@@ -732,8 +732,12 @@ export type HistoryPage = {
 };
 
 /** One bounded archive response, or no page when the server found no events. */
-export function historyPage(events: readonly SeqEvent[], truncated: boolean): HistoryPage | null {
-  const first = events[0]?.seq;
+export function historyPage(
+  events: readonly SeqEvent[],
+  truncated: boolean,
+  before?: number,
+): HistoryPage | null {
+  const first = before ?? events[0]?.seq;
   const last = events.at(-1)?.seq;
   if (first === undefined || last === undefined) return null;
   return { view: rebuild(noRows(), events, truncated), first, last, more: truncated };

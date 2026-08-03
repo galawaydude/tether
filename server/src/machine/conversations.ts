@@ -82,6 +82,7 @@ export type ConversationHistory = {
   events: SeqEvent[];
   /** Events before this page exist and can be requested with `before`. */
   truncated?: true;
+  before?: number;
   /** Claude Code's own `ai-title` for the session, once it has named it. */
   title?: string;
   /** The transcript's `version`, for comparing against the captured fixtures. */
@@ -523,6 +524,7 @@ export class Conversations {
         ? mapped.events.length
         : Math.min(mapped.events.length, Math.max(0, before - 1));
     let start = Math.max(0, end - TAIL_EVENTS);
+    let context: { index: number; e: ConversationEvent } | undefined;
     if (start > 0) {
       const earlierCalls = new Set(
         mapped.events
@@ -535,12 +537,30 @@ export class Conversations {
         const event = mapped.events[index];
         if (event?.kind === 'tool_result' && earlierCalls.has(event.callId)) splitResult = index;
       }
-      if (splitResult >= 0 && splitResult + 1 < end) start = splitResult + 1;
+      if (splitResult >= 0) {
+        if (splitResult + 1 < end) start = splitResult + 1;
+        else {
+          const result = mapped.events[splitResult];
+          const index = mapped.events
+            .slice(0, start)
+            .findLastIndex(
+              (event) =>
+                event.kind === 'tool_call' &&
+                result?.kind === 'tool_result' &&
+                event.callId === result.callId,
+            );
+          if (index >= 0) context = { index, e: mapped.events[index]! };
+          start += 1;
+        }
+      }
     }
+    const events = mapped.events.slice(start, end).map((e, index) => ({ seq: start + index + 1, e }));
+    if (context !== undefined) events.unshift({ seq: context.index + 1, e: context.e });
     return {
       seq: mapped.events.length,
-      events: mapped.events.slice(start, end).map((e, index) => ({ seq: start + index + 1, e })),
+      events,
       ...(start === 0 ? {} : { truncated: true as const }),
+      ...(start === 0 ? {} : { before: start + 1 }),
       ...(mapped.title === undefined ? {} : { title: mapped.title }),
       ...(mapped.version === undefined ? {} : { version: mapped.version }),
     };

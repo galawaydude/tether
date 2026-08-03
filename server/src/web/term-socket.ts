@@ -162,7 +162,8 @@ export function registerTermSocket(
       const session = request.params.name;
       const clientId = request.query.client;
       // Old clients omit it and keep the original full-output behaviour.
-      let output = request.query.output !== '0';
+      const initialOutput = request.query.output !== '0';
+      let output: boolean | 'enabling' = initialOutput;
 
       // The attach spans two tmux spawns and a PTY spawn, and a client that gives
       // up inside that window would otherwise leave its viewer subscribed and the
@@ -232,7 +233,7 @@ export function registerTermSocket(
       };
 
       const viewer = (bytes: Uint8Array) => {
-        if (output && alive()) socket.send(bytes);
+        if (output === true && alive()) socket.send(bytes);
       };
       const detach = await terminals
         .attach(
@@ -241,7 +242,7 @@ export function registerTermSocket(
           // Exactly once per viewer: `Terminals#end` clears the viewer map
           // before calling back.
           () => void closeFromRegistry(),
-          output,
+          initialOutput,
         )
         .catch(async (error: unknown) => {
           app.log.warn({ err: error, session }, 'terminal attach failed');
@@ -264,10 +265,21 @@ export function registerTermSocket(
         if (frame.c === 'output') {
           if (frame.enabled === output) return;
           if (frame.enabled) {
-            await terminals.refresh(session, (bytes) => {
-              if (alive()) socket.send(bytes);
-            });
-            output = true;
+            if (output === 'enabling') return;
+            output = 'enabling';
+            try {
+              await terminals.refresh(
+                session,
+                (bytes) => {
+                  if (output === 'enabling' && alive()) socket.send(bytes);
+                },
+                () => {
+                  if (output === 'enabling') output = true;
+                },
+              );
+            } finally {
+              if (output === 'enabling') output = false;
+            }
           } else output = false;
           return;
         }
