@@ -80,7 +80,9 @@ test('create, discover through list-panes, kill', async (t) => {
   assert.equal(pane.session, 's1');
   assert.match(pane.paneId, /^%\d+$/);
   assert.ok(pane.pid > 0);
-  assert.equal(pane.command, 'sh');
+  // macOS reports `/bin/sh` by the executable behind it (`bash`); Linux tmux
+  // reports the argv name (`sh`). Either proves the requested shell is the pane.
+  assert.match(pane.command, /^(?:ba)?sh$/);
   assert.equal(pane.path, resolved);
   assert.equal(pane.dead, false);
 
@@ -221,7 +223,7 @@ test('cwd is resolved and required to be an existing directory', async (t) => {
   const file = join(dir, 'a-file');
   await writeFile(file, '');
 
-  assert.equal(await resolveCwd(join(dir, 'sub', '..')), dir);
+  assert.equal(await resolveCwd(join(dir, 'sub', '..')), await realpath(dir));
   await assert.rejects(() => resolveCwd(join(dir, 'nope')), InvalidCwdError);
   await assert.rejects(() => resolveCwd(file), InvalidCwdError);
   await assert.rejects(

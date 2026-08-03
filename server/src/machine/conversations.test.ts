@@ -14,7 +14,7 @@ import { DatabaseSync } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 
 import { mapLines as mapClaudeLines } from '../providers/claude-code/events.ts';
-import { sessionStatusPath } from '../providers/claude-code/status.ts';
+import { processStart, sessionStatusPath } from '../providers/claude-code/status.ts';
 import { projectDir } from '../providers/claude-code/transcript.ts';
 import { mapLines as mapCodexLines } from '../providers/codex/events.ts';
 import {
@@ -149,6 +149,33 @@ test('the history route reads the whole transcript and numbers it from 1', async
 function seqsOf(events: readonly { seq: number }[]): number[] {
   return events.map((e) => e.seq);
 }
+
+test('history keeps an absolute cursor and pages backward in bounded slices', async (t) => {
+  const h = await harness(t);
+  const total = TAIL_EVENTS * 2 + 10;
+  await writeFile(
+    h.transcript,
+    Array.from({ length: total }, (_, index) => userRecord(index + 1)).join(''),
+  );
+
+  const history = await h.conversations.history(h.session);
+  assert.equal(history.seq, total);
+  assert.equal(history.events.length, TAIL_EVENTS);
+  assert.equal(history.truncated, true);
+  assert.equal(history.events[0]?.seq, TAIL_EVENTS + 11);
+  assert.equal(history.events.at(-1)?.seq, total);
+
+  const earlier = await h.conversations.history(h.session, TAIL_EVENTS + 11);
+  assert.equal(earlier.seq, total, 'an archive page never becomes the live cursor');
+  assert.equal(earlier.events.length, TAIL_EVENTS);
+  assert.equal(earlier.events[0]?.seq, 11);
+  assert.equal(earlier.events.at(-1)?.seq, TAIL_EVENTS + 10);
+  assert.equal(earlier.truncated, true);
+
+  const first = await h.conversations.history(h.session, 11);
+  assert.deepEqual(seqsOf(first.events), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  assert.equal(first.truncated, undefined, 'the first page says there is nothing before it');
+});
 
 test('a live subscriber is sent each new event exactly once, in order', async (t) => {
   const h = await harness(t);
@@ -970,13 +997,14 @@ async function writeStatus(
   fields: Record<string, unknown> = {},
 ): Promise<void> {
   await mkdir(join(home, '.claude', 'sessions'), { recursive: true });
-  const stat = await readFile(`/proc/${pid}/stat`, 'utf8');
+  const procStart = await processStart(pid);
+  assert.ok(procStart, 'this platform publishes a process start identity tether understands');
   await writeFile(
     sessionStatusPath(pid, home),
     JSON.stringify({
       pid,
       sessionId: PROVIDER_SESSION,
-      procStart: stat.slice(stat.lastIndexOf(') ') + 2).split(' ')[19],
+      procStart,
       status: 'busy',
       ...fields,
     }),

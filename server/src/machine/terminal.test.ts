@@ -27,7 +27,7 @@ import { promisify } from 'node:util';
 
 import type { Terminal as XTerminal } from '@xterm/headless';
 
-import { createTerminals } from './terminal.ts';
+import { createTerminals, directKeyBytes } from './terminal.ts';
 import type { Terminals } from './terminal.ts';
 import {
   killServer,
@@ -262,6 +262,12 @@ test('resize moves the pane, and window-size manual keeps it off other sessions'
   t.after(() => stray.kill());
   await delay(500);
   assert.deepEqual(await paneSize(socket, 's2'), { cols: COLS, rows: ROWS });
+});
+
+test('ordinary control keys take the attach PTY fast path, and mode-dependent keys do not', () => {
+  assert.equal(directKeyBytes(['Escape', 'Tab', 'BSpace', 'Enter', 'C-c']), '\x1b\t\x7f\r\x03');
+  assert.equal(directKeyBytes(['Up']), undefined);
+  assert.equal(directKeyBytes(['M-x']), undefined);
 });
 
 test('input is applied once: replays and out-of-order sequences are dropped', async (t) => {

@@ -18,9 +18,8 @@
  *    `isProcessRunning` does.
  * 2. **Identity** — `procStart`, which Claude Code records for exactly this
  *    reason. It is the kernel's own start time for that pid, so a recycled pid
- *    has a different one and is rejected. Verified on 2.1.220: the value is
- *    `/proc/<pid>/stat` field 22 (`starttime`, in clock ticks since boot) as a
- *    decimal string.
+ *    has a different one and is rejected. Verified on 2.1.220: Linux uses
+ *    `/proc/<pid>/stat` field 22 (`starttime`); macOS uses UTC `ps -o lstart=`.
  *
  * Anything unreadable, unrecognised or unverifiable is `undefined` — "tether
  * cannot say" — never a guess. The caller shows no badge rather than a wrong
@@ -30,9 +29,13 @@
  */
 
 import type { SessionState } from '@tether/shared';
+import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 /** The three values Claude Code publishes, and the three the badge renders. */
 const STATES = new Set<string>(['busy', 'idle', 'waiting']);
@@ -53,15 +56,32 @@ export function sessionStatusPath(pid: number, home = homedir()): string {
  * **last** `") "` rather than by splitting on whitespace. Field 22 overall is
  * the 20th of what follows.
  *
- * `undefined` where there is no procfs — this is a Linux-shaped check, and a
- * platform without it falls back to liveness alone rather than to trusting a
- * pid it cannot verify.
+ * On macOS Claude Code records the UTC rendering of `ps -o lstart=` instead —
+ * verified against 2.1.220 on an Apple Silicon Mac. Falling back to liveness
+ * alone there silently removes the pid-reuse guard from every Mac session, so
+ * both forms are read here and nowhere else.
+ *
+ * `undefined` on a platform whose process identity Claude Code has not been
+ * observed to publish. That platform falls back to liveness alone rather than
+ * comparing against a value tether invented.
  */
-async function procStart(pid: number): Promise<string | undefined> {
-  const stat = await readFile(`/proc/${pid}/stat`, 'utf8').catch(() => undefined);
-  if (stat === undefined) return undefined;
-  const after = stat.slice(stat.lastIndexOf(') ') + 2);
-  return after.split(' ')[19];
+export async function processStart(pid: number): Promise<string | undefined> {
+  if (process.platform === 'linux') {
+    const stat = await readFile(`/proc/${pid}/stat`, 'utf8').catch(() => undefined);
+    if (stat === undefined) return undefined;
+    const after = stat.slice(stat.lastIndexOf(') ') + 2);
+    return after.split(' ')[19];
+  }
+  if (process.platform === 'darwin') {
+    const result = await execFileAsync('ps', ['-p', String(pid), '-o', 'lstart='], {
+      // Claude Code's value is UTC even when the Mac is not. `C` also keeps the
+      // weekday/month words stable under a non-English login locale.
+      env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' },
+    }).catch(() => undefined);
+    const started = result?.stdout.trim();
+    return started === undefined || started === '' ? undefined : started;
+  }
+  return undefined;
 }
 
 /** Whether the pid exists at all. `EPERM` is someone else's process, so: yes. */
@@ -105,7 +125,7 @@ async function readRecord(pid: number, home: string): Promise<Record<string, unk
   // Both must pass — a live pid alone proves nothing once pids are reused,
   // which is the failure this file is most prone to.
   if (!alive(pid)) return undefined;
-  const started = await procStart(pid);
+  const started = await processStart(pid);
   if (started !== undefined && fields['procStart'] !== started) return undefined;
 
   return fields;
