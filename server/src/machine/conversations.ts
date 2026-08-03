@@ -523,39 +523,29 @@ export class Conversations {
       before === undefined
         ? mapped.events.length
         : Math.min(mapped.events.length, Math.max(0, before - 1));
-    let start = Math.max(0, end - TAIL_EVENTS);
-    let context: { index: number; e: ConversationEvent } | undefined;
-    if (start > 0) {
-      const earlierCalls = new Set(
-        mapped.events
-          .slice(0, start)
-          .filter((event) => event.kind === 'tool_call')
-          .map((event) => event.callId),
-      );
-      let splitResult = -1;
+    const calls = new Map<string, number>();
+    for (let index = 0; index < end; index += 1) {
+      const event = mapped.events[index];
+      if (event?.kind === 'tool_call') calls.set(event.callId, index);
+    }
+    const contextFor = (start: number): number[] => {
+      const context = new Set<number>();
       for (let index = start; index < end; index += 1) {
         const event = mapped.events[index];
-        if (event?.kind === 'tool_result' && earlierCalls.has(event.callId)) splitResult = index;
+        if (event?.kind !== 'tool_result') continue;
+        const call = calls.get(event.callId);
+        if (call !== undefined && call < start) context.add(call);
       }
-      if (splitResult >= 0) {
-        if (splitResult + 1 < end) start = splitResult + 1;
-        else {
-          const result = mapped.events[splitResult];
-          const index = mapped.events
-            .slice(0, start)
-            .findLastIndex(
-              (event) =>
-                event.kind === 'tool_call' &&
-                result?.kind === 'tool_result' &&
-                event.callId === result.callId,
-            );
-          if (index >= 0) context = { index, e: mapped.events[index]! };
-          start += 1;
-        }
-      }
+      return [...context].sort((a, b) => a - b);
+    };
+    let start = Math.max(0, end - TAIL_EVENTS);
+    let context = contextFor(start);
+    while (end - start + context.length > TAIL_EVENTS) {
+      start += 1;
+      context = contextFor(start);
     }
     const events = mapped.events.slice(start, end).map((e, index) => ({ seq: start + index + 1, e }));
-    if (context !== undefined) events.unshift({ seq: context.index + 1, e: context.e });
+    events.unshift(...context.map((index) => ({ seq: index + 1, e: mapped.events[index]! })));
     return {
       seq: mapped.events.length,
       events,

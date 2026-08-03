@@ -216,6 +216,27 @@ test('a final tool result keeps bounded call context and a reachable cursor', as
   assert.deepEqual(seqsOf(earlier.events), [1, 2]);
 });
 
+test('a bounded page carries context for every split tool result', async (t) => {
+  const h = await harness(t);
+  await writeFile(
+    h.transcript,
+    toolUseRecord(1, 'call-a') +
+      toolUseRecord(2, 'call-b') +
+      userRecord(3) +
+      userRecord(4) +
+      toolResultRecord(5, 'call-a') +
+      Array.from({ length: TAIL_EVENTS - 4 }, (_, index) => userRecord(index + 6)).join('') +
+      toolResultRecord(TAIL_EVENTS + 2, 'call-b'),
+  );
+
+  const latest = await h.conversations.history(h.session);
+  assert.equal(latest.events.length, TAIL_EVENTS);
+  assert.deepEqual(seqsOf(latest.events.slice(0, 3)), [1, 2, 5]);
+  assert.equal(latest.events.at(-1)?.seq, TAIL_EVENTS + 2);
+  assert.equal(latest.before, 5);
+  assert.deepEqual(seqsOf((await h.conversations.history(h.session, latest.before)).events), [1, 2, 3, 4]);
+});
+
 test('a live subscriber is sent each new event exactly once, in order', async (t) => {
   const h = await harness(t);
   await writeFile(h.transcript, userRecord(1));
