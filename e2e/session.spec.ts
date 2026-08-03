@@ -131,6 +131,7 @@ test('a transient restore failure keeps the selected session retryable', async (
   await page.getByRole('button', { name: 'New session' }).click();
   await page.getByLabel('Working directory').fill(project);
   await page.getByRole('button', { name: 'Start' }).click();
+  await expect(page).toHaveURL(/\?session=/);
   const selected = page.url();
   let failed = false;
   await page.route('**/api/machines/local/sessions/*', async (route) => {

@@ -133,7 +133,7 @@ export interface Terminals {
     initialReplay?: boolean,
   ): Promise<() => void>;
   /** Replay the current tmux state to an already attached viewer. */
-  refresh(session: string, viewer: Viewer, onReplay?: () => void): Promise<void>;
+  refresh(session: string, viewer: Viewer, replay: Viewer): Promise<void>;
   /** Last viewer's dimensions win. */
   resize(session: string, cols: number, rows: number): Promise<void>;
   /** Message text: pasted (newline-safe), then submitted. Returns false if replayed. */
@@ -273,15 +273,14 @@ export function createTerminals(socket: string, historyLines = DEFAULT_HISTORY_L
       });
     },
 
-    refresh(session, viewer, onReplay = () => {}) {
+    refresh(session, viewer, replayViewer) {
       return serialize(session, async () => {
         const existing = attached.get(session);
         if (existing === undefined || !existing.viewers.has(viewer)) return;
         const size = await paneSize(socket, session);
         const head = await replay(session, size.rows);
         if (attached.get(session) !== existing || !existing.viewers.has(viewer)) return;
-        viewer(head);
-        onReplay();
+        replayViewer(head);
         await refreshClients(socket, session);
       });
     },

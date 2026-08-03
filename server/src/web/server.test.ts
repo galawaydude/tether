@@ -47,11 +47,11 @@ function recordingTerminals(refusedKey?: string, refreshGate?: Promise<void>) {
       if (initialReplay) viewer(Buffer.from('replay-héllo', 'utf8'));
       return () => calls.push(`detach ${session}`);
     },
-    async refresh(session, viewer, onReplay) {
+    async refresh(session, viewer, replay) {
       calls.push(`refresh ${session}`);
       await refreshGate;
-      viewer(Buffer.from('replay-héllo', 'utf8'));
-      onReplay?.();
+      assert.equal(viewer, emit);
+      replay(Buffer.from('replay-héllo', 'utf8'));
       emit?.(Buffer.from('repaint'));
     },
     async resize(session, cols, rows) {
