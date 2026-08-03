@@ -96,16 +96,53 @@ export type ToolRow = {
   outcome: PermissionOutcome | null;
 };
 
+export type MessageImage = { id: string };
+
+export type MessageContent = {
+  /** Visible/copyable prose, with tether's private machine-path markers removed. */
+  text: string;
+  blocks: readonly Block[];
+  images: readonly MessageImage[];
+};
+
+/**
+ * The one line put into a provider prompt per pasted image. It carries both
+ * halves that need to survive a reload: the opaque id the browser may request,
+ * and the absolute path the provider can read. The UI never trusts the path or
+ * turns it into a URL; only the id reaches the authenticated image route.
+ */
+const IMAGE_MARKER =
+  /^\[Image attached: ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(?:png|jpg|webp|gif)) at ".*"\]$/;
+
+export function messageWithImages(
+  text: string,
+  images: readonly { id: string; path: string }[],
+): string {
+  const parts = text === '' ? [] : [text];
+  for (const image of images) {
+    parts.push(`[Image attached: ${image.id} at ${JSON.stringify(image.path)}]`);
+  }
+  return parts.join('\n\n');
+}
+
+export function messageContent(source: string): MessageContent {
+  const images: MessageImage[] = [];
+  const visible: string[] = [];
+  for (const line of source.split('\n')) {
+    const marker = IMAGE_MARKER.exec(line);
+    if (marker === null) visible.push(line);
+    else images.push({ id: marker[1]! });
+  }
+  const text = visible.join('\n').trim();
+  return { text, blocks: markdown(text), images };
+}
+
 export type Row =
-  | {
+  | ({
       key: string;
       row: 'message';
       who: 'user' | 'assistant';
-      /** What was written, verbatim. What Copy copies, and never rendered raw. */
-      text: string;
-      /** The same text as markdown; see `markdown.ts` for why it is data. */
-      blocks: readonly Block[];
-    }
+    } & MessageContent)
   | { key: string; row: 'thinking' }
   /**
    * A slash command that ran, or a line it printed. Monospace either way, by the
@@ -349,6 +386,8 @@ export type Rows = {
   rows: readonly Row[];
   seq: number;
   byCall: Map<string, ToolRow>;
+  /** Earlier rows exist but are omitted to keep the live view bounded. */
+  truncated: boolean;
   /**
    * Messages sent from the composer that the transcript has not shown back yet,
    * oldest first — the optimistic echo. Rendered after {@link Rows.rows}, which
@@ -364,8 +403,33 @@ export type Rows = {
   echoes: readonly Echo[];
 };
 
+export const MAX_CONVERSATION_ROWS = 512;
+
 export function noRows(): Rows {
-  return { rows: [], seq: 0, byCall: new Map(), echoes: [] };
+  return { rows: [], seq: 0, byCall: new Map(), truncated: false, echoes: [] };
+}
+
+/**
+ * Keep a day-long session from becoming thousands of mounted markdown trees.
+ * An answerable card is never one of the rows discarded: the provider is
+ * blocked on it, so visibility is part of the permission safety boundary.
+ */
+function capRows(state: Rows): Rows {
+  if (state.rows.length <= MAX_CONVERSATION_ROWS) return state;
+  let remove = state.rows.length - MAX_CONVERSATION_ROWS;
+  const dropped = new Set<Row>();
+  const rows = state.rows.filter((row) => {
+    const answerable = row.row === 'tool' && row.answerable !== null;
+    if (remove <= 0 || answerable) return true;
+    remove -= 1;
+    dropped.add(row);
+    return false;
+  });
+  const byCall = new Map(state.byCall);
+  for (const [callId, row] of byCall) {
+    if (dropped.has(row)) byCall.delete(callId);
+  }
+  return { ...state, rows, byCall, truncated: true };
 }
 
 /**
@@ -504,8 +568,13 @@ export function addPending(state: Rows, e: ToolCallEvent, deadline?: Timestamp):
     // back for a hold that ended while the socket was down have to go.
     const answerable = deadline === undefined ? null : { callId: e.callId, deadline };
     if (existing.answerable === null && answerable === null) return state;
-    existing.answerable = answerable;
-    return { ...state, rows: [...state.rows] };
+    const updated = { ...existing, answerable };
+    const byCall = new Map(state.byCall).set(e.callId, updated);
+    return {
+      ...state,
+      byCall,
+      rows: state.rows.map((row) => (row === existing ? updated : row)),
+    };
   }
   const row: ToolRow = {
     key: `pending:${e.callId}`,
@@ -521,8 +590,11 @@ export function addPending(state: Rows, e: ToolCallEvent, deadline?: Timestamp):
     answerable: deadline === undefined ? null : { callId: e.callId, deadline },
     outcome: null,
   };
-  state.byCall.set(e.callId, row);
-  return { ...state, rows: [...state.rows, row] };
+  return capRows({
+    ...state,
+    byCall: new Map(state.byCall).set(e.callId, row),
+    rows: [...state.rows, row],
+  });
 }
 
 /**
@@ -546,15 +618,28 @@ export function addAnswer(state: Rows, callId: string, outcome: PermissionOutcom
   // a second answer. A card with no buttons and *no* outcome is the replayed
   // proposal above, which is exactly what this is here to complete.
   if (row.answerable === null && row.outcome !== null) return state;
-  row.answerable = null;
-  row.outcome = outcome;
-  return { ...state, rows: [...state.rows] };
+  const updated = { ...row, answerable: null, outcome };
+  return {
+    ...state,
+    byCall: new Map(state.byCall).set(callId, updated),
+    rows: state.rows.map((entry) => (entry === row ? updated : entry)),
+  };
 }
 
 export function addEvents(state: Rows, incoming: readonly SeqEvent[]): Rows {
   let rows: Row[] | undefined;
+  let byCall = state.byCall;
   let seq = state.seq;
   let echoes = state.echoes;
+
+  const replace = (callId: string, existing: ToolRow, updated: ToolRow) => {
+    rows ??= [...state.rows];
+    const index = rows.indexOf(existing);
+    if (index !== -1) rows[index] = updated;
+    if (byCall === state.byCall) byCall = new Map(byCall);
+    byCall.set(callId, updated);
+  };
+
   for (const { seq: at, e } of incoming) {
     if (at <= seq) continue;
     seq = at;
@@ -571,13 +656,42 @@ export function addEvents(state: Rows, incoming: readonly SeqEvent[]): Rows {
     // retiring the wrong echo — one message shown with the other's text for the
     // moment before its own record lands, and still never two.
     if (e.kind === 'user' && echoes.length > 0) echoes = echoes.slice(1);
-    const row = toRow(String(at), e, state.byCall);
+
+    // A tool's later records update one card. Copy it rather than mutating it:
+    // `RowView` is memoized, so stable rows in a long conversation are skipped
+    // while this changed one still gets a new identity and renders.
+    if (e.kind === 'tool_call') {
+      const existing = byCall.get(e.callId);
+      if (existing !== undefined) {
+        replace(e.callId, existing, { ...existing, pending: false });
+        continue;
+      }
+      if (byCall === state.byCall) byCall = new Map(byCall);
+    } else if (e.kind === 'tool_result') {
+      const existing = byCall.get(e.callId);
+      if (existing !== undefined) {
+        replace(e.callId, existing, {
+          ...existing,
+          result: e.output,
+          failed: e.isError,
+        });
+        continue;
+      }
+    }
+
+    const row = toRow(String(at), e, byCall);
     if (row === undefined) continue;
     rows ??= [...state.rows];
     rows.push(row);
   }
   if (seq === state.seq) return state;
-  return { rows: rows ?? state.rows, seq, byCall: state.byCall, echoes };
+  return capRows({
+    rows: rows ?? state.rows,
+    seq,
+    byCall,
+    truncated: state.truncated,
+    echoes,
+  });
 }
 
 /** Convenience for the tests and for a fresh history: rows from nothing. */
@@ -602,25 +716,40 @@ export function toRows(events: readonly SeqEvent[]): readonly Row[] {
  * chance at the echo and retired nothing, so replaying them must not retire it
  * now.
  */
-export function rebuild(state: Rows, events: readonly SeqEvent[]): Rows {
+export function rebuild(state: Rows, events: readonly SeqEvent[], truncated = false): Rows {
   const seen = addEvents(
     noRows(),
     events.filter(({ seq }) => seq <= state.seq),
   );
-  return addEvents({ ...seen, echoes: state.echoes }, events);
+  return addEvents({ ...seen, echoes: state.echoes, truncated }, events);
+}
+
+export type HistoryPage = {
+  view: Rows;
+  first: number;
+  last: number;
+  more: boolean;
+};
+
+/** One bounded archive response, or no page when the server found no events. */
+export function historyPage(events: readonly SeqEvent[], truncated: boolean): HistoryPage | null {
+  const first = events[0]?.seq;
+  const last = events.at(-1)?.seq;
+  if (first === undefined || last === undefined) return null;
+  return { view: rebuild(noRows(), events, truncated), first, last, more: truncated };
 }
 
 /**
- * One event to one row, or to none. Returning `undefined` is how an event that
- * changes an existing row (a `tool_result`, or the `tool_call` that supersedes a
- * proposed one) and one this view deliberately does not render (`status`, which
- * is the header badge, not a message) both say "no new row".
+ * One event to one new row, or to none. Updates to an existing tool card are
+ * handled immutably in `addEvents` above; `undefined` here is only an event this
+ * view deliberately does not render (`status`, which is the header badge, not a
+ * message).
  */
 function toRow(key: string, e: ConversationEvent, byCall: Map<string, ToolRow>): Row | undefined {
   switch (e.kind) {
     case 'user':
     case 'assistant':
-      return { key, row: 'message', who: e.kind, text: e.text, blocks: markdown(e.text) };
+      return { key, row: 'message', who: e.kind, ...messageContent(e.text) };
     case 'thinking':
       // Presence only. The transcript carries an empty `thinking` string, so
       // anything more specific than "it thought here" would be invented.
@@ -632,15 +761,6 @@ function toRow(key: string, e: ConversationEvent, byCall: Map<string, ToolRow>):
     case 'error':
       return { key, row: 'error', text: e.text, auth: e.auth === true };
     case 'tool_call': {
-      // The transcript record for a call the pre-tool hook already proposed.
-      // It supersedes that card in place — same `callId`, same position in the
-      // list, no second card. Everything else about it is identical, so only
-      // `pending` changes.
-      const proposed = byCall.get(e.callId);
-      if (proposed !== undefined) {
-        proposed.pending = false;
-        return undefined;
-      }
       const row: ToolRow = {
         key,
         row: 'tool',
@@ -659,12 +779,6 @@ function toRow(key: string, e: ConversationEvent, byCall: Map<string, ToolRow>):
       return row;
     }
     case 'tool_result': {
-      const call = byCall.get(e.callId);
-      if (call !== undefined) {
-        call.result = e.output;
-        call.failed = e.isError;
-        return undefined;
-      }
       // A result whose call never arrived — the mapper dropped a `tool_use` it
       // could not read. Showing the output under no name beats losing it.
       return {

@@ -62,6 +62,9 @@ const MESSAGES: Record<string, string> = {
   unauthorized: 'Your session has expired — log in again.',
   no_such_session: 'That session no longer exists.',
   not_awaiting_answer: 'Already answered — the agent has moved on.',
+  session_live: 'This session is still running. Kill it before removing it.',
+  session_dead: 'This session has ended. It cannot receive an image.',
+  invalid_image: 'That file is not a valid supported image.',
   forbidden_host: 'This hostname is not in the server’s allowed list.',
   forbidden_origin: 'The server refused this origin.',
 };
@@ -129,6 +132,12 @@ export async function listSessions(): Promise<{ sessions: Session[]; states: Ses
   return { sessions: body.sessions, states: body.states ?? {} };
 }
 
+/** Restore the session named in the URL after a browser reload. */
+export async function getSession(id: string): Promise<Session> {
+  const body = await request<{ session: Session }>(`/api/machines/${MACHINE}/sessions/${id}`);
+  return body.session;
+}
+
 /**
  * Whether the selected agent already trusts a directory, from that agent's own
  * configuration — asked while the New session sheet is open, before anything is
@@ -172,12 +181,55 @@ export function killSession(id: string): Promise<{ session: Session }> {
   return request(`/api/machines/${MACHINE}/sessions/${id}`, { method: 'DELETE' });
 }
 
+/** Remove a dead row from tether's list without touching the provider transcript. */
+export function removeSession(id: string): Promise<void> {
+  return request(`/api/machines/${MACHINE}/sessions/${id}/forget`, { method: 'POST' });
+}
+
+/** Restart a dead row through the provider's own saved conversation. */
+export async function resumeSession(id: string): Promise<Session> {
+  const body = await request<{ session: Session }>(
+    `/api/machines/${MACHINE}/sessions/${id}/resume`,
+    { method: 'POST' },
+  );
+  return body.session;
+}
+
 /**
- * The whole conversation, and the `seq` to follow it from. Step 1 of the `conv`
- * handshake, and the only correct answer to a `refetch`.
+ * The latest bounded conversation page, and the `seq` to follow it from. Step 1
+ * of the `conv` handshake, and the only correct answer to a `refetch`. `before`
+ * requests one older bounded page without changing that live cursor.
  */
-export function fetchConversation(id: string): Promise<ConversationHistory> {
-  return request(`/api/sessions/${id}/conversation`);
+export function fetchConversation(id: string, before?: number): Promise<ConversationHistory> {
+  const page = before === undefined ? '' : `?${new URLSearchParams({ before: String(before) })}`;
+  return request(`/api/sessions/${id}/conversation${page}`);
+}
+
+/** Keep mirrored with the parser's hard limit in `server/src/web/conversation.ts`. */
+export const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+export const MAX_MESSAGE_IMAGES = 4;
+export const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+
+export type UploadedImage = {
+  id: string;
+  type: string;
+  size: number;
+  /** Absolute machine path placed in the prompt so the provider can read it. */
+  path: string;
+};
+
+/** Store pasted pixels privately before their absolute path is sent to the agent. */
+export function uploadImage(id: string, image: File): Promise<UploadedImage> {
+  return request(`/api/sessions/${id}/images`, {
+    method: 'POST',
+    headers: { 'content-type': image.type },
+    body: image,
+  });
+}
+
+/** The authenticated same-origin URL used by message thumbnails and full-size links. */
+export function imageUrl(sessionId: string, imageId: string): string {
+  return `/api/sessions/${encodeURIComponent(sessionId)}/images/${encodeURIComponent(imageId)}`;
 }
 
 /**
@@ -217,6 +269,7 @@ export function setPermissionMode(id: string, mode: string): Promise<{ mode: str
 export type ConversationHistory = {
   seq: number;
   events: SeqEvent[];
+  truncated?: true;
   title?: string;
   version?: string;
 };
@@ -229,8 +282,11 @@ export type ConversationHistory = {
  * The terminal is addressed by tmux name and the conversation by registry id;
  * that is the server's split, not a slip.
  */
-export function termSocketUrl(tmuxName: string, clientId: string): string {
-  return socketUrl(`api/sessions/${tmuxName}/term`, { client: clientId });
+export function termSocketUrl(tmuxName: string, clientId: string, output = true): string {
+  return socketUrl(`api/sessions/${tmuxName}/term`, {
+    client: clientId,
+    output: output ? '1' : '0',
+  });
 }
 
 export function convSocketUrl(id: string, since: number): string {
