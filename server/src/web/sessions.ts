@@ -13,14 +13,20 @@ import type { DatabaseSync } from 'node:sqlite';
 
 import type { Session, SessionState } from '@tether/shared';
 
-import { LOCAL_MACHINE, getSession, listSessions, reconcileWithTmux } from '../machine/registry.ts';
+import {
+  DEFAULT_PROVIDER,
+  LOCAL_MACHINE,
+  getSession,
+  listSessions,
+  reconcileWithTmux,
+  removeDeadSession,
+} from '../machine/registry.ts';
 import {
   MODES,
   setPermissionMode,
   type PermissionMode,
 } from '../providers/claude-code/permission-mode.ts';
 import type { Conversations } from '../machine/conversations.ts';
-import { DEFAULT_PROVIDER } from '../machine/registry.ts';
 import {
   NoProviderSessionError,
   PROVIDER_COMMANDS,
@@ -287,6 +293,26 @@ export function registerSessionRoutes(app: FastifyInstance, options: SessionRout
         }
         throw error;
       }
+    },
+  );
+
+  app.post<{ Params: SessionParams }>(
+    '/api/machines/:machineId/sessions/:id/forget',
+    { schema: { params: SESSION_PARAMS } },
+    async (request, reply) => {
+      // Only a dead row can be removed. Reconcile first so a pane that ended
+      // behind tether's back is removable without requiring a separate refresh.
+      await reconcileWithTmux(db, socket);
+      const session = getSession(db, request.params.id);
+      if (session === undefined) return reply.code(404).send({ error: 'no_such_session' });
+      if (session.deadAt === null) return reply.code(409).send({ error: 'session_live' });
+      // Synchronous and conditional in SQLite: a concurrent resume either wins
+      // first and leaves this as a 409, or notices the tombstone and rolls its
+      // newly started pane back in `resumeSession`.
+      if (!removeDeadSession(db, session.id)) {
+        return reply.code(409).send({ error: 'session_live' });
+      }
+      return reply.code(204).send();
     },
   );
 

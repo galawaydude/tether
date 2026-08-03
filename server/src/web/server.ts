@@ -1,4 +1,5 @@
 import cookie from '@fastify/cookie';
+import compress from '@fastify/compress';
 import websocket from '@fastify/websocket';
 import Fastify from 'fastify';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -8,7 +9,11 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { Conversations } from '../machine/conversations.ts';
 import type { Terminals } from '../machine/terminal.ts';
 import type { AuthStore } from './auth.ts';
-import { registerConvSocket, registerConversationRoutes } from './conversation.ts';
+import {
+  registerConvSocket,
+  registerConversationRoutes,
+  registerImageParsers,
+} from './conversation.ts';
 import { isHostAllowed, isOriginAllowed, isStateChanging } from './guards.ts';
 import { registerHookRoute } from './hooks.ts';
 import type { TrustLocations } from '../providers/trust.ts';
@@ -151,7 +156,15 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     },
   });
 
+  // Pasted images are raw bytes rather than base64 JSON. This must exist before
+  // the authenticated routes are registered or Fastify answers 415 first.
+  registerImageParsers(app);
+
   app.register(cookie);
+  // Funnel is often the slowest link and the browser bundle is mostly xterm.
+  // Compress every ordinary HTTP response over 1 KiB; WebSocket terminal bytes
+  // are already a separate transport and never pass through this hook.
+  app.register(compress, { global: true, threshold: 1024 });
   app.register(websocket);
 
   // ── Host allowlist and Origin guard, before anything else touches a request ──
@@ -226,45 +239,6 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     } as const;
   }
 
-  app.post(
-    '/api/login',
-    { config: { public: true }, schema: LOGIN_SCHEMA },
-    async (request: FastifyRequest<{ Body: { password: string } }>, reply: FastifyReply) => {
-      const now = Date.now();
-      const until = lockedUntil(request.ip, now);
-      if (until !== null) {
-        return reply
-          .code(429)
-          .header('retry-after', Math.ceil((until - now) / 1000))
-          .send({ error: 'too_many_attempts' });
-      }
-
-      recordAttempt(request.ip, now);
-      await delay(loginDelayMs);
-
-      if (!(await auth.verifyPassword(request.body.password))) {
-        return reply.code(401).send({ error: 'invalid_credentials' });
-      }
-
-      failures.delete(request.ip);
-      const session = auth.createSession(now);
-      return reply
-        .setCookie(SESSION_COOKIE, session.token, cookieOptions(request, session.expiresAt))
-        .code(200)
-        .send({ ok: true });
-    },
-  );
-
-  app.post('/api/logout', { schema: EMPTY_BODY_SCHEMA }, async (request, reply) => {
-    const token = request.cookies[SESSION_COOKIE];
-    if (token !== undefined) auth.revokeSession(token);
-    return reply.clearCookie(SESSION_COOKIE, { path: '/' }).code(204).send();
-  });
-
-  app.get('/api/session', async (_request, reply) => reply.send({ authenticated: true }));
-
-  registerStatic(app, options.webRoot);
-
   // The same socket the session routes drive: both providers join to a registry
   // row by the tmux pane's pid — a Codex `SessionStart`, Claude Code's status
   // file — so discovery has to be asking the same tmux the sessions started on.
@@ -273,25 +247,70 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   const conversations =
     options.conversations ?? new Conversations(options.db, { socket: options.socket });
 
-  // Behind the same default-deny hook as everything else — these routes opt out of
-  // nothing, which is the whole point of the posture being deny-by-default.
-  registerSessionRoutes(app, {
-    db: options.db,
-    conversations,
-    socket: options.socket,
-    allowedRoots: options.allowedRoots,
-    trustIn: options.trustIn,
-  });
-
-  registerConversationRoutes(app, options.db, conversations);
-  registerHookRoute(app, options.db, conversations, {
-    ...(options.stateDir === undefined ? {} : { stateDir: options.stateDir }),
-  });
-
-  // In `after`, not inline: `@fastify/websocket` upgrades a route through an
-  // `onRoute` hook it only installs once its own registration has run, and a
-  // route added before that silently stays a plain HTTP route.
+  // All routes are registered only after cookie, compression and websocket have
+  // installed their hooks. In particular, compression's global `onRoute` hook
+  // cannot retrofit a route that was declared synchronously before the plugin
+  // loaded — which silently shipped the full browser bundle over Funnel.
   app.after(() => {
+    app.post(
+      '/api/login',
+      { config: { public: true }, schema: LOGIN_SCHEMA },
+      async (request: FastifyRequest<{ Body: { password: string } }>, reply: FastifyReply) => {
+        const now = Date.now();
+        const until = lockedUntil(request.ip, now);
+        if (until !== null) {
+          return reply
+            .code(429)
+            .header('retry-after', Math.ceil((until - now) / 1000))
+            .send({ error: 'too_many_attempts' });
+        }
+
+        recordAttempt(request.ip, now);
+        await delay(loginDelayMs);
+
+        if (!(await auth.verifyPassword(request.body.password))) {
+          return reply.code(401).send({ error: 'invalid_credentials' });
+        }
+
+        failures.delete(request.ip);
+        const session = auth.createSession(now);
+        return reply
+          .setCookie(SESSION_COOKIE, session.token, cookieOptions(request, session.expiresAt))
+          .code(200)
+          .send({ ok: true });
+      },
+    );
+
+    app.post('/api/logout', { schema: EMPTY_BODY_SCHEMA }, async (request, reply) => {
+      const token = request.cookies[SESSION_COOKIE];
+      if (token !== undefined) auth.revokeSession(token);
+      return reply.clearCookie(SESSION_COOKIE, { path: '/' }).code(204).send();
+    });
+
+    app.get('/api/session', async (_request, reply) => reply.send({ authenticated: true }));
+
+    registerStatic(app, options.webRoot);
+
+    // Behind the same default-deny hook as everything else — these routes opt out of
+    // nothing, which is the whole point of the posture being deny-by-default.
+    registerSessionRoutes(app, {
+      db: options.db,
+      conversations,
+      socket: options.socket,
+      allowedRoots: options.allowedRoots,
+      trustIn: options.trustIn,
+    });
+
+    registerConversationRoutes(app, options.db, conversations, {
+      ...(options.stateDir === undefined ? {} : { stateDir: options.stateDir }),
+    });
+    registerHookRoute(app, options.db, conversations, {
+      ...(options.stateDir === undefined ? {} : { stateDir: options.stateDir }),
+    });
+
+    // In this `after`, not inline: `@fastify/websocket` upgrades a route through
+    // an `onRoute` hook it only installs once its own registration has run, and a
+    // route added before that silently stays a plain HTTP route.
     registerTermSocket(app, options.terminals, options.db, options.socket);
     registerConvSocket(app, options.db, conversations);
   });

@@ -39,13 +39,17 @@ function recordingTerminals(refusedKey?: string) {
   let emit: ((bytes: Uint8Array) => void) | undefined;
   let ended: (() => void) | undefined;
   const terminals: Terminals = {
-    async attach(session, viewer, onEnd) {
+    async attach(session, viewer, onEnd, initialReplay = true) {
       if (session === 'missing') throw new Error('no such session');
       calls.push(`attach ${session}`);
       emit = viewer;
       ended = onEnd;
-      viewer(Buffer.from('replay-héllo', 'utf8'));
+      if (initialReplay) viewer(Buffer.from('replay-héllo', 'utf8'));
       return () => calls.push(`detach ${session}`);
+    },
+    async refresh(session, viewer) {
+      calls.push(`refresh ${session}`);
+      viewer(Buffer.from('replay-héllo', 'utf8'));
     },
     async resize(session, cols, rows) {
       calls.push(`resize ${session} ${cols}x${rows}`);
@@ -605,6 +609,39 @@ test('terminal output arrives as binary frames and input is ACKed', async (t) =>
   ]);
 });
 
+test('a hidden terminal sends no replay or live bytes until output is enabled', async (t) => {
+  const { app, terminal } = await harness();
+  t.after(() => app.close());
+  await app.ready();
+
+  const term = openTerm(
+    app,
+    { cookie: `${SESSION_COOKIE}=${await sessionToken(app)}` },
+    `${TERM_URL}&output=0`,
+  );
+  const socket = await term.socket;
+  t.after(() => socket.close());
+
+  // Keep the one waiter: after proving it stayed unresolved, the enable below
+  // must resolve this same promise with the fresh replay.
+  const first = term.next();
+  terminal.push(Buffer.from('live-but-hidden'));
+  const arrivedHidden = await Promise.race([
+    first.then(() => true),
+    new Promise<false>((resolve) => setTimeout(() => resolve(false), 30)),
+  ]);
+  assert.equal(arrivedHidden, false, 'neither the attach replay nor live output crossed the wire');
+
+  socket.send(JSON.stringify({ c: 'output', enabled: true }));
+  const replay = await first;
+  assert.equal(replay.binary, true);
+  assert.equal(replay.data.toString(), 'replay-héllo');
+
+  terminal.push(Buffer.from('visible-now'));
+  assert.equal((await term.next()).data.toString(), 'visible-now');
+  assert.deepEqual(terminal.calls, ['attach s1', 'refresh s1']);
+});
+
 test('a key the argv guard refuses costs one keystroke, not the session', async (t) => {
   // Alt+`;` reaches the driver as the key name `M-;`, which tmux's lexer would
   // eat, so the guard refuses it. That must not read as a dead attach: closing
@@ -722,6 +759,7 @@ test('a socket that closes during the attach still detaches', async (t) => {
       await gate;
       return () => calls.push(`detach ${session}`);
     },
+    async refresh() {},
     async resize() {},
     async input() {
       return true;

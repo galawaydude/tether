@@ -33,6 +33,9 @@ const ASSET_PARAMS = {
   properties: { file: { type: 'string', pattern: '^[A-Za-z0-9._-]{1,128}$' } },
 } as const;
 
+/** Hashed Vite assets never change at one URL. `send` reads this as milliseconds. */
+const ASSET_MAX_AGE_MS = 365 * 24 * 60 * 60 * 1000;
+
 export function registerStatic(app: FastifyInstance, root: string = WEB_DIST): void {
   if (!existsSync(join(root, 'index.html'))) {
     // A server that answers every page with a 404 is a confusing thing to debug,
@@ -50,6 +53,10 @@ export function registerStatic(app: FastifyInstance, root: string = WEB_DIST): v
   app.get<{ Params: { file: string } }>(
     '/assets/:file',
     { config: { public: true }, schema: { params: ASSET_PARAMS } },
-    async (request, reply) => reply.sendFile(join('assets', request.params.file)),
+    async (request, reply) =>
+      reply.sendFile(join('assets', request.params.file), {
+        maxAge: ASSET_MAX_AGE_MS,
+        immutable: true,
+      }),
   );
 }

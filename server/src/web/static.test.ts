@@ -21,6 +21,7 @@ const HOST = 'localhost:8787';
 
 const NO_TERMINALS: Terminals = {
   attach: () => Promise.reject(new Error('not used')),
+  refresh: () => Promise.resolve(),
   resize: () => Promise.resolve(),
   input: () => Promise.resolve(true),
   text: () => Promise.resolve(true),
@@ -33,7 +34,11 @@ async function harness(t: TestContext) {
   t.after(() => rm(webRoot, { recursive: true, force: true }));
   await writeFile(join(webRoot, 'index.html'), '<!doctype html><title>tether</title>', 'utf8');
   await mkdir(join(webRoot, 'assets'));
-  await writeFile(join(webRoot, 'assets', 'index-abc123.js'), 'export const app = 1;\n', 'utf8');
+  await writeFile(
+    join(webRoot, 'assets', 'index-abc123.js'),
+    'export const app = "the browser bundle compresses";\n'.repeat(500),
+    'utf8',
+  );
   // The file a traversal would be reaching for, one level above the root.
   await writeFile(join(webRoot, '..', 'tether-web-secret.txt'), 'secret', 'utf8');
   t.after(() => rm(join(webRoot, '..', 'tether-web-secret.txt'), { force: true }));
@@ -64,10 +69,21 @@ test('the app shell is served without a session — the login screen asks for on
   const asset = await app.inject({
     method: 'GET',
     url: '/assets/index-abc123.js',
-    headers: { host: HOST },
+    headers: { host: HOST, 'accept-encoding': 'gzip' },
   });
   assert.equal(asset.statusCode, 200);
   assert.match(asset.headers['content-type'] as string, /javascript/);
+  assert.equal(asset.headers['content-encoding'], 'gzip', 'the Funnel transfer is compressed');
+  assert.equal(
+    asset.headers['cache-control'],
+    'public, max-age=31536000, immutable',
+    'a Vite hash makes this URL permanent',
+  );
+  assert.notEqual(
+    page.headers['cache-control'],
+    asset.headers['cache-control'],
+    'index.html is still revalidated so a new release is found',
+  );
 });
 
 test('serving the app opens nothing else: no traversal, no API without a session', async (t) => {
