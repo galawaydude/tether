@@ -16,7 +16,7 @@ export type AccessReport = {
 type AccessDependencies = {
   hostname(): Promise<string>;
   serveStatus(): Promise<unknown>;
-  probe(url: URL, host?: string | undefined): Promise<number | undefined>;
+  probe(url: URL, host?: string | undefined, body?: string | undefined): Promise<number | undefined>;
 };
 
 /**
@@ -24,7 +24,11 @@ type AccessDependencies = {
  * accepting that Host is part of `--funnel`; a bare 127.0.0.1 check can pass on
  * a server that will return 403 to every real Funnel request.
  */
-async function probe(url: URL, host?: string | undefined): Promise<number | undefined> {
+async function probe(
+  url: URL,
+  host?: string | undefined,
+  expectedBody?: string | undefined,
+): Promise<number | undefined> {
   const request = url.protocol === 'https:' ? httpsRequest : httpRequest;
   return new Promise((resolve) => {
     const req = request(
@@ -34,8 +38,22 @@ async function probe(url: URL, host?: string | undefined): Promise<number | unde
         ...(host === undefined ? {} : { headers: { Host: host } }),
       },
       (response) => {
-        response.resume();
-        resolve(response.statusCode);
+        if (expectedBody === undefined) {
+          response.resume();
+          resolve(response.statusCode);
+          return;
+        }
+        const chunks: Buffer[] = [];
+        let length = 0;
+        response.on('data', (chunk: Buffer) => {
+          length += chunk.length;
+          if (length > Buffer.byteLength(expectedBody)) response.destroy();
+          else chunks.push(chunk);
+        });
+        response.once('end', () =>
+          resolve(Buffer.concat(chunks).toString() === expectedBody ? response.statusCode : undefined),
+        );
+        response.once('error', () => resolve(undefined));
       },
     );
     req.setTimeout(PROBE_TIMEOUT_MS, () => req.destroy());
@@ -80,7 +98,11 @@ export async function inspectAccess(
   if (!loopback) return { hostname, publicUrl, proxyTarget };
 
   const [localStatus, publicStatus] = await Promise.all([
-    dependencies.probe(target, hostname),
+    dependencies.probe(
+      new URL('/api/machines/local/sessions', target),
+      hostname,
+      '{"error":"unauthorized"}',
+    ),
     dependencies.probe(new URL(publicUrl)),
   ]);
   return { hostname, publicUrl, proxyTarget, localStatus, publicStatus };
@@ -103,6 +125,6 @@ export function formatAccessReport(report: AccessReport): string {
 
 export function accessHealthy(report: AccessReport): boolean {
   return (
-    report.proxyTarget !== undefined && report.localStatus === 200 && report.publicStatus === 200
+    report.proxyTarget !== undefined && report.localStatus === 401 && report.publicStatus === 200
   );
 }

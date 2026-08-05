@@ -14,19 +14,23 @@ const ARMED = {
 };
 
 test('access status proves the configured Host locally and the real public URL', async () => {
-  const seen: { url: string; host?: string | undefined }[] = [];
+  const seen: { url: string; host?: string | undefined; body?: string | undefined }[] = [];
   const report = await inspectAccess({
     hostname: async () => HOST,
     serveStatus: async () => ARMED,
-    probe: async (url, host) => {
-      seen.push({ url: url.toString(), host });
-      return 200;
+    probe: async (url, host, body) => {
+      seen.push({ url: url.toString(), host, body });
+      return url.protocol === 'http:' ? 401 : 200;
     },
   });
 
   assert.deepEqual(seen, [
-    { url: 'http://127.0.0.1:8787/', host: HOST },
-    { url: `https://${HOST}/`, host: undefined },
+    {
+      url: 'http://127.0.0.1:8787/api/machines/local/sessions',
+      host: HOST,
+      body: '{"error":"unauthorized"}',
+    },
+    { url: `https://${HOST}/`, host: undefined, body: undefined },
   ]);
   assert.equal(accessHealthy(report), true);
   assert.match(formatAccessReport(report), /browser only/);
@@ -78,12 +82,24 @@ test('a failed public check is named independently of a healthy backend', async 
   const report = await inspectAccess({
     hostname: async () => HOST,
     serveStatus: async () => ARMED,
-    probe: async (url) => (url.protocol === 'http:' ? 200 : undefined),
+    probe: async (url) => (url.protocol === 'http:' ? 401 : undefined),
   });
 
-  assert.equal(report.localStatus, 200);
+  assert.equal(report.localStatus, 401);
   assert.equal(report.publicStatus, undefined);
   assert.equal(accessHealthy(report), false);
-  assert.match(formatAccessReport(report), /tether:\s+HTTP 200/);
+  assert.match(formatAccessReport(report), /tether:\s+HTTP 401/);
   assert.match(formatAccessReport(report), /public HTTPS: not reachable/);
+});
+
+test('a catch-all HTTP 200 is not identified as tether', async () => {
+  const report = await inspectAccess({
+    hostname: async () => HOST,
+    serveStatus: async () => ARMED,
+    probe: async (url, _host, expectedBody) =>
+      url.protocol === 'http:' && expectedBody === undefined ? 200 : undefined,
+  });
+
+  assert.equal(report.localStatus, undefined);
+  assert.equal(accessHealthy(report), false);
 });
