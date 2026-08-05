@@ -60,21 +60,32 @@ bash install.sh
 ```
 
 It clones tether to `~/.local/share/tether` (`--dir` moves that), builds it, and
-links `tether` into `~/.local/bin`. Then it offers the Funnel setup described
-above: it sets the password if there is not one already, turns Funnel on, and
-leaves `tether serve --funnel` running in the background with its output in
-`~/.local/state/tether/serve.log`. Declining anywhere in that leaves a working
-loopback install and stops there.
+links `tether` into `~/.local/bin`. Then it completes the browser-only Funnel
+setup described above: installs Tailscale on this host if needed, waits for its
+browser sign-in, lets Tailscale run its one-time Funnel approval, sets the tether
+password, and verifies the real public HTTPS address. **Nothing is installed on
+the phone or any other viewing device** — they open the resulting link in an
+ordinary browser.
+
+The installer offers to keep tether running through a launchd user agent on
+macOS or a systemd user service on Linux, with its output in
+`~/.local/state/tether/serve.log`. It shows the complete service file and exact
+commands before writing it. If no user service manager is available, or you
+decline that write, it falls back to a background process for the current boot.
+Declining Funnel anywhere leaves a working loopback install and stops there.
+Use `--access local` to skip the entire Tailscale and service path deliberately.
 
 **It installs the latest release, not the tip of `main`**, so the one-liner
 cannot hand you a change that landed half an hour ago and half-landed.
 `TETHER_VERSION=v0.1.0` installs a particular one instead.
 
-**It asks before it installs a system package or runs `sudo`.** It prints the
-exact commands first and waits for a yes; declining prints them for you to run
-yourself and stops. `--yes` accepts them up front for an unattended run. It
-never edits a shell startup file — if `~/.local/bin` is not on your PATH, it
-shows you the line to add and leaves the file alone.
+**It asks before it installs a system package, writes a user service, publishes
+Funnel or runs `sudo`.** It prints the exact commands and service bytes first;
+declining leaves the narrower working setup in place. `--yes` accepts those
+changes up front and, unless paired with `--access local`, therefore includes
+publishing the password-protected login page. It never edits a shell startup
+file — if `~/.local/bin` is not on your PATH, it shows you the line to add and
+leaves the file alone.
 
 ### What it needs, and the one that surprises people
 
@@ -88,9 +99,15 @@ shows you the line to add and leaves the file alone.
   release CI builds and install it to `/usr/local/bin` — your distribution's tmux
   is left where it is. On macOS, Homebrew's tmux is current (3.7b) and it uses
   that.
-- **A C++ toolchain on Linux** (`build-essential`, `python3`): `node-pty` ships
-  no Linux prebuild and is compiled during install. macOS needs none — `node-pty`
-  has prebuilds for both Darwin architectures.
+- **A C++ toolchain on Linux**: `node-pty` ships no Linux prebuild and is
+  compiled during install. The installer can offer the exact prerequisite plan
+  for apt, dnf, yum, zypper, pacman or apk rather than stopping outside
+  Debian/Ubuntu. macOS needs none — `node-pty` has prebuilds for both Darwin
+  architectures.
+- **Tailscale on the host only**, for the default public link. Linux uses
+  Tailscale's own distro-aware installer after consent. On macOS tether offers
+  Tailscale's signed **Standalone** package, the variant Tailscale currently
+  recommends; macOS verifies its package signature. Viewers install nothing.
 
 ### Upgrading, and uninstalling
 
@@ -98,12 +115,25 @@ shows you the line to add and leaves the file alone.
 release is now and checks it out over the existing clone, so there is no
 separate upgrade command to remember or to keep working.
 
-**Uninstalling is three paths, and the third one matters most:**
+**Uninstalling first stops the public mapping and user service, then removes
+three tether paths.** Use the pair for this host, ignoring “not loaded/not
+found” when no service was installed:
 
 ```sh
+# Linux
+systemctl --user disable --now tether.service
+rm -f ~/.config/systemd/user/tether.service
+systemctl --user daemon-reload
+
+# macOS
+launchctl bootout gui/$UID/dev.tether.server
+rm -f ~/Library/LaunchAgents/dev.tether.server.plist
+
+# Either host: stop the browser-only public address, then remove tether
+sudo tailscale funnel --bg off
 rm -f  ~/.local/bin/tether          # the command
 rm -rf ~/.local/share/tether        # the checkout ($XDG_DATA_HOME, or --dir, move it)
-rm -rf ~/.local/state/tether        # the password hash, the session registry, hook shims and logs
+rm -rf ~/.local/state/tether        # password, registry, attachments, hooks and logs
 ```
 
 The last one is not a cache. It holds the hash of the password that guards a
@@ -138,11 +168,17 @@ tether new ~/src/project      # starts a session in a durable tmux session
 tether ls                     # every session, live or dead
 tether kill 1a2b3c4d          # any unambiguous id prefix
 tether resume 1a2b3c4d        # bring a dead session's conversation back
+tether access status          # prove Funnel, tether and public HTTPS independently
 ```
 
 `tether new` takes `--title`, `--provider` (`claude-code` or `codex`) and, after
 `--`, a command to run instead of the provider's own
-(`tether new ~/src/project -- /bin/sh`).
+(`tether new ~/src/project -- /bin/sh`). `access status` changes nothing: it
+reads Tailscale's structured status, checks that Funnel really is public rather
+than tailnet-only, asks the loopback server with the exact public `Host`, and
+then requests the public HTTPS link. The three answers are printed separately,
+so “Funnel is armed”, “tether is healthy” and “public DNS works” can never stand
+in for one another.
 
 `ls`, `kill` and `resume` reconcile the registry against real tmux first, so a
 session that died while tether was not running shows as **dead** rather than
@@ -526,11 +562,18 @@ for that name is published in the public certificate-transparency logs, so treat
 the name as known rather than as a second factor.
 
 **The installer sets this up for you** — it is the last thing it does, and
-re-running it picks up wherever it stopped. By hand it is two commands:
+re-running it picks up wherever it stopped. Tailscale is installed only on the
+host running tether. Every other person uses the resulting HTTPS link in an
+ordinary browser; they need no Tailscale app, account, VPN or extension.
+
+On a fresh tailnet, Tailscale's command can open its own one-time account
+approval to enable HTTPS certificates and the Funnel policy. The installer lets
+that supported flow run instead of stopping beforehand and asking you to guess
+at an ACL file. By hand the order is:
 
 ```sh
-tether serve --funnel
 sudo tailscale funnel --bg 8787
+tether serve --funnel
 ```
 
 `--funnel` is the whole configuration, and none of it is typed:
@@ -553,17 +596,71 @@ sudo tailscale funnel --bg 8787
 It prints the address at startup and says what it exposes, then keeps saying it
 every ten minutes. `sudo tailscale funnel --bg 8787` is separate and stays
 separate: it is a machine-wide Tailscale setting that outlives tether and needs
-root, so tether never turns it on itself. `tailscale funnel status` says what is
-published right now, and `sudo tailscale funnel --bg off` takes it down.
+root, so the **server** never turns it on itself; the installer does only after
+showing that exact command and receiving consent. `tailscale funnel status`
+says what is published, and `sudo tailscale funnel --bg off` takes it down.
+
+The installer also offers a native user service so tether itself comes back;
+Funnel already persists. launchd/systemd receive the PATH present at install,
+which is necessary because they do not read a shell startup file and otherwise
+cannot find tmux, Node, Claude Code or Codex. Re-running the installer reconciles
+the service file. Check the whole live path, without changing it, with:
+
+```sh
+tether access status
+
+# Restart/stop the persistent server itself
+systemctl --user restart tether.service     # Linux
+systemctl --user stop tether.service
+launchctl kickstart -k gui/$UID/dev.tether.server  # macOS restart
+launchctl bootout gui/$UID/dev.tether.server       # macOS stop
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/dev.tether.server.plist  # start
+```
+
+Stopping tether leaves Funnel's durable mapping aimed at an empty loopback port;
+`sudo tailscale funnel --bg off` removes the public mapping too. That command separately reports whether Funnel is armed, whether tether answers
+on loopback for the public `Host`, and whether the real HTTPS URL responds. A
+private `tailscale serve` mapping has the same-looking local proxy, so it also
+requires `AllowFunnel` in the structured status before calling the link public.
 
 If any of Tailscale, a login, or Funnel-on-this-machine is missing, `--funnel`
 says which one and what to do about it, and starts nothing. The one exception is
 a machine Tailscale reports no capabilities for at all: that says nothing about
-your access controls, so `--funnel` starts and lets `tailscale funnel` refuse in
-its own words if the tailnet really does forbid it.
+access controls, so it carries on and lets `tailscale funnel` refuse in its own
+words if the tailnet really does forbid it.
 
 The first request after an idle spell is slow, sometimes several seconds, while
-Funnel wakes up. That is Funnel, not tether.
+Funnel wakes up. That is Funnel, not tether. Tailscale's current documentation
+also says Funnel is beta, supports only its tailnet DNS name and public ports
+443/8443/10000, and applies non-configurable bandwidth limits. Its relay servers
+cannot decrypt Funnel traffic; TLS terminates in Tailscale on this machine.
+
+#### Why Funnel remains the clientless default
+
+The alternatives were checked against tether's actual requirements: an ordinary
+browser on the viewing device, a stable HTTPS origin, WebSockets, a loopback
+backend and the fact that this traffic contains source code and controls a shell.
+
+- **[Cloudflare Quick Tunnels](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/)** need no account and viewers need only a browser,
+  but Cloudflare documents them as development/testing only: a random hostname
+  per run, no SLA, a 200 in-flight-request cap and no Server-Sent Events. They
+  are not a production installation path.
+- **[A named Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/) plus Access** gives a stable browser-only address
+  and a strong identity front door, but the host needs a Cloudflare account,
+  managed domain/DNS and an authenticated `cloudflared`; Cloudflare terminates
+  TLS at its edge. It is a good deliberate reverse proxy, not less setup.
+- **[ngrok](https://ngrok.com/docs/gateway/agent-cli-quickstart/)** also gives viewers a normal HTTPS link, supports WebSockets and can
+  add OAuth. The host still needs an ngrok account, agent and auth token, and its
+  free plan currently limits the dev domain to 1 GB and 20,000 HTTP requests per
+  month; ngrok terminates TLS at its edge.
+- **Caddy or another reverse proxy** remains fully supported when you already
+  own the domain, DNS and ingress. The certificate, patching and front-door
+  authentication are then yours.
+
+None is blocked or special-cased: `--allowed-host` and `--trusted-proxy` are the
+generic seam for an operator who chooses one. tether does not silently download
+or supervise a second tunnel client just to offer another default with more
+host-side setup.
 
 ### A private tailnet — your own devices only, nothing public
 
@@ -723,7 +820,7 @@ npm run format:check # prettier --check   (npm run format to fix)
 npm run check:pty    # a terminal really starts here: the helper bit, and a live PTY
 
 shellcheck install.sh        # the installer is the only shell in the repo
-bash install.sh --self-test  # version parsing, PATH, the Funnel probes, TETHER_VERSION
+bash install.sh --self-test  # versions, PATH, package plans, services, Funnel probes, checkout moves
 
 npx playwright install chromium   # once; npm 12 blocks playwright's own postinstall
 npm run test:e2e                  # the end-to-end specs

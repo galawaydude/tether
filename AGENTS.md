@@ -87,8 +87,9 @@ locally.
   which CI runs in one step before anything expensive, because nothing else in the
   repo's checks looks at shell at all. What that self-test covers is every branch in
   the file that can be silently wrong: the version parsing (a `tmux 3.4` read as new
-  enough is a session that dies at birth), the PATH message, the two Funnel
-  questions below, and the `TETHER_VERSION` checkout moves. Its consent rule is
+  enough is a session that dies at birth), the PATH message, every supported Linux
+  package-manager plan, launchd/systemd escaping, the two Funnel questions below,
+  and the `TETHER_VERSION` checkout moves. Its consent rule is
   the Codex hook's, generalised: nothing outside tether's own directory changes without
   the exact commands on screen and a yes, declining prints them and stops, and no shell
   startup file is ever edited. A sentence it cannot back with something it actually
@@ -113,14 +114,25 @@ locally.
   global prefix is root-owned wherever Node came from a distro package or a tarball,
   which made the last step of the script the one that failed after every expensive
   consented thing had already been spent. Anything that moves `server/dist/cli.js`
-  moves that symlink's target.
-- **Tailscale Funnel is the documented default, and `--funnel` is composition
-  rather than control.** `machine/tailscale.ts` only ever _reads_ — one
-  `tailscale status --json`, four fields — and `install.sh` is what turns Funnel
-  on, because `tailscale funnel` needs root or an operator (`Access denied:
-serve config denied` otherwise) and sets a machine-wide thing that outlives
-  the server. So there is no Tailscale client here and none is wanted; adding
-  one is the "network manager" this was scoped against. Three facts established
+  moves that symlink's target. A public install can additionally write exactly one
+  consented user service — `~/Library/LaunchAgents/dev.tether.server.plist` or
+  `~/.config/systemd/user/tether.service` — after printing its complete bytes and
+  commands. PATH is captured because neither manager reads shell startup files; Linux
+  enables linger so a headless user service starts before login. An already-correct
+  unmanaged server is never killed for migration: the service is enabled for the next
+  login/boot. With no reachable manager or a decline, `nohup` remains the current-boot
+  fallback. The main-vs-release constraint above applies here too: the service may
+  invoke only the long-existing `tether serve --funnel`, never a new helper command.
+- **Tailscale Funnel is the clientless default, and `--funnel` is composition
+  rather than control.** Tailscale is installed only on the host; everyone opening
+  the link uses an ordinary browser and needs no Tailscale account or app.
+  `machine/tailscale.ts` only ever _reads_ the structured `status --json
+--peers=false` and `serve status --json` documents; `install.sh` is what installs
+  Tailscale on the host, turns Funnel on and installs the optional user service,
+  because those are machine/user-wide changes that outlive the server. On macOS it
+  offers Tailscale's signed, recommended Standalone package through the OS package
+  installer, never guesses between app variants silently. The server remains no
+  network manager: `--funnel` never installs, enables or repairs Tailscale. Three facts established
   by putting a header echo behind a real Funnel (tailscale 1.98.10, captured in
   the PR): it forwards `Host: <name>.ts.net` with **no port**, sets
   `X-Forwarded-Proto: https` and a real client `X-Forwarded-For`, and marks
@@ -150,10 +162,12 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   answer the first; permitted-but-unarmed is what a fresh machine _is_, and it
   has to go on and arm. And the permitted answer is **tri-state**: a capability
   set without `funnel` in it is a real no, but a status carrying no capability
-  set at all is `unknown`, which is not a no — reporting it as one sends someone
-  to add an attribute their policy already has, at the one step of the script
-  with no command to offer. `unknown` therefore carries on and lets
-  `tailscale funnel` refuse in its own words. Both are pure string functions
+  set at all is `unknown`, which is not a no. In the server, `no` remains a precise
+  precondition. In the installer both answers are now advisory: current Tailscale's
+  own `funnel` command can open the one-time account approval that enables HTTPS
+  and adds the policy, so blocking before that command strands exactly a fresh
+  install. The installer runs the consented command and lets it refuse in its own
+  words when this user cannot approve it. Both probes remain pure string functions
   taking the document as an argument, which is what lets `--self-test` drive
   them; the fresh-machine pair (`{}` serve status, a status with no `CapMap`) is
   the case that had no coverage and is now the point of that block. **The same
@@ -163,15 +177,18 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   An **empty** capability set is not the unknown case in either — it is a node
   granted nothing, which is a real refusal. Neither is scraped
   out of `tailscale funnel status` — human-readable output another tool owns
-  must never be what a flow is gated on, and here that is not tidiness:
-  `funnel status` _is_ `serve status`, so a tailnet-only `tailscale serve`
-  prints an identical proxy line and would make the installer skip arming and
-  publish a link to nothing. What proves the setup works is
-  functional instead: one `curl` carrying the derived `Host`, which a plain
-  `tether serve` refuses with the very 403 `--funnel` exists to prevent. And
-  `tailscale funnel` **prompts**: without a terminal it waits rather than
-  failing, so the installer passes `--yes` to the command it has already put on
-  screen and taken a yes for. Anything else there would hang `curl | bash`.
+  must never gate a flow, and here that is not tidiness: `funnel status` _is_
+  `serve status`, so a tailnet-only `tailscale serve` prints the same proxy line.
+  Public means **both** `AllowFunnel["<name>:443"]` and the root handler's Proxy;
+  `machine/access.ts` uses the same rule, refuses to follow a non-loopback target
+  (status must not become SSRF), probes loopback with the derived Host, then probes
+  real public HTTPS. `tether access status` prints those facts independently and
+  changes nothing. The installer does the same functional local/public checks in
+  shell because main's installer can target an older release without that command.
+  And `tailscale funnel` **prompts**: without a terminal it waits rather than
+  failing, so the installer passes `--yes` only after putting the machine-wide
+  command on screen and taking a yes; account approval remains Tailscale's own
+  browser flow. Anything else there would hang `curl | bash`.
 - **`cwd` is a trust boundary and `resolveCwd` in `machine/tmux.ts` is the only
   gate.** It resolves the path (symlinks included) _before_ checking it, and confines
   the result to `allowedRoots()` — the user's home unless `TETHER_ALLOWED_ROOTS` (a
