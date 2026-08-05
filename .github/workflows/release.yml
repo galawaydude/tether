@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version (vX.Y.Z)
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate release
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    name: Tag and publish
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Check out validated commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Validate version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          [ "$GITHUB_REF" = refs/heads/main ] || {
+            echo "Releases must be dispatched from main; got $GITHUB_REF" >&2
+            exit 1
+          }
+          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "Release versions must match vX.Y.Z; got $VERSION" >&2
+            exit 1
+          }
+          latest=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)
+          if [ -n "$latest" ] && [ "$latest" != "$VERSION" ] &&
+            [ "$(printf '%s\n%s\n' "$latest" "$VERSION" | sort -V | tail -n 1)" != "$VERSION" ]; then
+            echo "$VERSION must be newer than $latest" >&2
+            exit 1
+          fi
+
+      - name: Create tag and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if git rev-parse "$VERSION^{commit}" >/dev/null 2>&1; then
+            [ "$(git rev-parse "$VERSION^{commit}")" = "$GITHUB_SHA" ] || {
+              echo "$VERSION already points to another commit" >&2
+              exit 1
+            }
+          else
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git tag -a "$VERSION" -m "$VERSION" "$GITHUB_SHA"
+            git push origin "$VERSION"
+          fi
+
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "Release $VERSION already exists"
+          else
+            gh release create "$VERSION" --verify-tag --generate-notes --title "$VERSION"
+          fi

@@ -1,0 +1,37 @@
+name: Set up tmux
+description: Build the pinned tmux release required by tether's integration tests
+
+inputs:
+  version:
+    description: tmux release
+    required: true
+  sha256:
+    description: SHA-256 of the release tarball
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install build dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential python3 bison libevent-dev libncurses-dev pkg-config
+
+    - name: Build tmux
+      shell: bash
+      env:
+        TMUX_VERSION: ${{ inputs.version }}
+        TMUX_SHA256: ${{ inputs.sha256 }}
+      run: |
+        set -euo pipefail
+        tarball="tmux-${TMUX_VERSION}.tar.gz"
+        curl -sSfL --proto '=https' -o "${RUNNER_TEMP}/${tarball}" \
+          "https://github.com/tmux/tmux/releases/download/${TMUX_VERSION}/${tarball}"
+        echo "${TMUX_SHA256}  ${RUNNER_TEMP}/${tarball}" | sha256sum -c -
+        tar -xzf "${RUNNER_TEMP}/${tarball}" -C "${RUNNER_TEMP}"
+        cd "${RUNNER_TEMP}/tmux-${TMUX_VERSION}"
+        ./configure
+        make -j"$(nproc)"
+        sudo make install
+        tmux -V

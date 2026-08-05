@@ -3,113 +3,185 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches:
+      - main
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
+  CI: true
+  ACTIONLINT_VERSION: 1.7.12
   GITLEAKS_VERSION: 8.30.1
   TMUX_VERSION: 3.7b
   TMUX_SHA256: 87f2e99e3b685973f2ca002ffd6ed7e51a5744f7009daae5a15670b6d532db96
 
 jobs:
-  check:
+  quality:
+    name: Quality
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-        with:
-          # gitleaks scans history, not just the working tree.
-          fetch-depth: 0
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      # The installer is shell, so none of the checks below see it. Its own
-      # --self-test covers the branches that can be silently wrong: version and
-      # PATH parsing, every Linux package plan, launchd/systemd service syntax,
-      # the two distinct Funnel questions (permitted versus actually armed),
-      # and TETHER_VERSION moves of an existing shallow checkout.
-      # Runs before anything expensive:
-      # it needs nothing installed and takes milliseconds.
-      - name: Installer
+      - name: Validate installer
         run: |
           shellcheck install.sh
           bash install.sh --self-test
 
-      - uses: actions/setup-node@v7
+      - name: Validate GitHub Actions
+        env:
+          VERSION: ${{ env.ACTIONLINT_VERSION }}
+        run: |
+          set -euo pipefail
+          base="https://github.com/rhysd/actionlint/releases/download/v${VERSION}"
+          tarball="actionlint_${VERSION}_linux_amd64.tar.gz"
+          curl -sSfL --proto '=https' -o "${RUNNER_TEMP}/${tarball}" "${base}/${tarball}"
+          curl -sSfL --proto '=https' "${base}/actionlint_${VERSION}_checksums.txt" \
+            | grep " ${tarball}\$" | (cd "${RUNNER_TEMP}" && sha256sum -c -)
+          tar -xzf "${RUNNER_TEMP}/${tarball}" -C "${RUNNER_TEMP}" actionlint
+          "${RUNNER_TEMP}/actionlint" -color
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version-file: .nvmrc
           cache: npm
 
-      # Integration tests from PR #2 onwards drive a real tmux server, and tether.conf
-      # sets `window-size manual`. tmux before 3.7 sizes a session that has no window
-      # yet by dereferencing that NULL window, so every detached `new-session` kills
-      # the server (fixed upstream in 3.7's resize.c). ubuntu-latest's apt tmux is 3.4,
-      # so build the pinned release instead.
-      # `build-essential` and `python3` are also what node-gyp needs: `node-pty`
-      # ships no Linux prebuild, so `npm ci` compiles it from source.
-      - name: Install tmux
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential python3 bison libevent-dev libncurses-dev pkg-config
-          tarball="tmux-${TMUX_VERSION}.tar.gz"
-          curl -sSfL -o "${RUNNER_TEMP}/${tarball}" \
-            "https://github.com/tmux/tmux/releases/download/${TMUX_VERSION}/${tarball}"
-          echo "${TMUX_SHA256}  ${RUNNER_TEMP}/${tarball}" | sha256sum -c -
-          tar -xzf "${RUNNER_TEMP}/${tarball}" -C "${RUNNER_TEMP}"
-          cd "${RUNNER_TEMP}/tmux-${TMUX_VERSION}"
-          ./configure
-          make -j"$(nproc)"
-          sudo make install
-          tmux -V
+      - name: Install dependencies
+        run: npm ci
 
-      - run: npm ci
-
-      # Whether a terminal can start at all — an unbuildable `node-pty`, or a
-      # `spawn-helper` without its executable bit, otherwise fails at the first
-      # attach, long after this job has gone green. The same command `install.sh`
-      # runs on a user's machine, and the same one that carries the only evidence
-      # about macOS obtainable here: this runner holds the darwin prebuilds, so
-      # it can prove the root postinstall set their bit even though it cannot use
-      # them. server/src/machine/pty-smoke.ts says what it checks and why.
-      - name: Verify a terminal can start
+      - name: Verify native PTY
         run: npm run check:pty
 
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Format
+      - name: Check formatting
         run: npm run format:check
 
       - name: Lint
         run: npm run lint
 
-      - name: Test
+      - name: Build
+        run: npm run build
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Set up tmux
+        uses: ./.github/actions/setup-tmux
+        with:
+          version: ${{ env.TMUX_VERSION }}
+          sha256: ${{ env.TMUX_SHA256 }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit and integration tests
         run: npm test
+
+  e2e:
+    name: End-to-end
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Set up tmux
+        uses: ./.github/actions/setup-tmux
+        with:
+          version: ${{ env.TMUX_VERSION }}
+          sha256: ${{ env.TMUX_SHA256 }}
+
+      - name: Install dependencies
+        run: npm ci
 
       - name: Build
         run: npm run build
 
-      # npm 12 blocks the `playwright` package's own postinstall, so the browser
-      # is fetched explicitly — which is what a developer runs too, and is why a
-      # plain `npm ci` does not pay for a 100MB download it may never use.
-      - name: Install Playwright's browser
+      - name: Install Chromium
         run: npx playwright install --with-deps chromium
 
-      # The one thing no unit test can say: log in, start a session against the
-      # stub agent, type at it, reload, and get everything back exactly once.
-      # Needs `web/dist` and a working `node-pty`, both proven by the steps above.
-      - name: End-to-end
+      - name: Run browser tests
         run: npm run test:e2e
 
-      - name: Scan for secrets
+      - name: Upload browser-test evidence
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: playwright-results
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Scan repository history for secrets
+        env:
+          VERSION: ${{ env.GITLEAKS_VERSION }}
         run: |
-          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
-          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          curl -sSfL -o "${RUNNER_TEMP}/${tarball}" "${base}/${tarball}"
-          curl -sSfL "${base}/gitleaks_${GITLEAKS_VERSION}_checksums.txt" \
+          set -euo pipefail
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}"
+          tarball="gitleaks_${VERSION}_linux_x64.tar.gz"
+          curl -sSfL --proto '=https' -o "${RUNNER_TEMP}/${tarball}" "${base}/${tarball}"
+          curl -sSfL --proto '=https' "${base}/gitleaks_${VERSION}_checksums.txt" \
             | grep " ${tarball}\$" | (cd "${RUNNER_TEMP}" && sha256sum -c -)
-          tar -xzf "${RUNNER_TEMP}/${tarball}" -C /usr/local/bin gitleaks
-          gitleaks git --redact --verbose .
+          tar -xzf "${RUNNER_TEMP}/${tarball}" -C "${RUNNER_TEMP}" gitleaks
+          "${RUNNER_TEMP}/gitleaks" git --redact --verbose .
+
+  ci:
+    name: CI
+    if: always()
+    needs:
+      - quality
+      - test
+      - e2e
+      - security
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require every CI job
+        env:
+          QUALITY: ${{ needs.quality.result }}
+          TEST: ${{ needs.test.result }}
+          E2E: ${{ needs.e2e.result }}
+          SECURITY: ${{ needs.security.result }}
+        run: |
+          for result in "$QUALITY" "$TEST" "$E2E" "$SECURITY"; do
+            [ "$result" = success ] || exit 1
+          done
