@@ -111,8 +111,7 @@ test('an oversized catch-all response settles as unhealthy', async (t) => {
   await new Promise<void>((resolve) => server.once('listening', resolve));
   t.after(() => server.close());
   const address = server.address();
-  assert.notEqual(address, null);
-  assert.equal(typeof address, 'object');
+  assert(address !== null && typeof address === 'object');
 
   const report = await inspectAccess({
     hostname: async () => HOST,
@@ -124,8 +123,7 @@ test('an oversized catch-all response settles as unhealthy', async (t) => {
       },
       AllowFunnel: { [`${HOST}:443`]: true },
     }),
-    probe: async (url, host, body) =>
-      url.protocol === 'http:' ? probe(url, host, body) : 200,
+    probe: async (url, host, body) => (url.protocol === 'http:' ? probe(url, host, body) : 200),
   });
 
   assert.equal(report.localStatus, undefined);

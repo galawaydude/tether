@@ -62,8 +62,9 @@ bash install.sh
 It clones tether to `~/.local/share/tether` (`--dir` moves that), builds it, and
 links `tether` into `~/.local/bin`. Then it completes the browser-only Funnel
 setup described above: installs Tailscale on this host if needed, waits for its
-browser sign-in, lets Tailscale run its one-time Funnel approval, sets the tether
-password, and verifies the real public HTTPS address. **Nothing is installed on
+browser sign-in, sets the tether password and checks the target port, then lets
+Tailscale run its one-time Funnel approval and checks the real public HTTPS
+address. **Nothing is installed on
 the phone or any other viewing device** — they open the resulting link in an
 ordinary browser.
 
@@ -524,10 +525,11 @@ tether serve
   It applies to `tether new` as well as to the API, and the startup banner prints
   the roots in force. There is no per-root permission model.
 
-State — the one SQLite file, holding the password hash and the session registry —
-lives in `~/.local/state/tether/tether.sqlite` (`$XDG_STATE_HOME`, or
-`$TETHER_STATE_DIR` to override), at mode `0600`. Nothing secret, and no runtime
-state, is ever written inside the repository.
+The SQLite database holding the password hash and session registry lives at
+`~/.local/state/tether/tether.sqlite` (`$XDG_STATE_HOME`, or
+`$TETHER_STATE_DIR` to override), at mode `0600`; private attachments and hook
+state live beside it. Nothing secret, and no runtime state, is ever written
+inside the repository.
 
 The server logs to **stderr at `warn`**: every failure it hits, and none of the
 request chatter — a browser polls the session list every five seconds, so a log

@@ -16,7 +16,11 @@ export type AccessReport = {
 type AccessDependencies = {
   hostname(): Promise<string>;
   serveStatus(): Promise<unknown>;
-  probe(url: URL, host?: string | undefined, body?: string | undefined): Promise<number | undefined>;
+  probe(
+    url: URL,
+    host?: string | undefined,
+    body?: string | undefined,
+  ): Promise<number | undefined>;
 };
 
 /**
@@ -57,11 +61,12 @@ export async function probe(
           if (length > Buffer.byteLength(expectedBody)) {
             settle(undefined);
             response.destroy();
-          }
-          else chunks.push(chunk);
+          } else chunks.push(chunk);
         });
         response.once('end', () =>
-          settle(Buffer.concat(chunks).toString() === expectedBody ? response.statusCode : undefined),
+          settle(
+            Buffer.concat(chunks).toString() === expectedBody ? response.statusCode : undefined,
+          ),
         );
         response.once('aborted', () => settle(undefined));
         response.once('close', () => settle(undefined));
