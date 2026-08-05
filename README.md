@@ -1,18 +1,35 @@
 # tether
 
-**tether runs persistent Claude Code and OpenAI Codex sessions on your machine
-and lets you control them from a phone-friendly browser.** Sessions survive
-disconnects, and provider credentials stay with the provider CLI on the host.
+[![CI](https://github.com/galawaydude/tether/actions/workflows/ci.yml/badge.svg)](https://github.com/galawaydude/tether/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/galawaydude/tether)](https://github.com/galawaydude/tether/releases/latest)
+[![License](https://img.shields.io/github/license/galawaydude/tether)](LICENSE)
 
-## Read this before you install it
+**Run persistent Claude Code and OpenAI Codex sessions on your machine, then
+control them from a phone-friendly browser.**
 
-**Access to tether is shell access to the host.** There is one shared password,
-no read-only mode, and no per-person permissions. Anyone with access can run
-commands as your OS user inside the allowed roots.
+Sessions run under your OS user in durable tmux processes. Provider credentials
+stay with the provider CLI on the host.
 
-The default installer offers [Tailscale Funnel](#tailscale-funnel), which makes
-the login page public. Viewers need only a browser and the tether password; they
-do not need Tailscale. Use `--access local` to keep tether on this machine.
+## Features
+
+- Conversation-first UI with the real terminal one tap away
+- Persistent sessions, transcript history, resume and removal
+- Claude Code and Codex conversations, status and folder trust
+- Approve or deny supported permission prompts from your phone
+- Fast PTY input, image attachments and mobile-friendly controls
+- Optional public HTTPS through Tailscale Funnel
+- Desktop session rail and bounded history for long-running work
+
+## Security
+
+> **Access to tether is shell access to the host.**
+
+There is one shared password, no read-only mode and no per-person permissions.
+Anyone with access can run commands as your OS user inside the allowed roots.
+The default installer offers a **public** Funnel URL; viewers need only a browser
+and the tether password. Use `--access local` to keep tether on the host.
+
+Read the [security and remote-access guide](docs/security.md) before exposing it.
 
 ## Install
 
@@ -22,776 +39,57 @@ Linux or macOS:
 curl -fsSL https://raw.githubusercontent.com/galawaydude/tether/main/install.sh | bash
 ```
 
-To inspect it first:
+The installer shows every system command and service file before asking. It can
+set up Tailscale on the host and keep tether running through launchd or systemd.
+Nothing is installed on viewing devices.
+
+For loopback-only installation:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/galawaydude/tether/main/install.sh -o install.sh
-less install.sh
-bash install.sh
+curl -fsSL https://raw.githubusercontent.com/galawaydude/tether/main/install.sh | bash -s -- --access local
 ```
 
-The installer builds the latest release, links `tether` into `~/.local/bin`, and
-optionally sets up Tailscale Funnel plus a launchd/systemd user service. It shows
-all system commands and service bytes before asking. Declining public access
-leaves a working loopback install.
-
-Useful options:
-
-```sh
-bash install.sh --access local             # no Tailscale or public link
-bash install.sh --yes                      # accept displayed changes
-TETHER_VERSION=v0.1.0 bash install.sh      # install one release
-```
-
-Requirements:
-
-- Node at the version in [`.nvmrc`](.nvmrc).
-- tmux 3.7 or newer. The installer can build it on Linux or use Homebrew on macOS.
-- A C++ toolchain on Linux. apt, dnf, yum, zypper, pacman and apk are supported.
-- Tailscale on the host for Funnel. Viewers install nothing.
-
-On macOS, tether offers Tailscale's signed
-[Standalone package](https://tailscale.com/docs/concepts/macos-variants);
-Tailscale's [Funnel docs](https://tailscale.com/docs/features/tailscale-funnel)
-list it as supporting port proxying. Linux uses Tailscale's official installer.
-
-### Upgrading and uninstalling
-
-Re-run the installer to upgrade. To uninstall, stop Funnel and the user service,
-then remove tether's files:
-
-```sh
-# Linux service
-systemctl --user disable --now tether.service
-rm -f ~/.config/systemd/user/tether.service
-systemctl --user daemon-reload
-
-# macOS service
-launchctl bootout gui/$UID/dev.tether.server
-rm -f ~/Library/LaunchAgents/dev.tether.server.plist
-
-# Public access and tether data
-sudo tailscale funnel --bg off
-rm -f ~/.local/bin/tether
-rm -rf ~/.local/share/tether
-rm -rf ~/.local/state/tether
-```
-
-The state directory contains the password hash, session registry, attachments,
-hooks and logs. Project hook/trust entries remain in the provider configuration
-files you chose to modify.
+See [Installation](docs/installation.md) for requirements, upgrades, pinned
+versions and uninstall steps.
 
 ## First run
 
-If you completed the public installer flow, open the HTTPS URL it printed. For a
-local install:
+If public setup completed, open the HTTPS URL printed by the installer. For a
+local installation:
 
 ```sh
 tether set-password
 tether serve
 ```
 
-Then open `http://127.0.0.1:8787` and create a session. Common CLI commands:
+Open `http://127.0.0.1:8787`, sign in and create a session.
 
 ```sh
 tether new ~/src/project
 tether ls
-tether kill 1a2b3c4d
-tether resume 1a2b3c4d
+tether resume <session-id>
 tether access status
 ```
 
-`new` accepts `--title`, `--provider claude-code|codex`, and a custom command
-after `--`. `access status` checks Funnel, the local tether origin and public
-HTTPS without changing anything. Dead sessions keep their conversation and can
-be resumed; terminal scrollback does not survive a reboot.
-
-## Using it
-
-### The session list
-
-Every session on the machine, live and dead, each tagged with the agent it is
-running and grouped under the day it was last worked on, with a search box over
-it that filters on title and directory. A live session shows what its agent is
-doing — _Working_, _Idle_ or _Waiting for you_ — and just **live** where the
-provider is not saying, rather than a badge that would be a guess. A live row
-must be **Kill**ed before it can be removed. Dead rows carry **Remove**: after a
-confirmation they disappear from tether's list and can no longer be resumed,
-while the provider-owned Claude Code or Codex transcript stays untouched.
-
-### The conversation
-
-Opening a session lands you in the conversation, not a terminal: your prompts,
-the agent's replies, and a collapsed card per tool call that opens onto its
-input and result. A long session initially opens at its latest 512 events so a
-phone never has to download and mount thousands of rows at once. **Load earlier**
-walks backward through the complete transcript one bounded page at a time, and
-**Back to latest** returns to the live conversation; history is accessible, not
-deleted or accumulated into another multi-megabyte screen.
-
-Messages are rendered as the markdown they are written in — headings, lists,
-links, emphasis, quotes and above all **fenced code**, in a monospace box that
-scrolls inside itself rather than widening the page. An `Edit` or a `Write` opens
-onto the change itself: added and removed lines with a `+`/`−` gutter, not a
-paragraph describing one. A call that failed says whether it is _retrying_ itself
-or _needs you_, so a glance is enough to know whether to pick the phone up. A
-whole **turn** the agent's own CLI reported as failed gets a row of its own, in
-that CLI's words rather than tether's — and where the CLI itself typed the
-failure as an authentication one, the row says nothing will retry it and offers
-the way to the terminal, so an expired login reads as an expired login rather
-than as a session that quietly stopped working. Any other failure is shown and
-nothing is claimed about it. A turn that runs unusually long shows how long
-beside the state chip — a fast one shows nothing, so the number appearing is
-itself the news.
-
-### The terminal
-
-There is no second tab to choose. **Terminal** in the header opens the real TUI
-as one full, uncluttered pane; that same control becomes **Conversation**, which
-puts it away with both views exactly where you left them. The seven keys a phone
-keyboard has not got (Esc, Tab, arrows, Ctrl-C) all fit in one fixed bar without
-a sideways tray, and opening the pane focuses it for typing. Ordinary text,
-Enter, Backspace, Tab, Escape and Ctrl keys write through the already-attached
-PTY rather than spawning a tmux command for every press, so fast typing does not
-build a server-side queue. It remains the complete fallback for anything the
-conversation view cannot draw.
-
-### Sending a message
-
-You reply in the conversation's **composer**: a real text box, so the message is
-composed on the phone and sent as one unit rather than a round trip per keystroke
-with autocorrect fighting a raw byte stream. **Enter inserts a line break** — the
-Send button is what sends — and a multi-line prompt arrives whole. It shows the
-moment you send it and is replaced, not duplicated, by the transcript's own
-record a moment later. **Copy** is available on touch screens as well as on
-hover, copies the visible text (never an internal attachment path), and changes
-to **Copied** so the tap is not silent.
-
-Paste an image directly into that box, or choose **Image**. A local thumbnail
-appears before anything is sent, can be opened full-size or removed, and up to
-four PNG, JPEG, WebP or GIF images (8 MB each) may accompany one prompt. On Send,
-tether stores the bytes privately under its state directory, passes the agent an
-absolute readable path, and renders the image from an authenticated URL in the
-conversation; it remains viewable after reload without writing into the project.
-
-Send is refused, with the reason, while the agent is waiting on a permission
-prompt, where a message would answer the dialog rather than the agent; when the
-message is too long for the wire to carry; and once the session has ended or the
-server no longer has it. Mid-turn is fine — the agent queues it.
-
-### The option controls, and slash commands
-
-Beside Send, **Agent options** expands the controls only while they are needed;
-on a laptop the open controls share one compact horizontal tray. They are
-deliberately **not the same for both agents**. An axis is offered
-only where changing it was verified to move
-a running session, so Claude Code gets **Permission mode**, **Model** and
-**Effort**, Codex gets its fixed three-preset **Permissions** — and an axis an
-agent cannot be moved along mid-session, or can only be moved along by guessing
-at a menu tether cannot see, is **absent** rather than a control that fails
-quietly. They are menus, not readouts: each resets to the name of its axis once
-applied, because tether cannot keep a value true against you typing in the
-terminal, and the agent's own answer above the composer is the confirmation.
-Permission mode is the one exception — tether reads it off the pane's own status
-footer, so what it reports is the mode it **observed**, and it says so plainly
-when it could not confirm one. A choice that lets the agent act with less asking
-— Claude Code's _Accept edits_ and _Decide for me_, Codex's _Approve for me_ and
-_Full access_ — states what it means and takes effect only once you have
-confirmed it.
-
-Anything no control covers is reachable by typing the agent's own **slash
-command** into the same box. Type `/` and the ones tether knows for that agent
-appear above it, one line each; a command is text addressed to the CLI rather
-than a prompt, so it gets no message bubble, and it is refused for the same
-reasons a message is — while the agent is waiting on a permission prompt above
-all. What the composer adds is the one thing sending text cannot tell you:
-**where the answer will turn up**. `/model sonnet`, `/effort high` and `/compact`
-are recorded by Claude Code, so they land in the conversation as their own line.
-`/cost` and `/status` answer in the terminal only. A chooser like `/resume`
-leaves the agent waiting for a selection tether cannot draw, so the note that
-says so carries **Show the terminal** beside it. A command tether has not heard
-of is still sent, since refusing one would refuse every custom command you have —
-it just says it cannot vouch for what happened. The single outright refusal is a
-Codex command given an argument, because Codex sends that to the model as a paid
-prompt instead of running the command.
-
-### On a laptop
-
-The phone is the primary target and gets one screen at a time — the list, then
-the session you opened. A laptop gets a different shape rather than a stretched
-one: past 900px the session list stays on screen as a rail beside the open
-session, so switching sessions costs no trip back, and the conversation is capped
-to a readable column instead of running the full width of the window. The panel
-button beside **tether** collapses that rail when the conversation needs the full
-window; the matching button beside the session title restores it, and the choice
-survives reload.
-
-## Answering a permission prompt from your phone
-
-When an agent proposes a tool call it needs permission for, the card for that
-call gets **Approve** and **Deny**, and the agent waits on your tap. The card
-opens itself and shows the whole input — the command, the path, the diff —
-because a button that says "Approve?" over a clipped line is worse than no
-button.
-
-**This works for both providers.** Claude Code needs no setup; Codex needs its
-hook installed once ([below](#codex-and-its-optional-hook)), and then behaves
-identically.
-
-Three things worth knowing, because each is a moment where you need to know what
-tether will do:
-
-- **It only holds calls worth stopping for, and only while you are watching.**
-  Claude Code runs its hook for _every_ tool call, so tether skips the read-only
-  ones (`Read`, `Grep`, `Glob`, …); Codex needs no such list. Neither holds
-  anything at all for a session no browser has open, so an agent reading twenty
-  files does not slow down because your phone is unlocked.
-- **Nobody answering is not a denial.** After 20 seconds tether stops holding,
-  says so on the card, and the agent asks you in the terminal exactly as it would
-  have. `TETHER_PERMISSION_TIMEOUT` is that number in seconds; `0` turns holding
-  off entirely and leaves tether reporting prompts without answering them, which
-  is a supported way to run it. A Codex hold is capped just under five minutes
-  however high you set it, because the timeout in its hooks file is a fixed one —
-  changing that value would put its trust prompt in front of you again.
-- **If tether cannot be reached, nothing is decided for you.** The hook says
-  nothing and the agent's own permission rules apply — never an automatic
-  _allow_, because a server that is down must not be able to approve anything,
-  and never an automatic _deny_, because a tether outage must not break every
-  session on the machine. If tether was reachable and then failed, it says so in
-  your session rather than falling back silently.
-
-Whichever surface answers first wins. Approving on your phone means the agent
-never shows the dialog, so a reflex keystroke in the terminal afterwards is
-ordinary typing and approves nothing; answering in the terminal after a hold has
-expired updates the card. There is no second answer either way.
-
-**A command or path that reads as something it is not is named on the card.**
-`rm -rf ./buіld` — a Cyrillic `і` in place of the Latin one — reads as
-`rm -rf ./build` at any width, and an invisible character reads as nothing at
-all; a phone shows less of the surrounding context than a desktop editor and gets
-tapped faster, so this is where it matters most. When tether finds one on an
-answerable card, it names the character, its code point and its script, and
-**Approve** waits behind a one-tap acknowledgement while **Deny** stays live
-throughout, because someone reading that warning most likely wants to refuse.
-
-Answering is authenticated as the rest of the API is — an unauthenticated approve
-would be an unauthenticated command running on your machine — so it needs a
-logged-in session, and the hook's own secret buys no say in the decision.
-
-### The Claude Code hook, and the file it writes in your project
-
-Claude Code does not write a tool call to its transcript until the turn is
-finished. Without help, the conversation view would go blank for exactly as long
-as a permission prompt is on screen — the one moment you are most likely to be
-looking at your phone. So when tether starts a Claude Code session it registers a
-hook, and the view shows the tool call it is asking about while it is asking.
-
-It writes one thing into your project: two entries in
-`.claude/settings.local.json`, appended after anything already there. Your file
-is backed up first — under `~/.local/state/tether/`, not beside the original, so
-nothing tether writes can end up in a commit. If that file is not a shape tether
-recognises, it changes nothing at all and says so — you get the session without
-the accelerator. `.claude/settings.local.json` is git-ignored by convention, and
-tether keeps it worth ignoring:
-
-**No secret is ever written into your repository.** The entries contain only a
-path to a script under `~/.local/state/tether/`. The shared secret and the URL to
-post to are `0600` files beside that script, read when the hook runs. The
-endpoint only listens on loopback, only accepts that secret, and only accepts a
-payload naming a session tether is actually running.
-
-### Codex, and its optional hook
-
-`tether new ~/src/project --provider codex` starts Codex instead, and so does
-picking **Codex** in the browser's New session sheet. Everything works: the
-conversation view, the terminal, session state while it is working and when it is
-done, and resume after a reboot.
-
-Two things need your permission, and they are the same thing. tether cannot tell
-that a Codex session is **waiting for you** to answer a permission prompt, and
-cannot offer you **Approve** and **Deny** for it, because Codex does not write
-that anywhere — the only way to reach it is a hook, and Codex trust-gates hooks.
-So:
-
-```sh
-tether codex-hook            # what is registered right now; changes nothing
-tether codex-hook install    # explains what it adds, then adds it
-tether codex-hook remove     # takes it back out
-```
-
-`install` prints exactly what it is about to write, and why, **before** it writes
-anything — so that when Codex asks you to trust the hook, you are answering a
-question you already understand. It adds one entry, appended after your existing
-ones, backs up your `hooks.json` first, and never changes anything else in it.
-The hook it registers is a script under `~/.local/state/tether/`. It appends one
-JSON line per event to a log under that same directory, and on the one event that
-has an answer to return it asks tether over loopback whether you have answered
-yet — the same secret-in-a-`0600`-file arrangement described above, and the same
-fallback if tether is not running. It talks to nothing else.
-
-Run `install` again after upgrading tether: it corrects its own entry if an older
-tether wrote a different one, and Codex then asks you to review that entry once
-more — a one-off, because the values tether writes are fixed rather than
-following a setting. `tether codex-hook` is what tells you an installation has
-gone stale; a stale one still reports _waiting for you_, but gets no Approve and
-Deny, and its prompts are answered in the terminal as before.
-
-The New session sheet says the same thing, next to the moment you pick Codex, so
-the browser is not the one place you would meet the trust prompt unprepared. It
-says it there and nowhere else: no banner on the session list, and no warning
-beside a Codex session running happily without the hook.
-
-**Declining is a supported answer, not a broken setup.** You lose the live
-_waiting for you_ badge and the Approve/Deny buttons for Codex sessions — the
-prompt is still there in the terminal, where it has always been — and nothing
-else changes. tether will neither nag you nor retry. Codex also needs
-`hooks = true` under `[features]` in `~/.codex/config.toml` before it runs any
-hook at all; tether tells you so and changes no setting in that file, since it is
-also where Codex records which hooks you have trusted. The one thing it ever
-writes there is a folder you chose to trust — see
-[Trusting a folder](#trusting-a-folder-before-the-agent-asks).
-
-## Trusting a folder, before the agent asks
-
-Both agents ask whether you trust a directory the first time they run in one. Met
-in the terminal, that question is a cramped dialog behind an overlay you have to
-summon. So the **New session sheet asks it first**: fill in a directory, and if
-the agent you picked does not already trust it, tether says so — what trusting
-means, that the agent will be able to read, change and run files there, and that
-the answer is remembered — with a box to tick.
-
-- **Tick it and the session starts with no prompt.** tether records your answer
-  where that agent reads it: `hasTrustDialogAccepted` in `~/.claude.json` for
-  Claude Code, `trust_level = "trusted"` under `[projects."…"]` in
-  `~/.codex/config.toml` for Codex. Both files are the agent's, not tether's, so
-  each is backed up first (under tether's state directory, never beside the
-  original), merged rather than rewritten, and left alone entirely if tether
-  cannot make sense of it. The Codex entry is marked with a comment so you can
-  find it and take it out again.
-- **Leave it unticked and the session still starts** — the agent asks you in the
-  terminal, exactly as it did before any of this existed. That is a real answer,
-  not an error, and it is the default: nothing is ever trusted because you left a
-  box alone.
-- **Codex trusts a repository, not a directory**, so a session in `repo/sub` is a
-  question about `repo` — the sheet names that path rather than saying "this
-  folder". Claude Code accepts a directory and everything under it.
-- **If tether cannot read the agent's configuration, it says so and offers
-  nothing.** A guess here would either hide a question you should answer or offer
-  to write into a file tether has just failed to understand.
-
-## Access and security
-
-**Treat tether access as shell access.** One shared password authorizes every
-session and file under the allowed roots. Set it locally before serving:
-
-```sh
-tether set-password
-tether serve
-```
-
-Security defaults:
-
-- The server binds `127.0.0.1` unless `--host` is supplied.
-- `--host` and `--funnel` refuse to start without a password.
-- `--allowed-host` controls accepted `Host` headers.
-- `--trusted-proxy` controls which proxies may supply `X-Forwarded-*` headers.
-- Session directories must resolve inside your home directory. Widen this with a
-  colon-separated list:
-
-  ```sh
-  TETHER_ALLOWED_ROOTS=/srv/code:/mnt/work tether serve
-  ```
-
-Tether does not terminate TLS. Use Funnel, SSH, a private tailnet or a reverse
-proxy. State lives under `~/.local/state/tether` with private permissions; use
-`$XDG_STATE_HOME` or `$TETHER_STATE_DIR` to move it. Runtime state is never
-written into your repository.
-
-Logs go to stderr at `warn`. Use `TETHER_LOG_LEVEL=info tether serve` for request
-logs.
-
-## Reaching it from your phone
-
-### Tailscale Funnel
-
-Funnel is the default because the **host alone** installs Tailscale. Every viewer
-uses a normal browser and the tether password—no Tailscale app, account, VPN or
-extension.
-
-**Funnel makes tether's login page public.** The URL is not a secret; anyone with
-the password has shell-level access. The installer checks the password and port,
-shows the exact Funnel command, and asks before publishing.
-
-The installer configures Funnel. Once it is enabled, the server command is:
-
-```sh
-tether serve --funnel
-```
-
-`--funnel` derives the Tailscale hostname, keeps tether on loopback, allows that
-hostname, and trusts only the loopback Funnel proxy. Disable and diagnose it with:
-
-```sh
-sudo tailscale funnel --bg off
-tether access status
-```
-
-The installer can also add a launchd/systemd user service. Funnel itself remains
-configured until you turn it off. A new Funnel hostname can take several minutes
-to become reachable.
-
-#### Why Funnel is the default
-
-| Option                                                                                                                                                 | Why it is not the default                                                 |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------- |
-| [Cloudflare Quick Tunnels](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/) | Cloudflare labels them development/testing only; hostnames are temporary. |
-| [Cloudflare Tunnel + Access](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/)                      | Requires a Cloudflare account, managed DNS and `cloudflared`.             |
-| [ngrok](https://ngrok.com/docs/gateway/agent-cli-quickstart/)                                                                                          | Requires a host account, agent and token.                                 |
-| Caddy or another proxy                                                                                                                                 | Best when you already manage a domain, TLS and ingress.                   |
-
-All remain supported through `--allowed-host` and `--trusted-proxy`.
-
-### Private tailnet
-
-Safer when every viewer is one of your devices, but each viewer must install and
-join Tailscale:
-
-```sh
-tailscale ip -4
-tailscale status --json | grep '"DNSName"'
-tether serve --host <tailscale-ip> --allowed-host <tailscale-name>
-```
-
-Open `http://<tailscale-name>:8787` from a device in the tailnet. Bind the
-Tailscale IP, not `0.0.0.0`.
-
-### SSH tunnel
-
-```sh
-ssh -N -L 8787:127.0.0.1:8787 you@box
-```
-
-Open `http://localhost:8787`. Tether stays on loopback.
-
-### Reverse proxy
-
-Example Caddy configuration:
-
-```
-tether.example.com {
-    reverse_proxy 127.0.0.1:8787
-}
-```
-
-```sh
-tether serve --allowed-host tether.example.com --trusted-proxy 127.0.0.1
-```
-
-Keep tether on loopback and add authentication at the proxy when possible.
-
-## Known risks
-
-**The conversation view is built on file formats that are not public APIs.**
-Claude Code writes its transcript to `~/.claude/projects/` and Codex writes its
-rollout to `~/.codex/sessions/`. Both ship frequently and owe tether nothing. A
-release can change the record shapes, and when it does the conversation view
-loses detail — a tool card, a message, at worst the whole view. tether parses
-them tolerantly for that reason: an unrecognised record is logged to stderr and
-ignored, never thrown.
-
-**The composer's option controls are the same kind of bet.** Each is a slash
-command typed at the agent, or — for Claude Code's permission mode — a keystroke
-plus a read of the words in the pane's own status line, so an agent that renames
-a command or redraws that line can leave a control doing nothing. It can never
-leave one lying: permission mode is reported only as the mode that was read back,
-and every other control claims nothing at all, so the agent's own reply above the
-composer is what says the change landed. Every axis was established against
-Claude Code 2.1.220 and codex-cli 0.145.0; setting any of them by hand in the
-terminal always works. So is the slash-command list beside them, and what it says
-about where a command's answer turns up is a **prediction rather than a
-promise**: an agent is free to stop and ask something the table could not foresee
-— `/model opus` opens a _Switch model?_ confirmation on a session with a cached
-conversation — which is why no note ever claims nothing else will happen, and why
-the waiting banner is the correction.
-
-**Folder trust is the same bet, and the one place tether takes it while
-_writing_.** Where each agent records a trusted directory is its own business, and
-`~/.claude.json` and `~/.codex/config.toml` can change shape in any release. Both
-were established against Claude Code 2.1.220 and codex-cli 0.145.0. The
-consequences are bounded on purpose: a file tether cannot make sense of gets no
-checkbox and no write, a write it will not make refuses the session outright
-rather than starting one on a promise it did not keep, and an existing file is
-copied into tether's state directory before it is touched. What a stale reader
-costs you is the question moving back into the terminal, where it has always been
-answerable.
-
-**The terminal view depends on none of it.** It is the real TUI over tmux, it is
-always correct, and it is a complete fallback. If the conversation ever looks
-wrong or empty after a provider upgrade, that is the failure to expect, summoning
-the terminal is the answer, and the session itself was never at risk.
+## Documentation
+
+- [Installation](docs/installation.md)
+- [User guide](docs/user-guide.md)
+- [Security and remote access](docs/security.md)
+- [Contributing, testing, API and releases](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
 
 ## Development
 
-Requires the Node version in [`.nvmrc`](.nvmrc) (`nvm use`), **tmux 3.7 or
-newer**, and a **C++ toolchain** (`build-essential` and `python3` on Debian or
-Ubuntu). tmux, because the driver's tests drive a real server on a private
-socket, not a mock, and older tmux crashes on the `window-size manual` that
-`tether.conf` sets (so does tether itself; 3.7 is a hard floor, not just a test
-one). A toolchain, because `node-pty` ships no Linux prebuild and is compiled
-during install. [`install.sh`](install.sh) sets up tmux and the toolchain and
-checks Node — it does not install Node — and `./install.sh` inside a checkout
-installs that checkout rather than cloning another.
-
 ```sh
-npm ci        # installs all workspaces; builds shared/, server/ (the CLI), web/ and node-pty
-npm test      # node:test across every package
-npm run build # server (tsc) and web (vite) — rerun after editing either
+npm ci
+npm test
+npm run build
 ```
 
-`npm run tether -- <args>` runs the CLI from the working tree without installing
-it.
-
-`tether serve` serves the built app out of `web/dist`, so after editing `web/`
-either rebuild it or run Vite's dev server alongside, which proxies `/api` — the
-terminal and conversation WebSockets included — to a `tether serve` on the
-default port:
-
-```sh
-npm run dev -w @tether/web   # http://localhost:5173, hot reload, real server behind it
-```
-
-`node-pty`'s install script is approved in the root `package.json` under
-`allowScripts`, because npm 12 blocks dependency install scripts by default. If
-`tether serve` reports that the native module is missing, install the toolchain
-and re-run `npm ci`; the message says so too. The root `postinstall` then makes
-`node-pty`'s `spawn-helper` executable, which its macOS prebuild ships without —
-macOS starts every process through that helper, so without the bit every
-terminal attach fails with `posix_spawnp failed` and nothing else does.
-
-Other checks, all of which CI runs on every pull request:
-
-```sh
-npm run typecheck    # tsc --noEmit, per package
-npm run lint         # eslint
-npm run format:check # prettier --check   (npm run format to fix)
-npm run check:pty    # a terminal really starts here: the helper bit, and a live PTY
-
-shellcheck install.sh        # the installer is the only shell in the repo
-bash install.sh --self-test  # versions, PATH, package plans, services, Funnel probes, checkout moves
-
-npx playwright install chromium   # once; npm 12 blocks playwright's own postinstall
-npm run test:e2e                  # the end-to-end specs
-```
-
-### Cutting a release
-
-The install line installs the latest release tag, so **merging to `main` does not
-ship anything.** A change reaches anyone running that line when a tag is cut:
-
-```sh
-git tag -a v0.2.0 -m v0.2.0 && git push origin v0.2.0
-gh release create v0.2.0 --generate-notes
-```
-
-`install.sh` picks the highest `vX.Y.Z` tag out of `git ls-remote --tags`, so the
-**tag** is what decides what gets installed and the GitHub release is the
-changelog beside it. Anything that is not three numbers behind a `v` — a `-rc1`,
-a branch — is ignored by that query and reachable only as `TETHER_VERSION`, which
-is also how you install an older release deliberately. It works on an install
-that already exists, too, and on any ref rather than only a tag:
-
-```sh
-url=https://raw.githubusercontent.com/galawaydude/tether/main/install.sh
-curl -fsSL $url | TETHER_VERSION=v0.1.0 bash   # an older release
-curl -fsSL $url | TETHER_VERSION=main   bash   # an unreleased change, to test it
-```
-
-The checkout stays shallow either way, so moving between refs stays as fast as
-the first clone.
-
-`install.sh` itself is fetched from `main` rather than from the tag, as
-Homebrew's is: it is the thing that has to know how to find the current release,
-so pinning it would mean editing the README's install line every time. Which
-means a change to `install.sh` is live at merge, while everything it installs is
-live at tag.
-
-### The HTTP and WebSocket API
-
-Sessions are addressed as `(machineId, sessionId)` from day one, and `machineId`
-is always `local`. That one path segment is what makes a second machine a later
-split rather than a rewrite.
-
-```
-GET    /api/machines/local/sessions            every listed session, live and dead, with each live one's state
-GET    /api/machines/local/folder-trust?cwd=…&provider=…
-                                               whether that agent already trusts that directory,
-                                               and which directory the answer is about
-POST   /api/machines/local/sessions            {"cwd": "…", "title"?: "…", "provider"?: "…",
-                                                "trustFolder"?: true} — the last one is the only
-                                                thing that ever records a folder as trusted
-GET    /api/machines/local/sessions/:id
-POST   /api/machines/local/sessions/:id/resume restarts a dead session's conversation
-POST   /api/machines/local/sessions/:id/forget removes a dead row from tether's list; transcript untouched
-DELETE /api/machines/local/sessions/:id        kills the tmux session and marks the row dead
-POST   /api/machines/local/sessions/:id/permission-mode
-                                               {"mode": "default"|"acceptEdits"|"plan"|"auto"} — Claude
-                                               Code only; answers with the mode read back off the pane
-GET    /api/sessions/:id/conversation?before=… one bounded history page, with absolute sequence numbers
-POST   /api/sessions/:id/images                stores one private pasted image (raw supported image bytes)
-GET    /api/sessions/:id/images/:file          serves it inline to an authenticated viewer
-POST   /api/sessions/:id/permission            {"callId": "…", "decision": "allow" | "deny"}
-WS     /api/sessions/:id/conv?since=<seq>      conversation events after `seq`, the last one you hold
-WS     /api/sessions/:name/term                terminal bytes, both ways
-```
-
-The conversation is read from the provider's own transcript file rather than from
-the terminal — `~/.claude/projects/<slug>/<uuid>.jsonl` for Claude Code,
-`~/.codex/sessions/<Y>/<M>/<D>/rollout-<ts>-<uuid>.jsonl` for Codex. Both are
-append-only NDJSON, which is why they share one tailer and differ only in a
-mapper. Neither file is a public API — see [Known risks](#known-risks).
-
-`conv` also carries three frames that are not records of anything and
-deliberately have no `seq` — a sequence number is a position in the transcript,
-and none of these comes from it.
-`{"c":"state","state":"busy"|"idle"|"waiting"}` is the session's current state,
-from the agent's own status file and its hooks. `{"c":"pending","e":…}` is a tool
-call the agent has named as the one it is asking about; the transcript's own
-record for the same call carries the same `callId` and replaces that card rather
-than adding a second one — in either order, which matters because Claude Code
-writes its record _after_ the prompt and Codex writes it _before_. A `pending`
-with a `deadline` is one tether is holding the agent on until then, so that card
-is the one that gets Approve and Deny; without it tether is only reporting the
-proposal. `{"c":"answer","callId":…,"outcome":"allow"|"deny"|"timeout"}` says a
-hold is over — sent to every subscriber, so a second phone stops offering buttons
-on a question that has already been answered.
-
-`conv` answers a `since` it cannot replay from memory with `{"c":"refetch"}`,
-which means "fetch the history route again"; it never sends a partial history.
-
-### The end-to-end specs
-
-`e2e/` is eight Playwright specs, and they are the only tests here that are not
-unit tests. Seven run at a phone viewport, which is the client tether is designed
-for.
-
-- **`session.spec.ts`** logs in, starts a session, watches it, types at it,
-  **reloads the page**, and asserts the URL restores that same open session and
-  the conversation and terminal come back intact and exactly once. It summons
-  the terminal over the conversation and
-  dismisses it, asserting both keep their scroll position, that all seven phone
-  keys fit without sideways scrolling and that the terminal is not re-attached.
-  It kills another session, reviews its saved conversation and resumes it from
-  that screen, then sends a new prompt without ever opening the terminal. It
-  measures at 360×640 that nothing tether draws — the waiting banner included —
-  changes the terminal's box or its row count, since a
-  change there resizes the tmux pane for every other viewer; and it opens the New
-  session sheet at the shortest full-height phones **and at a phone with its
-  keyboard up** (360×340) and asserts that both ends of its card — the **Agent**
-  picker and **Start** — stay reachable, since the sheet is the one screen that
-  grows with its copy.
-- **`permission.spec.ts`** drives the hook chain end to end: it acts out three
-  permission prompts and answers them three ways. **Approve** on the card runs
-  the command and the transcript's own record then replaces that card rather than
-  adding a second one; **Deny** blocks it and the command never runs; and one
-  that nobody answers is handed back to the agent's own prompt in the terminal,
-  answered there, and still reconciles to one card. It types the reflex `yes` at
-  the pane after a tap has already approved something, and asserts that approves
-  nothing. It asserts the watch rule the overlay decides: a tool call proposed
-  while the terminal is summoned is **not** held — the agent's own prompt takes
-  the question straight away — and the same session holds the next one once the
-  terminal is put away. Every control that ends a hold is measured rather than
-  merely found: the card's **Approve** and **Deny**, and the waiting banner's
-  **Open the terminal**, are each reachable at the phone's own size and again
-  with the keyboard up (360×340).
-- **`composer.spec.ts`** composes a message and asserts it reaches the agent and
-  appears exactly once, that Enter in the box is a line break rather than a send,
-  and that the composer leaves Send on screen with the keyboard up. It verifies
-  that Copy is visible, writes the exact text and confirms success; pastes a real
-  PNG, checks its local preview, private upload, rendered image and reload; and
-  also sends **slash commands** from that box: that one is not drawn as a message, that a
-  recorded one really arrives in the conversation, that a chooser's reaches the
-  pane and is reported rather than claimed, and that the command list gives way
-  rather than pushing Send off a 360×340 screen.
-- **`identity.spec.ts`** starts two sessions in **one** directory and asserts each
-  shows its own conversation and neither shows the other's, then acts out a
-  `/resume` at one of their panes, asserts that view follows the agent to the
-  conversation it resumed into, then reloads and proves the resumed binding
-  survives with it.
-- **`history.spec.ts`** opens a transcript longer than the browser's row bound and
-  reloads it. The newest conversation returns directly rather than a blank page,
-  the cursor still covers the whole transcript, and the view says that older rows
-  are hidden instead of mounting thousands of markdown trees on a phone.
-- **`render.spec.ts`** writes what an agent actually writes into the transcript
-  and asserts what the conversation makes of it: markdown rather than a wall of
-  characters, a `<script>` in a fenced block that is text in the page rather than
-  a node in it, an `Edit` drawn as a diff, a failed call that says _retrying_ or
-  _needs you_ — and, on an **answerable** `Edit`, a diff that wraps with Approve
-  still on screen, since nothing on a card the agent is blocked on may be off it.
-  It drives the hook chain a second time, for the guard that holds **Approve**
-  behind an acknowledgement when a command carries lookalike characters. It
-  checks at every step that the page itself has not moved sideways.
-- **`options.spec.ts`** drives the composer's option controls under both agents:
-  that each provider is offered its own and only its own, that a keystroke axis
-  really reaches the pane, that a bar-lowering choice does nothing until its
-  sentence is confirmed and that a mode change tether could not confirm never
-  claims one — and that at 360×340, with the warning up, Cancel, the confirm and
-  Send are all still on screen.
-- **`desktop.spec.ts`** is the only one that runs at a laptop viewport
-  (1280×800), because past 900px the app is a different shape rather than a wider
-  phone: it measures the rail's box against the open session's, collapses and
-  reloads it, restores it with the same selected row, asserts the back button is
-  **gone** rather than merely invisible, checks the open Agent options share one
-  compact row, that the page has exactly one `<main>`, and that nothing makes it
-  scroll sideways.
-
-All eight run against `e2e/stub-agent.ts` — a script that prints, echoes what you
-type at it, writes a Claude-Code-shaped transcript, publishes its own status
-file, acts out a slash command the three ways the real one does (applied and
-recorded, a chooser in the pane and nothing on disk, or refused locally), moves
-to a new session id and a new transcript on a `/resume`, and fires whatever hook
-the project's settings register **and honours the decision that hook writes
-back**, exactly as Claude Code does. It is put on `PATH` as both `claude` and
-`codex`, so a session under either agent is created through the real code path.
-It writes that same Claude-shaped transcript either way, so a Codex session in
-the suite has no conversation and the spec that starts one asserts on the
-keystrokes the pane received instead.
-
-**CI never runs a real agent**: that would need real credentials and would cost
-money per run. Everything the specs touch (`HOME`, the state file, the tmux
-socket, the session root) is redirected into a scratch directory by
-`playwright.config.ts`. They have no retries, deliberately: these tests cover the
-product's core claims, and a flake retried into passing is worse than no test.
-
-### Layout
-
-| Package   | What it is                                                                    |
-| --------- | ----------------------------------------------------------------------------- |
-| `shared/` | Types both sides import: `Session`, `ConversationEvent`, the WebSocket frames |
-| `server/` | The single Node process: HTTP, WebSockets, tmux, provider adapters            |
-| `web/`    | The browser app                                                               |
-
-Inside `server/src/`, `web/` is the HTTP and WebSocket layer and `machine/`
-drives tmux. `machine/` and `providers/` never import from `web/` — that one rule
-is what makes the eventual remote-agent split a split rather than a rewrite.
-
-`providers/` holds one directory per provider — `claude-code/` and `codex/` —
-plus the four files they genuinely share (`tail.ts`, which follows an
-append-only file, `cap.ts`, which bounds what a card may carry, `permission.ts`,
-which is the one place the permission timeouts, the hook secret and the signals
-both hooks speak are decided, and `trust.ts`, which holds the folder-trust
-tri-state and nothing about either agent's own file). There is no `Provider`
-interface, registry or plugin loader: adding the second provider cost two
-directories and one `switch`, which is smaller than the abstraction that would
-have been designed to avoid it and cannot be wrong about a provider nobody has
-built yet.
-
-Neither provider's tests ever run a real agent — that would need real credentials
-and cost money per CI run. Both are driven from captured fixtures, with the
-provider version recorded next to them.
-
-`shared/` is types only and emits declarations, no JavaScript. Import from it
-with `import type` — `verbatimModuleSyntax` enforces this.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for all checks and architecture notes.
+CI never runs a real provider or uses provider credentials.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+[MIT](LICENSE)
