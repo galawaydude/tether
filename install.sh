@@ -68,13 +68,11 @@ tether installer
 
 Usage: install.sh [options]
 
-  --dir <path>   Where to clone tether (default $DEFAULT_DIR)
-  --access <mode> Remote access: public (browser-only Funnel, default) or local
-  --yes          Do not prompt; accept the system packages and public access
-                  changes this would make
-  --self-test    Check the version parsing, PATH, Funnel probes and TETHER_VERSION
-                 checkout moves, and exit
-  --help         This message
+  --dir <path>     Install directory (default $DEFAULT_DIR)
+  --access <mode>  public (default) or local
+  --yes            Accept displayed system and public-access changes
+  --self-test      Run installer checks and exit
+  --help           Show this help
 
 Environment:
 
@@ -196,12 +194,10 @@ publication_target_safe() {
 }
 
 set_tether_password() {
-	step "Setting tether's password"
-	note "One account, one password. It is the only thing between that public"
-	note "address and a shell on this machine, so make it a real one."
+	step "Set tether password"
+	note "This password protects shell access. Use a strong one."
 	[ -e /dev/tty ] || {
-		note "There is no terminal to prompt on. Run \`tether set-password\` yourself,"
-		note "then re-run this installer."
+		note "Run \`tether set-password\` in a terminal, then re-run this installer."
 		return 1
 	}
 	"$BIN_DIR/tether" set-password --if-unset </dev/tty
@@ -209,10 +205,8 @@ set_tether_password() {
 
 prepare_publication() {
 	publication_target_safe "$1" || {
-		step "Something else is already using 127.0.0.1:$PORT"
-		note "It could not be identified by tether's protected API response for"
-		note "${1:-the future Funnel hostname}, so Funnel was not turned on. Stop that"
-		note "service, then re-run this installer."
+		step "Port 127.0.0.1:$PORT is already in use"
+		note "The listener is not tether. Stop it and re-run; Funnel remains off."
 		return 1
 	}
 	set_tether_password
@@ -376,7 +370,7 @@ confirm() {
 	# would silence the whole script's stderr for good — while still leaving fd 3
 	# open in this shell, which a subshell would not.
 	if ! { exec 3<>/dev/tty; } 2>/dev/null; then
-		note "There is no terminal to ask on. Re-run with --yes to accept the above."
+		note "No terminal available. Re-run with --yes to accept the displayed changes."
 		return 1
 	fi
 	printf '\n%s [y/N] ' "$1" >&3
@@ -606,11 +600,11 @@ install_server_service() {
 	if ((unchanged)) && ((linger == 0)); then
 		rm -f "$tmp"
 		if ((loaded)); then
-			note "The tether user service is already installed and running."
+			note "User service is already running."
 			return 0
 		fi
 		if ((already)); then
-			note "The tether user service is already installed; it takes over next login/boot."
+			note "User service will start at the next login or boot."
 			return 0
 		fi
 		if [ "$kind" = launchd ]; then
@@ -619,15 +613,15 @@ install_server_service() {
 			systemctl --user daemon-reload || return 1
 			systemctl --user enable --now tether.service || return 1
 		fi
-		note "Started the existing tether user service."
+		note "Started the existing user service."
 		return 0
 	fi
 
-	step "Keep tether running after this terminal closes"
+	step "Install background service"
 	file_q=$(printf '%q' "$file")
 	dir_q=$(printf '%q' "$(dirname "$file")")
 	if [ "$(id -u)" -eq 0 ]; then root_prefix=""; else root_prefix="sudo "; fi
-	note "This writes one user service file outside tether's directory with:"
+	note "File and commands:"
 	note "  mkdir -p $dir_q"
 	note "  cat > $file_q <<'TETHER_SERVICE'"
 	cat "$tmp"
@@ -635,21 +629,19 @@ install_server_service() {
 	note "  chmod 600 $file_q"
 	if [ "$kind" = launchd ]; then
 		if ((loaded)); then
-			note "Then it reloads the existing service:"
+			note "Reload commands:"
 			note "  launchctl bootout gui/$(id -u)/$SERVICE_LABEL"
 			note "  launchctl bootstrap gui/$(id -u) $file"
 		elif ((already)); then
-			note "The healthy unmanaged server stays up; launchd reads this file next login."
+			note "The current server stays up; launchd takes over next login."
 		else
-			note "Then it runs:"
 			note "  launchctl bootstrap gui/$(id -u) $file"
 		fi
 	else
-		note "Then it runs:"
 		note "  systemctl --user daemon-reload"
 		if ((linger)); then
 			note "  ${root_prefix}loginctl enable-linger $user_name"
-			note "That command lets this user service start at boot before an SSH login."
+			note "This enables startup before login."
 		fi
 		if ((already)) && ((loaded == 0)); then
 			note "  systemctl --user enable tether.service"
@@ -671,7 +663,7 @@ install_server_service() {
 			launchctl bootout "gui/$(id -u)/$SERVICE_LABEL" || true
 			launchctl bootstrap "gui/$(id -u)" "$file" || return 1
 		elif ((already)); then
-			note "The current server is left running. launchd will take over at the next login."
+			note "The current server stays up; launchd takes over next login."
 		else
 			launchctl bootstrap "gui/$(id -u)" "$file" || return 1
 		fi
@@ -680,7 +672,7 @@ install_server_service() {
 		if ((linger)); then as_root loginctl enable-linger "$user_name" || return 1; fi
 		if ((already)) && ((loaded == 0)); then
 			systemctl --user enable tether.service || return 1
-			note "The current server is left running. systemd will take over at the next boot."
+			note "The current server stays up; systemd takes over next boot."
 		else
 			systemctl --user enable --now tether.service || return 1
 			systemctl --user restart tether.service || return 1
@@ -904,18 +896,10 @@ self_test() {
 reachability() {
 	local status state url host log ts_installer kind already service_installed
 
-	step "Reaching tether from your phone"
-	note "This sets up Tailscale Funnel: a public HTTPS address for this machine,"
-	note "reachable from a device that has never heard of Tailscale."
-	note ""
-	note "Anyone who opens that address and knows your tether password gets a shell"
-	note "on this machine. There is one account and one password, and no read-only"
-	note "mode. The address is not a secret either: the certificate Funnel gets for"
-	note "it is published in the public certificate-transparency logs, so treat the"
-	note "name as known rather than as a second factor."
-	note ""
-	note "README.md's \"Reaching it from your phone\" has the two narrower options — a"
-	note "private tailnet with nothing public, and an SSH tunnel."
+	step "Set up public browser access"
+	note "Tailscale runs on this host only; viewers use any browser."
+	note "WARNING: this publishes tether's login page. The password grants shell access."
+	note "Use --access local to skip public access."
 
 	# 1 ── installed? Only the host needs Tailscale. A person opening the
 	# finished HTTPS link uses an ordinary browser and no Tailscale account.
@@ -926,20 +910,14 @@ reachability() {
 			# system-extension package over both the App Store sandbox and the
 			# command-line-only build. macOS's installer verifies its signature.
 			ts_installer=$(mktemp -d)
-			note "Tailscale recommends its signed Standalone macOS package. These are"
-			note "the exact commands this script offers to run:"
-			note ""
+			note "Commands for Tailscale's signed Standalone package:"
 			note "  curl -sSfL --proto '=https' -o $ts_installer/Tailscale.pkg $TAILSCALE_MACOS_PKG"
 			note "  sudo /usr/sbin/installer -pkg $ts_installer/Tailscale.pkg -target /"
 			note "  open -a Tailscale"
-			note ""
-			note "Tailscale is installed only on this Mac. People opening tether's link"
-			note "need a browser and the tether password — no Tailscale app or account."
 			if ! confirm "Install it?"; then
 				rm -rf "$ts_installer"
-				step "Tailscale was not installed."
-				note "Download the Standalone package yourself from:"
-				note "  https://tailscale.com/download/mac"
+				step "Tailscale was not installed"
+				note "Manual download: https://tailscale.com/download/mac"
 				return 1
 			fi
 			step "Installing Tailscale"
@@ -950,23 +928,18 @@ reachability() {
 			}
 			as_root /usr/sbin/installer -pkg "$ts_installer/Tailscale.pkg" -target / || {
 				rm -rf "$ts_installer"
-				note "macOS's package installer refused Tailscale. Install the Standalone"
-				note "package from https://tailscale.com/download/mac and re-run this script."
+				note "Install Tailscale from https://tailscale.com/download/mac, then re-run."
 				return 1
 			}
 			rm -rf "$ts_installer"
 			open -a Tailscale || true
 		else
-			note "Tailscale publishes its own install script. This is that script:"
-			note ""
+			note "Tailscale's official installer may install packages and use sudo:"
 			note "  curl -fsSL https://tailscale.com/install.sh | sh"
-			note ""
-			note "It installs a system package and uses sudo, and it is Tailscale's"
-			note "script rather than tether's. It is fetched to a file and run from"
-			note "there rather than piped, so that it cannot eat this script's own stdin."
+			note "tether downloads it first, then runs it from a temporary file."
 			if ! confirm "Run it?"; then
-				step "Tailscale was not installed."
-				note "Run the command above yourself and re-run this script."
+				step "Tailscale was not installed"
+				note "Run the command above, then re-run."
 				return 1
 			fi
 			step "Installing Tailscale"
@@ -977,15 +950,14 @@ reachability() {
 				die "could not download https://tailscale.com/install.sh"
 			sh "$ts_installer" </dev/null || {
 				rm -f "$ts_installer"
-				note "Tailscale's installer failed. Run it yourself and re-run this script."
+				note "Tailscale installation failed. Run the command above, then re-run."
 				return 1
 			}
 			rm -f "$ts_installer"
 		fi
 		hash -r
 		command -v tailscale >/dev/null 2>&1 || {
-			note "Tailscale's installer finished, but \`tailscale\` is not on PATH."
-			note "Open the app once if this is macOS, then re-run this script."
+			note "\`tailscale\` is not on PATH. On macOS, open the app once, then re-run."
 			return 1
 		}
 	fi
@@ -1001,21 +973,17 @@ reachability() {
 	state=""
 	if ts_readable "$status"; then state=$(ts_state "$status"); fi
 	if [ "$state" != Running ]; then
-		step "Tailscale is installed but not signed in (state: ${state:-no answer from tailscaled})"
-		note "This is a step that cannot be automated and must not be faked: signing"
-		note "in happens in a browser, against your own Tailscale account."
-		note ""
+		step "Sign in to Tailscale (state: ${state:-unavailable})"
 		note "  sudo tailscale up"
-		note ""
-		note "That prints a URL. Open it, sign in, and it returns on its own."
+		note "Open the URL it prints and finish signing in."
 		if ! confirm "Run it and wait?"; then
-			step "Tailscale was not signed in."
-			note "Run the command above yourself and re-run this script."
+			step "Tailscale sign-in skipped"
+			note "Run the command above, then re-run."
 			return 1
 		fi
-		step "Waiting for you to finish signing in in your browser"
+		step "Waiting for browser sign-in"
 		as_root tailscale up || {
-			note "\`tailscale up\` did not finish. Run it yourself and re-run this script."
+			note "\`tailscale up\` did not finish. Run it manually, then re-run."
 			return 1
 		}
 		# Re-read: signing in is what fills in everything below, so the document
@@ -1024,7 +992,7 @@ reachability() {
 		state=""
 		if ts_readable "$status"; then state=$(ts_state "$status"); fi
 		[ "$state" = Running ] || {
-			note "Tailscale reports state \"${state:-no answer from tailscaled}\". Re-run this script once it is Running."
+			note "Tailscale state is ${state:-unavailable}. Re-run when it is Running."
 			return 1
 		}
 	fi
@@ -1041,44 +1009,32 @@ reachability() {
 	# there is nothing it could accidentally publish.
 	prepare_publication "$host" || return 1
 	if [ -n "$host" ] && funnel_armed "$(tailscale serve status --json 2>/dev/null || true)" "$host"; then
-		note "Funnel already points at 127.0.0.1:$PORT."
+		note "Funnel is already configured for port $PORT."
 	else
-		step "This publishes this machine on the internet"
-		note "- sudo tailscale funnel --yes --bg $PORT"
-		note ""
-		note "On a fresh tailnet, Tailscale may open its own account approval to enable"
-		note "HTTPS and Funnel. That is the setup flow, not a separate error to repair."
-		note "Only this host runs Tailscale; anyone opening the finished link needs"
-		note "only a browser and the tether password."
-		note ""
-		note "It stays on across reboots until you turn it off:"
-		note ""
+		step "Publish tether with Funnel"
+		note "  sudo tailscale funnel --yes --bg $PORT"
+		note "This public mapping survives reboot. Disable it with:"
 		note "  sudo tailscale funnel --bg off"
+		note "Tailscale may open a one-time account approval."
 		case "$(ts_funnel_permission "$status")" in
 		no)
-			note ""
-			note "This node does not currently report the Funnel capability. The command"
-			note "above is the supported way to request it; a non-admin is refused in"
-			note "Tailscale's own words rather than being sent to guess at a policy file."
+			note "Funnel is not yet permitted; Tailscale will request approval or refuse."
 			;;
 		unknown)
-			note ""
-			note "Tailscale reports no capability set for this machine. Carrying on:"
-			note "silence is not evidence that the tailnet denied Funnel."
+			note "Funnel permission is unknown; Tailscale will decide when this runs."
 			;;
 		esac
-		if ! confirm "Publish it?"; then
-			step "Funnel was not turned on."
-			note "tether is installed and works on loopback. Turn Funnel on whenever"
-			note "you want to, with the command above."
+		if ! confirm "Publish now?"; then
+			step "Funnel remains off"
+			note "tether is installed for local use."
 			return 1
 		fi
-		step "Turning Funnel on"
+		step "Turning on Funnel"
 		# The exact machine-wide command is on screen and has been consented to.
 		# `--yes` answers Tailscale's local CLI confirmation; any account-level
 		# approval it needs remains Tailscale's own browser flow.
 		as_root tailscale funnel --yes --bg "$PORT" || {
-			note "\`tailscale funnel\` failed. tether is installed and works on loopback."
+			note "Funnel failed. tether remains available on loopback."
 			return 1
 		}
 
@@ -1088,22 +1044,20 @@ reachability() {
 		state=""
 		if ts_readable "$status"; then state=$(ts_state "$status"); fi
 		[ "$state" = Running ] || {
-			note "Tailscale stopped answering after Funnel setup (state: ${state:-unknown})."
+			note "Tailscale stopped responding (state: ${state:-unknown})."
 			return 1
 		}
 		host=$(ts_dns_name "$status")
 	fi
 
 	[ -n "$host" ] || {
-		step "Tailscale reports no public name for this machine"
-		note "The Funnel command completed but no MagicDNS name appeared. Open"
-		note "https://login.tailscale.com/admin/dns, then re-run this installer."
+		step "No public Tailscale name found"
+		note "Enable MagicDNS at https://login.tailscale.com/admin/dns, then re-run."
 		return 1
 	}
 	funnel_armed "$(tailscale serve status --json 2>/dev/null || true)" "$host" || {
-		step "Tailscale did not leave Funnel armed for tether"
-		note "Run this once, complete any approval it opens, and re-run the installer:"
-		note ""
+		step "Funnel is not active"
+		note "Run this, complete any approval, then re-run:"
 		note "  sudo tailscale funnel --yes --bg $PORT"
 		return 1
 	}
@@ -1117,7 +1071,7 @@ reachability() {
 	already=0
 	if serving_as "$host"; then
 		already=1
-		note "tether is already serving on 127.0.0.1:$PORT for $host."
+		note "tether is already serving for $host."
 	fi
 
 	kind=$(service_kind)
@@ -1125,16 +1079,15 @@ reachability() {
 	if install_server_service "$kind" "$already"; then
 		service_installed=1
 	elif ! serving_as "$host"; then
-		step "Starting tether for this login"
+		step "Start tether for this login"
 		if [ "$kind" = none ]; then
-			note "No launchd or systemd user manager is reachable here, so automatic"
-			note "restart after reboot is unavailable on this host."
+			note "No launchd/systemd user service is available."
 		else
-			note "The persistent service was declined or could not start."
+			note "The background service was declined or failed."
 		fi
 		# The supported fallback changes no startup file and no system service.
 		nohup "$BIN_DIR/tether" serve --funnel --port "$PORT" >>"$log" 2>&1 </dev/null &
-		note "Running in the background for this login; output goes to $log"
+		note "Running until logout or reboot. Log: $log"
 	fi
 
 	for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -1142,35 +1095,27 @@ reachability() {
 		sleep 1
 	done
 	serving_as "$host" || {
-		note "tether did not come up for $host. What it printed is in $log."
+		note "tether did not start for $host. See $log."
 		return 1
 	}
 	if ((service_installed)); then
-		note "The persistent user service is installed; output goes to $log"
+		note "Background service installed. Log: $log"
 	fi
 
-	step "Checking the real public HTTPS link"
+	step "Check public HTTPS"
 	if curl -fsS -o /dev/null --max-time 15 "$url/" 2>/dev/null; then
-		note "$url answered through Funnel."
+		note "Public link is ready."
 	else
-		note "The loopback service and Funnel mapping are ready, but public DNS has"
-		note "not answered yet. Tailscale says a new Funnel name can take up to ten"
-		note "minutes to propagate. Check without changing it with commands available"
-		note "in every released install this script may have selected:"
-		note ""
+		note "DNS may take up to ten minutes. Check with:"
 		note "  tailscale funnel status"
 		note "  curl -I $url/"
 	fi
 
-	step "Open this in any browser"
-	note ""
+	step "Ready"
 	note "  $url"
-	note ""
-	note "Log in with the password you just set. That address is on the public"
-	note "internet and reaching it is equivalent to a shell on this machine."
-	note ""
-	note "  sudo tailscale funnel --bg off    # take it down again"
-	note "  tailscale funnel status           # what is published right now"
+	note "Public link; sign in with the tether password."
+	note "Disable: sudo tailscale funnel --bg off"
+	note "Check:   tailscale funnel status"
 	return 0
 }
 
@@ -1339,12 +1284,10 @@ main() {
 		# manager so the consent plan is a command that can actually run here.
 		manager=$(linux_package_manager || true)
 		if [ -z "$manager" ] || ! configure_linux_packages "$manager" "$need_toolchain" "$tmux_state"; then
-			step "This Linux distribution needs build prerequisites"
-			note "No supported package manager was found (apt, dnf, yum, zypper,"
-			note "pacman or apk). Put cc, c++, make and python3 on PATH; if tmux is"
-			note "older than $TMUX_MIN_MAJOR.$TMUX_MIN_MINOR, also install bison, libevent and ncurses headers."
-			note "Then re-run this installer. The tmux source recipe is:"
-			note ""
+			step "Build tools required"
+			note "No supported package manager found (apt, dnf, yum, zypper, pacman, apk)."
+			note "Install cc, c++, make and python3; old tmux also needs bison, libevent"
+			note "and ncurses headers. Then re-run. tmux recipe:"
 			tmux_build_recipe
 			die "could not install this distribution's build prerequisites."
 		fi
@@ -1366,12 +1309,12 @@ main() {
 	fi
 
 	if ((${#plan[@]})); then
-		step "This needs to change something outside tether's own directory"
+		step "System changes required"
 		if ((${#package_update[@]})); then note "- ${root_prefix}${package_update[*]}"; fi
 		for line in "${plan[@]}"; do note "- $line"; done
 		if [ "$OS" = linux ] && [ "$tmux_state" != ok ]; then
 			note ""
-			note "The exact source build after those packages is:"
+			note "Then build tmux with:"
 			tmux_build_recipe
 		fi
 		# "Installs to /usr/local/bin" is only "leaves yours alone" when yours is
@@ -1382,15 +1325,14 @@ main() {
 			case "$(command -v tmux)" in
 			/usr/local/bin/*) note "This REPLACES the tmux already at $(command -v tmux)." ;;
 			*)
-				note "Your existing tmux at $(command -v tmux) is left exactly where it is."
-				note "tmux $TMUX_VERSION goes to /usr/local/bin. Which of the two your PATH"
-				note "then runs is checked after the build, and named here if it is the old one."
+				note "Existing tmux stays at $(command -v tmux)."
+				note "tmux $TMUX_VERSION installs to /usr/local/bin; PATH is checked afterward."
 				;;
 			esac
 		fi
 		if ! confirm "Proceed?"; then
-			step "Nothing was installed."
-			note "Run the exact commands above yourself and re-run this script, or use --yes."
+			step "System changes skipped"
+			note "Run the commands above, then re-run; or use --yes."
 			if [ "$OS" = linux ] && [ "$tmux_state" != ok ]; then tmux_build_recipe; fi
 			exit 1
 		fi
@@ -1480,15 +1422,8 @@ main() {
 	if ! node -e "const p = require('node-pty').spawn(process.execPath, ['-e', ''], { cols: 80, rows: 24 });
 		setTimeout(() => { console.error('the process it started never exited'); process.exit(1); }, 20000);
 		p.onExit(({ exitCode, signal }) => process.exit(exitCode || signal ? 1 : 0));"; then
-		note "The error above is node-pty's, and node-pty is what tether starts every"
-		note "terminal through. On macOS the usual cause is"
-		note "node_modules/node-pty/prebuilds/<arch>/spawn-helper missing its executable"
-		note "bit — which this script has already set, so a failure here is something"
-		note "else."
-		note ""
-		note "The tether command is installed, at $BIN_DIR/tether, and the conversation"
-		note "view works: what will not work on this machine is the terminal. Re-run"
-		note "this installer to check it again."
+		note "Terminal startup failed. tether is installed at $BIN_DIR/tether, but"
+		note "terminal view will not work. Re-run the installer after fixing node-pty."
 		die "tether cannot open a terminal on this machine."
 	fi
 
@@ -1504,29 +1439,18 @@ main() {
 	fi
 	case "$(path_message_state "$BIN_DIR" "$resolved" "$PATH")" in
 	later)
-		step "tether is installed, but a different one is what runs"
-		note "This script wrote $BIN_DIR/tether."
-		note "$BIN_DIR is on your PATH, but $resolved comes before it"
-		note "and is another file. A previous install of tether used npm link, which is"
-		note "the likely source. Remove it (npm unlink -g @tether/server, or delete that"
-		note "file), or move $BIN_DIR ahead of it on your PATH."
-		note ""
-		note "This script does not remove a command it did not create."
+		step "Another tether command comes first on PATH"
+		note "Installed: $BIN_DIR/tether"
+		note "Current:   $resolved"
+		note "Remove the old command or move $BIN_DIR earlier on PATH."
 		exit 1
 		;;
 	absent)
-		step "tether is installed, but not on your PATH"
-		note "It is at $BIN_DIR/tether. Add this line to your shell's startup file:"
-		note ""
+		step "Add tether to PATH"
+		note "Add this to your shell startup file:"
 		note "  export PATH=\"$BIN_DIR:\$PATH\""
-		note ""
-		if [ -n "$resolved" ]; then
-			note "Until then \`tether\` runs $resolved, which is another"
-			note "file — most likely a previous install that used npm link. The line above"
-			note "puts $BIN_DIR ahead of it."
-			note ""
-		fi
-		note "This script does not edit shell startup files."
+		if [ -n "$resolved" ]; then note "Current \`tether\`: $resolved"; fi
+		note "The installer does not edit shell files."
 		exit 1
 		;;
 	esac
@@ -1540,22 +1464,14 @@ main() {
 		return 0
 	fi
 
-	step "tether is installed, and reachable on this machine"
+	step "Ready for local use"
 	cat <<-EOF
 
-		Next, in a terminal on this machine:
+		  tether set-password
+		  tether serve
 
-		  tether set-password    # there is one account, and it is never defaulted
-		  tether serve           # binds 127.0.0.1:$PORT
-
-		Anyone who can reach that address and knows that password has a shell on
-		this machine. README.md's "Reaching it from your phone" covers the ways to
-		reach it from somewhere else — Tailscale Funnel, a private tailnet, or an
-		SSH tunnel — and "Access and security" is worth reading before you pick one.
-
-		Re-running this script with --access public picks the browser-only Funnel
-		setup up from wherever it stopped. Only this host installs Tailscale; people
-		opening the finished HTTPS link use an ordinary browser.
+		Open http://127.0.0.1:$PORT. For a public browser link, re-run with
+		--access public. Anyone with the tether password has shell access.
 	EOF
 }
 

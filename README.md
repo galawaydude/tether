@@ -1,57 +1,28 @@
 # tether
 
-**tether is a self-hosted control plane for persistent coding-agent sessions.**
-
-You run it on a machine you own. It starts coding agents in durable terminal
-sessions on that machine, and gives you a browser UI — designed for a phone
-first — to watch them, steer them, walk away, and come back to find the process
-and the conversation exactly where you left them.
-
-It is for a developer who runs coding agents on their own hardware (laptop, home
-server, dev box) and wants to supervise them from wherever they are, without
-handing their source code or their provider credentials to anyone else. tether
-never sees, stores, brokers or proxies provider credentials: it launches the
-provider's own CLI as your own OS user, and the CLI reads its own credential
-file.
-
-It runs **Claude Code** and **OpenAI Codex**. Those two, today, both fully — the
-conversation view, the terminal, live session state, permission prompts you can
-answer from your phone, and resume after a reboot. No other agent is supported.
+**tether runs persistent Claude Code and OpenAI Codex sessions on your machine
+and lets you control them from a phone-friendly browser.** Sessions survive
+disconnects, and provider credentials stay with the provider CLI on the host.
 
 ## Read this before you install it
 
-**Reaching tether's web interface is equivalent to having a shell on the machine
-it runs on.** A coding-agent session accepts arbitrary prompts and can run
-commands, and the terminal view is a real terminal.
+**Access to tether is shell access to the host.** There is one shared password,
+no read-only mode, and no per-person permissions. Anyone with access can run
+commands as your OS user inside the allowed roots.
 
-**There is one account.** One password, no per-person logins, no per-directory
-scoping, no read-only mode. Anyone you give that password to can start agents,
-run commands, and read and change every file under the allowed roots, using
-whatever provider logins are signed in on that machine — as you. Sharing the
-link is not like sharing a document; it is like handing someone your laptop
-unlocked. [Access and security](#access-and-security) is the section to read
-before you put tether anywhere but loopback.
-
-**The installer offers to put this machine on the public internet, and that is
-the path it leads with.** It sets up [Tailscale
-Funnel](#tailscale-funnel--a-public-https-address-nothing-to-install-on-the-phone),
-because it is the default way to reach tether from a phone with nothing installed
-on it — and the cost is that your login page ends up somewhere anyone can find,
-with the one password above as the only thing behind it. It shows you the exact
-commands and waits for a yes; declining leaves tether installed and working on
-loopback, and every narrower option is still there. Decide that before you run
-it, not during.
+The default installer offers [Tailscale Funnel](#tailscale-funnel), which makes
+the login page public. Viewers need only a browser and the tether password; they
+do not need Tailscale. Use `--access local` to keep tether on this machine.
 
 ## Install
 
-On Linux or macOS:
+Linux or macOS:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/galawaydude/tether/main/install.sh | bash
 ```
 
-Or read it first, which for a script that installs a tool like this one is a
-reasonable thing to want:
+To inspect it first:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/galawaydude/tether/main/install.sh -o install.sh
@@ -59,145 +30,81 @@ less install.sh
 bash install.sh
 ```
 
-It clones tether to `~/.local/share/tether` (`--dir` moves that), builds it, and
-links `tether` into `~/.local/bin`. Then it completes the browser-only Funnel
-setup described above: installs Tailscale on this host if needed, waits for its
-browser sign-in, sets the tether password and checks the target port, then lets
-Tailscale run its one-time Funnel approval and checks the real public HTTPS
-address. **Nothing is installed on
-the phone or any other viewing device** — they open the resulting link in an
-ordinary browser.
+The installer builds the latest release, links `tether` into `~/.local/bin`, and
+optionally sets up Tailscale Funnel plus a launchd/systemd user service. It shows
+all system commands and service bytes before asking. Declining public access
+leaves a working loopback install.
 
-The installer offers to keep tether running through a launchd user agent on
-macOS or a systemd user service on Linux, with its output in
-`~/.local/state/tether/serve.log`. It shows the complete service file and exact
-commands before writing it. If no user service manager is available, or you
-decline that write, it falls back to a background process for the current boot.
-Declining Funnel anywhere leaves a working loopback install and stops there.
-Use `--access local` to skip the entire Tailscale and service path deliberately.
-
-**It installs the latest release, not the tip of `main`**, so the one-liner
-cannot hand you a change that landed half an hour ago and half-landed.
-`TETHER_VERSION=v0.1.0` installs a particular one instead.
-
-**It asks before it installs a system package, writes a user service, publishes
-Funnel or runs `sudo`.** It prints the exact commands and service bytes first;
-declining leaves the narrower working setup in place. `--yes` accepts those
-changes up front and, unless paired with `--access local`, therefore includes
-publishing the password-protected login page. It never edits a shell startup
-file — if `~/.local/bin` is not on your PATH, it shows you the line to add and
-leaves the file alone.
-
-### What it needs, and the one that surprises people
-
-- **Node**, the version in [`.nvmrc`](.nvmrc). The installer checks it and stops
-  with the `nvm` command if it is missing or too old; it does not install Node.
-- **tmux 3.7 or newer — a hard floor.** Older tmux crashes on the
-  `window-size manual` that tether's tmux config sets, so every session dies at
-  birth. **Debian and Ubuntu ship 3.4**, which means `apt install tmux` gives you
-  something that looks installed and does not work. The installer checks the
-  version rather than the presence, and on Linux offers to build the same pinned
-  release CI builds and install it to `/usr/local/bin` — your distribution's tmux
-  is left where it is. On macOS, Homebrew's tmux is current (3.7b) and it uses
-  that.
-- **A C++ toolchain on Linux**: `node-pty` ships no Linux prebuild and is
-  compiled during install. The installer can offer the exact prerequisite plan
-  for apt, dnf, yum, zypper, pacman or apk rather than stopping outside
-  Debian/Ubuntu. macOS needs none — `node-pty` has prebuilds for both Darwin
-  architectures.
-- **Tailscale on the host only**, for the default public link. Linux uses
-  Tailscale's own distro-aware installer after consent. On macOS tether offers
-  Tailscale's signed **Standalone** package, the variant Tailscale currently
-  [recommends](https://tailscale.com/docs/concepts/macos-variants); macOS verifies
-  its package signature. Although that page's comparison table says Funnel is
-  unavailable, Tailscale's specific [Funnel documentation](https://tailscale.com/docs/features/tailscale-funnel)
-  says Standalone can proxy ports (but not files or directories), which is the
-  only Funnel mode tether uses. Viewers install nothing.
-
-### Upgrading, and uninstalling
-
-**Upgrading is re-running the installer.** It fetches whatever the latest
-release is now and checks it out over the existing clone, so there is no
-separate upgrade command to remember or to keep working.
-
-**Uninstalling first stops the public mapping and user service, then removes
-three tether paths.** Use the pair for this host, ignoring “not loaded/not
-found” when no service was installed:
+Useful options:
 
 ```sh
-# Linux
+bash install.sh --access local             # no Tailscale or public link
+bash install.sh --yes                      # accept displayed changes
+TETHER_VERSION=v0.1.0 bash install.sh      # install one release
+```
+
+Requirements:
+
+- Node at the version in [`.nvmrc`](.nvmrc).
+- tmux 3.7 or newer. The installer can build it on Linux or use Homebrew on macOS.
+- A C++ toolchain on Linux. apt, dnf, yum, zypper, pacman and apk are supported.
+- Tailscale on the host for Funnel. Viewers install nothing.
+
+On macOS, tether offers Tailscale's signed
+[Standalone package](https://tailscale.com/docs/concepts/macos-variants);
+Tailscale's [Funnel docs](https://tailscale.com/docs/features/tailscale-funnel)
+list it as supporting port proxying. Linux uses Tailscale's official installer.
+
+### Upgrading and uninstalling
+
+Re-run the installer to upgrade. To uninstall, stop Funnel and the user service,
+then remove tether's files:
+
+```sh
+# Linux service
 systemctl --user disable --now tether.service
 rm -f ~/.config/systemd/user/tether.service
 systemctl --user daemon-reload
 
-# macOS
+# macOS service
 launchctl bootout gui/$UID/dev.tether.server
 rm -f ~/Library/LaunchAgents/dev.tether.server.plist
 
-# Either host: stop the browser-only public address, then remove tether
+# Public access and tether data
 sudo tailscale funnel --bg off
-rm -f  ~/.local/bin/tether          # the command
-rm -rf ~/.local/share/tether        # the checkout ($XDG_DATA_HOME, or --dir, move it)
-rm -rf ~/.local/state/tether        # password, registry, attachments, hooks and logs
+rm -f ~/.local/bin/tether
+rm -rf ~/.local/share/tether
+rm -rf ~/.local/state/tether
 ```
 
-The last one is not a cache. It holds the hash of the password that guards a
-shell on this machine, along with every session tether knows about — leaving it
-behind leaves a credential behind. (`$XDG_STATE_HOME` or `$TETHER_STATE_DIR`
-move it, if you set either.)
-
-Everything else tether ever wrote is in a file that was already yours: the two
-hook entries in a project's `.claude/settings.local.json`; in
-`~/.codex/config.toml` the Codex hook entry — `tether codex-hook remove` takes
-that one out — and any folder you told it to trust, which is marked with a
-comment so you can find it; and in `~/.claude.json` the folder trust for Claude
-Code, as `hasTrustDialogAccepted` on that directory's `projects` entry.
+The state directory contains the password hash, session registry, attachments,
+hooks and logs. Project hook/trust entries remain in the provider configuration
+files you chose to modify.
 
 ## First run
 
-```sh
-tether set-password    # prompts; never echoes, never logs, never printed
-tether serve           # binds 127.0.0.1:8787
-```
-
-The password is never defaulted and can only be set from a terminal on the
-machine itself. `serve` prints the address; open it in a browser on that machine,
-log in, and tap **New session**. To reach it from a phone, see
-[Reaching it from your phone](#reaching-it-from-your-phone) — do not skip
-[Access and security](#access-and-security) on the way.
-
-There is a CLI for the same things, which is sometimes quicker than a browser:
+If you completed the public installer flow, open the HTTPS URL it printed. For a
+local install:
 
 ```sh
-tether new ~/src/project      # starts a session in a durable tmux session
-tether ls                     # every session, live or dead
-tether kill 1a2b3c4d          # any unambiguous id prefix
-tether resume 1a2b3c4d        # bring a dead session's conversation back
-tether access status          # prove Funnel, tether and public HTTPS independently
+tether set-password
+tether serve
 ```
 
-`tether new` takes `--title`, `--provider` (`claude-code` or `codex`) and, after
-`--`, a command to run instead of the provider's own
-(`tether new ~/src/project -- /bin/sh`). `access status` changes nothing: it
-reads Tailscale's structured status, checks that Funnel really is public rather
-than tailnet-only, asks the loopback server with the exact public `Host`, and
-then requests the public HTTPS link. The three answers are printed separately,
-so “Funnel is armed”, “tether is healthy” and “public DNS works” can never stand
-in for one another.
+Then open `http://127.0.0.1:8787` and create a session. Common CLI commands:
 
-`ls`, `kill` and `resume` reconcile the registry against real tmux first, so a
-session that died while tether was not running shows as **dead** rather than
-live. Dead rows are kept, not deleted: they are what _Resume_ works from. A
-reboot destroys every tmux session, so `resume` is how a machine restart stops
-being data loss — it starts the provider's own resume (`claude --resume <id>`,
-`codex resume <id>`) in a fresh tmux session under the same registry row, so it
-is the same conversation. The terminal scrollback is genuinely gone; the
-conversation is not. The browser offers the same operation directly on a dead
-conversation: open its saved history and tap **Resume**. That row already names
-the exact provider conversation, so there is no terminal chooser and no second
-selection to make. A session that died before its first message has no
-conversation to restore, and `resume` says so and refuses rather than handing
-back a fresh session dressed up as the old one.
+```sh
+tether new ~/src/project
+tether ls
+tether kill 1a2b3c4d
+tether resume 1a2b3c4d
+tether access status
+```
+
+`new` accepts `--title`, `--provider claude-code|codex`, and a custom command
+after `--`. `access status` checks Funnel, the local tether origin and public
+HTTPS without changing anything. Dead sessions keep their conversation and can
+be resumed; terminal scrollback does not survive a reboot.
 
 ## Using it
 
@@ -474,253 +381,101 @@ the answer is remembered — with a box to tick.
 
 ## Access and security
 
-**Reaching tether's web interface is equivalent to having a shell on the machine
-it runs on.** A coding-agent session accepts arbitrary prompts and can run
-commands, and the terminal view is a real terminal. Everything below follows from
-that, and none of it is optional.
-
-**There is one account, and it has full access to everything inside the allowed
-roots.** No per-person logins, no per-directory scoping, no audit of who did
-what. The password is the whole of the authorisation model, and whoever holds it
-acts as your OS user with your provider logins. Decide who gets it on that basis.
-
-Set the password before anything else. It is never defaulted, and it can only be
-set from a terminal on the machine itself:
+**Treat tether access as shell access.** One shared password authorizes every
+session and file under the allowed roots. Set it locally before serving:
 
 ```sh
 tether set-password
 tether serve
 ```
 
-- **Loopback by default.** `--host` is the explicit opt-out, and it refuses to
-  start unless a password is set.
-- **`--funnel`** is the other opt-out, and the larger one: it stays on loopback
-  and puts Tailscale Funnel in front, which means the internet. It is subject to
-  the password rule rather than exempt from it — it refuses to start without one,
-  and says it would otherwise be publishing a shell. It sets the bind address
-  and the two flags below itself, from what Tailscale reports about this
-  machine; see
-  [Reaching it from your phone](#reaching-it-from-your-phone).
-- **No TLS inside tether**, by design — the platform solves it better, so
-  [Reaching it from your phone](#reaching-it-from-your-phone) delegates it to
-  Tailscale, an SSH tunnel or a reverse proxy. An off-loopback bind warns that it
-  is serving plain HTTP at startup, and keeps warning every ten minutes.
-- **`--allowed-host <name>`** adds a hostname to the `Host` allowlist, which is
-  what stops a malicious page from reaching the server by resolving its own
-  hostname to `127.0.0.1`. A Tailscale name or a reverse-proxy name needs to be
-  listed here; loopback names always are.
-- **`--trusted-proxy <ip|cidr>`** is the only way `X-Forwarded-Proto` and
-  `X-Forwarded-For` are believed. Without it a client cannot spoof the `Secure`
-  cookie flag or its own address.
-- **Sessions may only start inside the allowed roots.** "Start a session in
-  directory X" is input that becomes a process working directory, so the path is
-  resolved — symlinks and all — and then required to lie inside one of them. The
-  default is your home directory; `TETHER_ALLOWED_ROOTS` widens it, taking a
-  `:`-separated list like `PATH`:
+Security defaults:
+
+- The server binds `127.0.0.1` unless `--host` is supplied.
+- `--host` and `--funnel` refuse to start without a password.
+- `--allowed-host` controls accepted `Host` headers.
+- `--trusted-proxy` controls which proxies may supply `X-Forwarded-*` headers.
+- Session directories must resolve inside your home directory. Widen this with a
+  colon-separated list:
 
   ```sh
   TETHER_ALLOWED_ROOTS=/srv/code:/mnt/work tether serve
   ```
 
-  It applies to `tether new` as well as to the API, and the startup banner prints
-  the roots in force. There is no per-root permission model.
+Tether does not terminate TLS. Use Funnel, SSH, a private tailnet or a reverse
+proxy. State lives under `~/.local/state/tether` with private permissions; use
+`$XDG_STATE_HOME` or `$TETHER_STATE_DIR` to move it. Runtime state is never
+written into your repository.
 
-The SQLite database holding the password hash and session registry lives at
-`~/.local/state/tether/tether.sqlite` (`$XDG_STATE_HOME`, or
-`$TETHER_STATE_DIR` to override), at mode `0600`; private attachments and hook
-state live beside it. Nothing secret, and no runtime state, is ever written
-inside the repository.
-
-The server logs to **stderr at `warn`**: every failure it hits, and none of the
-request chatter — a browser polls the session list every five seconds, so a log
-that says something about each of those is one that gets turned off again, taking
-the failures with it. `TETHER_LOG_LEVEL` widens it when you are debugging one;
-`info` is the level that adds the request log.
-
-```sh
-TETHER_LOG_LEVEL=info tether serve
-```
+Logs go to stderr at `warn`. Use `TETHER_LOG_LEVEL=info tether serve` for request
+logs.
 
 ## Reaching it from your phone
 
-tether binds `127.0.0.1:8787` and terminates no TLS. That is the whole of its
-transport story, so getting to it from somewhere else is a decision you make
-once, here. Read the section above again first: **whatever you put in front of
-tether is what stands between the network and a shell on this machine.**
+### Tailscale Funnel
 
-Three options, and they differ in who can reach the login page: **anyone**
-(Funnel), **your own devices** (a private tailnet), or **whoever can already SSH
-in** (a tunnel). Funnel is first because it is what the installer sets up and the
-only one that asks nothing of the other device — not because it is the safest.
-It is the least safe of the three, and the rest of this section says so in
-detail rather than in passing.
+Funnel is the default because the **host alone** installs Tailscale. Every viewer
+uses a normal browser and the tether password—no Tailscale app, account, VPN or
+extension.
 
-### Tailscale Funnel — a public HTTPS address, nothing to install on the phone
+**Funnel makes tether's login page public.** The URL is not a secret; anyone with
+the password has shell-level access. The installer checks the password and port,
+shows the exact Funnel command, and asks before publishing.
 
-Funnel puts your tailnet machine on the **public internet** at
-`https://my-box.tailnet-1234.ts.net/`, with a real certificate, reachable from a
-device that has never heard of Tailscale. That is its whole appeal and its whole
-risk: it is the default option here that needs nothing installed on the other
-device, and it is also **the option that puts your login page where anyone can
-find it.** One password is then the only thing between the internet and a shell
-on this machine. The address is not a secret, either: the certificate Funnel gets
-for that name is published in the public certificate-transparency logs, so treat
-the name as known rather than as a second factor.
-
-**The installer sets this up for you** — it is the last thing it does, and
-re-running it picks up wherever it stopped. Tailscale is installed only on the
-host running tether. Every other person uses the resulting HTTPS link in an
-ordinary browser; they need no Tailscale app, account, VPN or extension.
-
-On a fresh tailnet, Tailscale's command can open its own one-time account
-approval to enable HTTPS certificates and the Funnel policy. The installer lets
-that supported flow run instead of stopping beforehand and asking you to guess
-at an ACL file. By hand the order is:
+The installer configures Funnel. Once it is enabled, the server command is:
 
 ```sh
-sudo tailscale funnel --bg 8787
 tether serve --funnel
 ```
 
-`--funnel` is the whole configuration, and none of it is typed:
-
-- It asks Tailscale for this machine's own name (`tailscale status --json`) and
-  puts that in the `Host` allowlist. The allowlist is what stops a hostile web
-  page from resolving its own hostname to your machine and driving tether
-  through your browser, and a hand-typed name that is wrong fails as a `403`
-  with nothing to say why — which is the reason this is not a flag you fill in.
-- It keeps binding **loopback**, so the port is unreachable from anywhere but
-  this machine. Funnel reaches it there.
-- Because of that, it trusts `127.0.0.1` as a proxy, which is what makes the
-  `X-Forwarded-Proto: https` Funnel sends believed — and that is why the session
-  cookie gets its `Secure` flag. Trusting a proxy is only safe because the bind
-  is loopback; the two go together and `--funnel` is the pair.
-- **It refuses to start without a password**, even though it binds loopback,
-  because what is in front of it is the internet. `--funnel` cannot publish an
-  unprotected shell, and there is no flag that makes it.
-
-It prints the address at startup and says what it exposes, then keeps saying it
-every ten minutes. `sudo tailscale funnel --bg 8787` is separate and stays
-separate: it is a machine-wide Tailscale setting that outlives tether and needs
-root, so the **server** never turns it on itself; the installer does only after
-showing that exact command and receiving consent. `tailscale funnel status`
-says what is published, and `sudo tailscale funnel --bg off` takes it down.
-
-The installer also offers a native user service so tether itself comes back;
-Funnel already persists. launchd/systemd receive the PATH present at install,
-which is necessary because they do not read a shell startup file and otherwise
-cannot find tmux, Node, Claude Code or Codex. Re-running the installer reconciles
-the service file. Check the whole live path, without changing it, with:
+`--funnel` derives the Tailscale hostname, keeps tether on loopback, allows that
+hostname, and trusts only the loopback Funnel proxy. Disable and diagnose it with:
 
 ```sh
+sudo tailscale funnel --bg off
 tether access status
-
-# Restart/stop the persistent server itself
-systemctl --user restart tether.service     # Linux
-systemctl --user stop tether.service
-launchctl kickstart -k gui/$UID/dev.tether.server  # macOS restart
-launchctl bootout gui/$UID/dev.tether.server       # macOS stop
-launchctl bootstrap gui/$UID ~/Library/LaunchAgents/dev.tether.server.plist  # start
 ```
 
-Stopping tether leaves Funnel's durable mapping aimed at an empty loopback port;
-`sudo tailscale funnel --bg off` removes the public mapping too. `tether access
-status` separately reports whether Funnel is armed, whether tether answers
-on loopback for the public `Host`, and whether the real HTTPS URL responds. A
-private `tailscale serve` mapping has the same-looking local proxy, so it also
-requires `AllowFunnel` in the structured status before calling the link public.
+The installer can also add a launchd/systemd user service. Funnel itself remains
+configured until you turn it off. A new Funnel hostname can take several minutes
+to become reachable.
 
-If any of Tailscale, a login, or Funnel-on-this-machine is missing, `--funnel`
-says which one and what to do about it, and starts nothing. The one exception is
-a machine Tailscale reports no capabilities for at all: that says nothing about
-access controls, so it carries on and lets `tailscale funnel` refuse in its own
-words if the tailnet really does forbid it.
+#### Why Funnel is the default
 
-The first request after an idle spell is slow, sometimes several seconds, while
-Funnel wakes up. That is Funnel, not tether. Tailscale's current documentation
-also says Funnel is beta, supports only its tailnet DNS name and public ports
-443/8443/10000, and applies non-configurable bandwidth limits. Its relay servers
-cannot decrypt Funnel traffic; TLS terminates in Tailscale on this machine.
+| Option                                                                                                                                                 | Why it is not the default                                                 |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------- |
+| [Cloudflare Quick Tunnels](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/) | Cloudflare labels them development/testing only; hostnames are temporary. |
+| [Cloudflare Tunnel + Access](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/)                      | Requires a Cloudflare account, managed DNS and `cloudflared`.             |
+| [ngrok](https://ngrok.com/docs/gateway/agent-cli-quickstart/)                                                                                          | Requires a host account, agent and token.                                 |
+| Caddy or another proxy                                                                                                                                 | Best when you already manage a domain, TLS and ingress.                   |
 
-#### Why Funnel remains the clientless default
+All remain supported through `--allowed-host` and `--trusted-proxy`.
 
-The alternatives were checked against tether's actual requirements: an ordinary
-browser on the viewing device, a stable HTTPS origin, WebSockets, a loopback
-backend and the fact that this traffic contains source code and controls a shell.
+### Private tailnet
 
-- **[Cloudflare Quick Tunnels](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/)** need no account and viewers need only a browser,
-  but Cloudflare documents them as development/testing only: a random hostname
-  per run, no SLA, a 200 in-flight-request cap and no Server-Sent Events. They
-  are not a production installation path.
-- **[A named Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/) plus Access** gives a stable browser-only address
-  and a strong identity front door, but the host needs a Cloudflare account,
-  managed domain/DNS and an authenticated `cloudflared`; Cloudflare terminates
-  TLS at its edge. It is a good deliberate reverse proxy, not less setup.
-- **[ngrok](https://ngrok.com/docs/gateway/agent-cli-quickstart/)** also gives viewers a normal HTTPS link, supports WebSockets and can
-  add OAuth. The host still needs an ngrok account, agent and auth token, and its
-  free plan currently limits the dev domain to 1 GB and 20,000 HTTP requests per
-  month; ngrok terminates TLS at its edge.
-- **Caddy or another reverse proxy** remains fully supported when you already
-  own the domain, DNS and ingress. The certificate, patching and front-door
-  authentication are then yours.
-
-None is blocked or special-cased: `--allowed-host` and `--trusted-proxy` are the
-generic seam for an operator who chooses one. tether does not silently download
-or supervise a second tunnel client just to offer another default with more
-host-side setup.
-
-### A private tailnet — your own devices only, nothing public
-
-The same WireGuard network without the public address. Free for personal use, no
-port is opened on your router, and reaching tether then requires a device that is
-already enrolled in your tailnet — a second factor considerably stronger than the
-password, and the thing Funnel gives up. **Prefer this whenever every device that
-needs tether is one of yours.** Install Tailscale on the machine and on the
-phone, then:
+Safer when every viewer is one of your devices, but each viewer must install and
+join Tailscale:
 
 ```sh
-tailscale ip -4                                  # 100.101.102.103
-tailscale status --json | grep '"DNSName"'       # my-box.tailnet-1234.ts.net.
-
-tether serve \
-  --host 100.101.102.103 \
-  --allowed-host my-box.tailnet-1234.ts.net
+tailscale ip -4
+tailscale status --json | grep '"DNSName"'
+tether serve --host <tailscale-ip> --allowed-host <tailscale-name>
 ```
 
-Both flags are needed and neither is optional:
+Open `http://<tailscale-name>:8787` from a device in the tailnet. Bind the
+Tailscale IP, not `0.0.0.0`.
 
-- `--host <tailscale ip>` binds to the tailnet interface **only**. `0.0.0.0`
-  would work too and would also publish tether to every café Wi-Fi the laptop
-  joins.
-- `--allowed-host <tailscale name>` puts that name in the `Host` allowlist, for
-  the reason given under `--funnel` above. Use the name without the trailing dot
-  that `tailscale status` prints.
-
-Then open `http://my-box.tailnet-1234.ts.net:8787` on the phone. Tailscale
-carries the encryption, so plain HTTP over it is not plaintext on any wire —
-tether still warns, because it cannot see what is in front of it.
-
-### An SSH tunnel — nothing to install on the server
-
-If you already have SSH to the machine, you need no tether configuration at all:
-tether stays on loopback and the tunnel is the transport.
+### SSH tunnel
 
 ```sh
 ssh -N -L 8787:127.0.0.1:8787 you@box
 ```
 
-Then open `http://localhost:8787`. Phone SSH clients (Termius, Blink, JuiceSSH)
-all do local port forwarding. It is the least convenient option to keep alive on
-a phone that sleeps, and the easiest one to set up correctly.
+Open `http://localhost:8787`. Tether stays on loopback.
 
-### A reverse proxy — deliberate exposure
+### Reverse proxy
 
-**This is the other option that puts a shell on the internet**, and unlike Funnel
-the certificate, the patching and the front door are yours. Do not choose it
-because it is convenient; choose it because you have decided to, and put your own
-authentication in front of tether as well if you can.
-
-Caddy gets a certificate on its own:
+Example Caddy configuration:
 
 ```
 tether.example.com {
@@ -729,15 +484,10 @@ tether.example.com {
 ```
 
 ```sh
-tether serve \
-  --allowed-host tether.example.com \
-  --trusted-proxy 127.0.0.1
+tether serve --allowed-host tether.example.com --trusted-proxy 127.0.0.1
 ```
 
-tether keeps binding loopback — the proxy is on the same machine and reaches it
-there. `--trusted-proxy` is what makes `X-Forwarded-Proto` and `X-Forwarded-For`
-believed, and it is why the session cookie gets its `Secure` flag: without it a
-client could set that header itself, so tether ignores it.
+Keep tether on loopback and add authentication at the proxy when possible.
 
 ## Known risks
 

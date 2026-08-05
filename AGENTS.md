@@ -92,9 +92,10 @@ locally.
   and the `TETHER_VERSION` checkout moves. Its consent rule is
   the Codex hook's, generalised: nothing outside tether's own directory changes without
   the exact commands on screen and a yes, declining prints them and stops, and no shell
-  startup file is ever edited. A sentence it cannot back with something it actually
-  checked is deleted rather than softened, because a caveat is itself new length and new
-  claims. Two things about it that the script alone does not
+  startup file is ever edited. Keep the surrounding installer copy short: one risk, the
+  exact commands or service bytes, and the next action; longer rationale belongs in the
+  README. A sentence it cannot back with something it actually checked is deleted rather
+  than softened, because a caveat is itself new length and new claims. Two things about it that the script alone does not
   show. **It installs the highest `vX.Y.Z` tag, so merging to `main` ships nothing** —
   a change reaches the public install line only when a release is cut (README's
   Development → _Cutting a release_), and `install.sh` itself is the one exception,
