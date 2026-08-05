@@ -51,7 +51,8 @@ const TERM_SCHEMA = {
     additionalProperties: false,
     // The client's identity for input de-duplication, not a credential: the
     // session cookie is what authenticates, and it has already been checked.
-    properties: { client: NAME },
+    // `output=0` keeps the composer's socket but skips the hidden replay.
+    properties: { client: NAME, output: { type: 'string', enum: ['0', '1'] } },
   },
 } as const;
 
@@ -84,6 +85,10 @@ export function parseClientFrame(raw: string): ClientFrame | null {
         frame['keys'].length <= MAX_KEYS &&
         frame['keys'].every((k) => typeof k === 'string' && k.length > 0 && k.length <= 32)
         ? { c: 'key', seq: seq as number, keys: frame['keys'] as string[] }
+        : null;
+    case 'output':
+      return typeof frame['enabled'] === 'boolean'
+        ? { c: 'output', enabled: frame['enabled'] }
         : null;
     case 'resize':
       return [frame['cols'], frame['rows']].every(
@@ -147,12 +152,18 @@ export function registerTermSocket(
   db: DatabaseSync,
   tmuxSocket: string = DEFAULT_SOCKET,
 ): void {
-  app.get<{ Params: { name: string }; Querystring: { client: string } }>(
+  app.get<{
+    Params: { name: string };
+    Querystring: { client: string; output?: '0' | '1' };
+  }>(
     '/api/sessions/:name/term',
     { websocket: true, schema: TERM_SCHEMA },
     async (socket, request) => {
       const session = request.params.name;
       const clientId = request.query.client;
+      // Old clients omit it and keep the original full-output behaviour.
+      const initialOutput = request.query.output !== '0';
+      let output: boolean | 'enabling' = initialOutput;
 
       // The attach spans two tmux spawns and a PTY spawn, and a client that gives
       // up inside that window would otherwise leave its viewer subscribed and the
@@ -221,15 +232,17 @@ export function registerTermSocket(
         }
       };
 
+      const viewer = (bytes: Uint8Array) => {
+        if (output === true && alive()) socket.send(bytes);
+      };
       const detach = await terminals
         .attach(
           session,
-          (bytes) => {
-            if (alive()) socket.send(bytes);
-          },
+          viewer,
           // Exactly once per viewer: `Terminals#end` clears the viewer map
           // before calling back.
           () => void closeFromRegistry(),
+          initialOutput,
         )
         .catch(async (error: unknown) => {
           app.log.warn({ err: error, session }, 'terminal attach failed');
@@ -249,6 +262,22 @@ export function registerTermSocket(
       // that matters — two *viewers* of one session must not interleave their
       // paste-then-Enter pairs either, and one queue per socket cannot see that.
       async function apply(frame: ClientFrame): Promise<void> {
+        if (frame.c === 'output') {
+          if (frame.enabled === output) return;
+          if (frame.enabled) {
+            if (output === 'enabling') return;
+            output = 'enabling';
+            try {
+              await terminals.refresh(session, viewer, (bytes) => {
+                if (output === 'enabling' && alive()) socket.send(bytes);
+                if (output === 'enabling') output = true;
+              });
+            } finally {
+              if (output === 'enabling') output = false;
+            }
+          } else output = false;
+          return;
+        }
         if (frame.c === 'resize') return terminals.resize(session, frame.cols, frame.rows);
         if (frame.c === 'input') await terminals.input(session, clientId, frame.seq, frame.text);
         else if (frame.c === 'text') await terminals.text(session, clientId, frame.seq, frame.text);
@@ -269,7 +298,9 @@ export function registerTermSocket(
           // full replay. Everything else does mean the attach is gone.
           if (error instanceof UnsafeArgumentError) {
             app.log.warn({ err: error, session, frame: frame.c }, 'terminal frame refused');
-            if (frame.c !== 'resize') send({ c: 'ack', seq: frame.seq });
+            if (frame.c !== 'resize' && frame.c !== 'output') {
+              send({ c: 'ack', seq: frame.seq });
+            }
             return;
           }
           app.log.warn({ err: error, session }, 'terminal frame failed');

@@ -257,5 +257,11 @@ export type ClientFrame =
    * `['Escape']`, `['Up']`. Printable characters belong in a `text` frame.
    */
   | { c: 'key'; seq: number; keys: string[] }
+  /**
+   * Whether terminal bytes should cross the network. The composer keeps this
+   * socket open while the conversation is in front, so output is muted there;
+   * turning it back on starts with tmux's exact replay.
+   */
+  | { c: 'output'; enabled: boolean }
   /** Last viewer to send this wins; `window-size manual` keeps it off other sessions. */
   | { c: 'resize'; cols: number; rows: number };

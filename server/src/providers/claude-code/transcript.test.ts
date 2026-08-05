@@ -3,7 +3,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { appendFile, mkdtemp, mkdir, rm, utimes, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, mkdir, realpath, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
@@ -11,7 +11,10 @@ import test, { type TestContext } from 'node:test';
 import { findTranscript, projectDir, sanitizePath, type StartMemo } from './transcript.ts';
 
 async function temp(t: TestContext): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), 'tether-tail-'));
+  // `/var` is `/private/var` on macOS. Production stores the resolved cwd, so
+  // the fixture must do the same or it creates a transcript under a directory
+  // Claude Code would never use there.
+  const dir = await realpath(await mkdtemp(join(tmpdir(), 'tether-tail-')));
   t.after(() => rm(dir, { recursive: true, force: true }));
   return dir;
 }

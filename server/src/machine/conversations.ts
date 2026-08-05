@@ -77,9 +77,12 @@ export const STATUS_POLL_MS = 1000;
 export type SeqEvent = { seq: number; e: ConversationEvent };
 
 export type ConversationHistory = {
-  /** The highest `seq` in `events`; 0 when there is nothing yet. */
+  /** Highest mapped transcript position, including events older than this response. */
   seq: number;
   events: SeqEvent[];
+  /** Events before this page exist and can be requested with `before`. */
+  truncated?: true;
+  before?: number;
   /** Claude Code's own `ai-title` for the session, once it has named it. */
   title?: string;
   /** The transcript's `version`, for comparing against the captured fixtures. */
@@ -490,11 +493,11 @@ export class Conversations {
   }
 
   /**
-   * The whole conversation, read from the file. Deliberately stateless: it is
-   * the answer to "I have been gone too long", so it must not depend on anything
-   * that could also have been lost.
+   * One bounded conversation page, read from the file. Deliberately stateless:
+   * the latest page is the answer to "I have been gone too long", and `before`
+   * walks backward without depending on anything the client could have lost.
    */
-  async history(session: Session): Promise<ConversationHistory> {
+  async history(session: Session, before?: number): Promise<ConversationHistory> {
     const found = await this.#find(session);
     if (found === undefined) return { seq: 0, events: [] };
     // `findTranscript` has just stat'd this file, so a read that fails here is a
@@ -509,9 +512,47 @@ export class Conversations {
     // A file being appended to right now ends mid-line; that line is not there yet.
     if (!text.endsWith('\n')) lines.pop();
     const mapped = mapperFor(session.provider)(lines, (message) => this.#warn(message));
+    // A real long-running session reaches thousands of events and megabytes of
+    // mapped JSON. Sending and mounting all of it on every phone reload is what
+    // made a resumed conversation appear blank while its terminal worked. The
+    // default is therefore the latest page. `before` asks for one earlier page,
+    // exclusive, so the browser can make all history reachable without ever
+    // mounting the whole transcript at once. `seq` remains the absolute live
+    // cursor whichever page was requested.
+    const end =
+      before === undefined
+        ? mapped.events.length
+        : Math.min(mapped.events.length, Math.max(0, before - 1));
+    const calls = new Map<string, number>();
+    for (let index = 0; index < end; index += 1) {
+      const event = mapped.events[index];
+      if (event?.kind === 'tool_call') calls.set(event.callId, index);
+    }
+    const contextFor = (start: number): number[] => {
+      const context = new Set<number>();
+      for (let index = start; index < end; index += 1) {
+        const event = mapped.events[index];
+        if (event?.kind !== 'tool_result') continue;
+        const call = calls.get(event.callId);
+        if (call !== undefined && call < start) context.add(call);
+      }
+      return [...context].sort((a, b) => a - b);
+    };
+    let start = Math.max(0, end - TAIL_EVENTS);
+    let context = contextFor(start);
+    while (end - start + context.length > TAIL_EVENTS) {
+      start += 1;
+      context = contextFor(start);
+    }
+    const events = mapped.events
+      .slice(start, end)
+      .map((e, index) => ({ seq: start + index + 1, e }));
+    events.unshift(...context.map((index) => ({ seq: index + 1, e: mapped.events[index]! })));
     return {
       seq: mapped.events.length,
-      events: mapped.events.map((e, index) => ({ seq: index + 1, e })),
+      events,
+      ...(start === 0 ? {} : { truncated: true as const }),
+      ...(start === 0 ? {} : { before: start + 1 }),
       ...(mapped.title === undefined ? {} : { title: mapped.title }),
       ...(mapped.version === undefined ? {} : { version: mapped.version }),
     };

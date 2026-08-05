@@ -102,6 +102,17 @@ test('a composed message reaches the agent and appears exactly once', async ({ p
   await expect(conversation.getByText(REPLY, { exact: true })).toHaveCount(1);
   await expect(conversation.getByText(TYPED, { exact: true })).toHaveCount(1);
   await expect(conversation.locator('.msg-sending')).toHaveCount(0);
+
+  // Copy is a phone control too: visible without hover, copies exactly what is
+  // shown, and confirms the tap instead of silently hoping the browser allowed it.
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], {
+    origin: new URL(page.url()).origin,
+  });
+  const copy = conversation.getByRole('button', { name: 'Copy your text' });
+  await expect(copy).toHaveCount(1);
+  await copy.click();
+  await expect(copy).toHaveText('Copied');
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(TYPED);
   await shoot(page, '3-sent');
 
   // And it really went through tmux to the agent, not just into the view.
@@ -115,8 +126,9 @@ test('a composed message reaches the agent and appears exactly once', async ({ p
   // sockets and the ref, so this is where a rewiring that never happens shows
   // up — as a Send button that empties the box and does nothing else.
   await page.reload();
-  // By name, like the other two specs: three sessions share this list.
-  await page.getByRole('button', { name: `composer ${project}` }).click();
+  // The session id in the URL remounts this same screen directly; the sender
+  // ref and both sockets are still entirely new.
+  await expect(page.getByRole('button', { name: 'Back to sessions' })).toHaveCount(1);
   await expect(conversation.getByText(TYPED, { exact: true })).toHaveCount(1);
 
   await box.fill(AGAIN);
@@ -141,6 +153,65 @@ test('a composed message reaches the agent and appears exactly once', async ({ p
     await conversation.evaluate((el) => [el.scrollWidth - el.clientWidth, el.clientWidth]),
   ).toEqual([0, 360]);
   await shoot(page, '4-keyboard-open');
+});
+
+/** A real one-pixel PNG: the server checks bytes rather than believing its MIME type. */
+const PIXEL =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+const imageProject = join(process.env['TETHER_E2E_DIR'] as string, 'composer-image');
+
+test('an image pasted into the conversation is previewed, sent and still viewable after reload', async ({
+  page,
+}) => {
+  mkdirSync(imageProject, { recursive: true });
+  await page.goto('/');
+  await page.getByLabel('Password').fill(process.env['TETHER_E2E_PASSWORD'] as string);
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await page.getByRole('button', { name: 'New session' }).click();
+  await page.getByLabel('Working directory').fill(imageProject);
+  await page.getByRole('button', { name: 'Start' }).click();
+
+  const box = page.getByLabel('Message');
+  await box.evaluate((element, encoded) => {
+    const bytes = Uint8Array.from(atob(encoded), (char) => char.charCodeAt(0));
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([bytes], 'pixel.png', { type: 'image/png' }));
+    element.dispatchEvent(
+      new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true }),
+    );
+  }, PIXEL);
+
+  const draft = page.locator('.composer-image');
+  await expect(draft).toHaveCount(1);
+  await expect(draft.getByRole('img', { name: 'Pasted image 1' })).toBeVisible();
+  await expect(draft.getByRole('link', { name: 'View pasted image 1 full size' })).toHaveAttribute(
+    'href',
+    /^blob:/,
+  );
+  await shoot(page, '4b-image-preview');
+
+  await page.getByRole('button', { name: 'Send' }).click();
+  await expect(draft).toHaveCount(0);
+  const sent = page.locator('.msg-user .msg-images');
+  await expect(sent).toHaveCount(1);
+  await expect(page.locator('.conv .msg-sending')).toHaveCount(0);
+  await expect(page.locator('.conv').getByText('echo image received', { exact: true })).toHaveCount(
+    1,
+  );
+  const image = sent.getByRole('img', { name: 'Pasted image 1' });
+  await expect(image).toBeVisible();
+  const src = await image.getAttribute('src');
+  expect(src).toMatch(/^\/api\/sessions\/.+\/images\/[0-9a-f-]{36}\.png$/);
+  const response = await page.request.get(src!);
+  expect(response.status()).toBe(200);
+  expect((await response.body()).subarray(0, 8)).toEqual(
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+  );
+  await shoot(page, '4c-image-sent');
+
+  await page.reload();
+  await expect(page.locator('.msg-user .msg-images img')).toHaveCount(1);
+  await expect(page.locator('.msg-user .msg-images img')).toBeVisible();
 });
 
 /** Its own directory, so this test's session has its own name in the shared list. */

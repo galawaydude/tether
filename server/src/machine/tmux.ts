@@ -408,7 +408,15 @@ export async function refreshClients(socket: string, session: string): Promise<v
   checkSessionName(session);
   const out = await run(socket, ['list-clients', '-t', session, '-F', '#{client_tty}']);
   for (const tty of out.split('\n').filter((line) => line !== '')) {
-    await run(socket, ['refresh-client', '-t', tty]);
+    try {
+      await run(socket, ['refresh-client', '-t', tty]);
+    } catch (error) {
+      // A phone can close its socket after `list-clients` and before this spawn.
+      // That tty has nothing left to repaint; losing the viewer that is still
+      // joining because a different one left in this gap is the actual failure.
+      if (error instanceof TmuxError && /^can't find client:/.test(error.stderr)) continue;
+      throw error;
+    }
   }
 }
 

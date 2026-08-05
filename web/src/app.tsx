@@ -1,7 +1,8 @@
 /**
  * The whole shell: log in, list sessions, open one. No router — there are three
- * screens and one of them is a modal, so a URL scheme would be state to keep in
- * sync for nothing.
+ * screens and one of them is a modal. The one URL state that earns its keep is
+ * `?session=<id>`: a browser refresh restores the open session instead of
+ * dropping a captain back at the list while their agent keeps running.
  *
  * There are two shapes, not one with a media query bolted on. On a phone the
  * list and the open session are the same screen at different times. Past
@@ -40,6 +41,46 @@ const POLL_MS = 5000;
  * last block of `style.css`, which is where the rest of the desktop shape lives.
  */
 const WIDE = '(min-width: 900px)';
+const SESSION_QUERY = 'session';
+const RAIL_PREFERENCE = 'tether.sessions-collapsed';
+
+function savedRailPreference(): boolean {
+  try {
+    return localStorage.getItem(RAIL_PREFERENCE) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function saveRailPreference(collapsed: boolean): void {
+  try {
+    localStorage.setItem(RAIL_PREFERENCE, collapsed ? '1' : '0');
+  } catch {
+    // Private browsing policies can refuse storage. Collapse still works for
+    // this mount; persistence is convenience, never a requirement.
+  }
+}
+
+/** One stable address for the open session, without introducing a router. */
+function rememberSession(id: string | null): void {
+  const url = new URL(location.href);
+  if (id === null) url.searchParams.delete(SESSION_QUERY);
+  else url.searchParams.set(SESSION_QUERY, id);
+  history.replaceState(null, '', url);
+}
+
+async function restoreSession(): Promise<Session | null> {
+  const id = new URL(location.href).searchParams.get(SESSION_QUERY);
+  if (id === null) return null;
+  try {
+    return await api.getSession(id);
+  } catch (error) {
+    if (!(error instanceof ApiError) || error.status !== 404) throw error;
+    // A stale bookmark is the session list, not a reload loop against a 404.
+    rememberSession(null);
+    return null;
+  }
+}
 
 /**
  * `matchMedia`, not a resize listener: it fires only on the crossing, and it
@@ -116,41 +157,109 @@ export function App() {
   // replacing it a moment later is a flash of the wrong screen on every load.
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [open, setOpen] = useState<Session | null>(null);
+  const [restoreError, setRestoreError] = useState<string | null>(null);
+  const [railCollapsed, setRailCollapsed] = useState(savedRailPreference);
   const wide = useWide();
-
-  useEffect(() => {
-    api.checkSession().then(
-      () => setAuthenticated(true),
-      () => setAuthenticated(false),
-    );
+  const railClosed = wide && open !== null && railCollapsed;
+  const setRail = useCallback((collapsed: boolean) => {
+    setRailCollapsed(collapsed);
+    saveRailPreference(collapsed);
+  }, []);
+  const openSession = useCallback((session: Session) => {
+    setOpen(session);
+    rememberSession(session.id);
+  }, []);
+  const closeSession = useCallback(() => {
+    setOpen(null);
+    rememberSession(null);
+  }, []);
+  const signedOut = useCallback(() => {
+    closeSession();
+    setAuthenticated(false);
+  }, [closeSession]);
+  const removedSession = useCallback(
+    (id: string) => {
+      if (open?.id === id) closeSession();
+    },
+    [closeSession, open?.id],
+  );
+  const loadSelected = useCallback(async () => {
+    try {
+      setOpen(await restoreSession());
+      setRestoreError(null);
+      setAuthenticated(true);
+    } catch (failure) {
+      if (failure instanceof ApiError && failure.status === 401) setAuthenticated(false);
+      else {
+        setRestoreError(messageOf(failure));
+        setAuthenticated(true);
+      }
+    }
   }, []);
 
+  useEffect(() => {
+    let live = true;
+    api.checkSession().then(
+      () => {
+        if (live) void loadSelected();
+      },
+      () => {
+        if (live) setAuthenticated(false);
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [loadSelected]);
+
   if (authenticated === null) return <p class="centre muted">Loading tether…</p>;
-  if (!authenticated) return <Login onDone={() => setAuthenticated(true)} />;
-  const signedOut = () => setAuthenticated(false);
+  if (!authenticated) {
+    return <Login onDone={() => void loadSelected()} />;
+  }
+  if (restoreError !== null) {
+    return (
+      <main class="centre">
+        <div class="card">
+          <p class="error" role="alert">
+            {restoreError}
+          </p>
+          <button class="primary" onClick={() => void loadSelected()}>
+            Retry
+          </button>
+        </div>
+      </main>
+    );
+  }
   const list = (
     <Sessions
-      onOpen={setOpen}
+      onOpen={openSession}
+      onRemoved={removedSession}
       onSignedOut={signedOut}
       rail={wide}
+      collapsed={railClosed}
+      {...(open === null ? {} : { onCollapse: () => setRail(true) })}
       openId={wide ? (open?.id ?? null) : null}
     />
   );
   const session =
     open === null ? null : (
       <SessionScreen
-        // Keyed, so switching sessions in the rail rebuilds both panes rather
-        // than pointing one live socket at a different tmux session.
-        key={open.id}
+        // A dead row resumed under the same id needs fresh sockets just as much
+        // as switching rows does. The provider process is new even though the
+        // conversation identity deliberately is not.
+        key={`${open.id}:${open.deadAt ?? 'live'}`}
         session={open}
-        onBack={() => setOpen(null)}
+        onBack={closeSession}
         onSignedOut={signedOut}
+        onResumed={openSession}
+        sessionsCollapsed={railClosed}
+        onShowSessions={() => setRail(false)}
       />
     );
 
   if (!wide) return session ?? list;
   return (
-    <div class="workspace">
+    <div class={`workspace${railClosed ? ' workspace-rail-closed' : ''}`}>
       {list}
       {session ?? (
         // The `<main>` of this shape when nothing is open: the right-hand pane is
@@ -196,18 +305,43 @@ function SessionScreen({
   session,
   onBack,
   onSignedOut,
+  onResumed,
+  sessionsCollapsed,
+  onShowSessions,
 }: {
   session: Session;
   onBack: () => void;
   onSignedOut: () => void;
+  onResumed: (session: Session) => void;
+  sessionsCollapsed: boolean;
+  onShowSessions: () => void;
 }) {
   const [summoned, setSummoned] = useState(false);
+  const [resuming, setResuming] = useState(false);
+  const [resumeError, setResumeError] = useState<string | null>(null);
+  const resumable = session.deadAt !== null && session.providerSessionId !== null;
+
+  const resume = async () => {
+    if (!resumable || resuming) return;
+    setResuming(true);
+    setResumeError(null);
+    try {
+      // The exact provider conversation is already bound to this registry row;
+      // no chooser in the terminal is involved.
+      onResumed(await api.resumeSession(session.id));
+    } catch (failure) {
+      setResumeError(messageOf(failure));
+      setResuming(false);
+    }
+  };
   // One chip, two channels: it reports on whichever pane is in front, because
   // "Reconnecting…" is only actionable about the thing being looked at. The
   // agent's own busy/idle/waiting chip sits beside it and is a different fact.
   const [status, setStatus] = useState<Record<Pane, Status>>({
     conversation: 'connecting',
-    terminal: 'connecting',
+    // A dead conversation has history to read but no terminal to attach. Do not
+    // manufacture a failed PTY attempt just to rediscover the fact on the row.
+    terminal: session.deadAt === null ? 'connecting' : 'ended',
   });
   const report = (id: Pane) => (next: Status) =>
     setStatus((current) => (current[id] === next ? current : { ...current, [id]: next }));
@@ -245,27 +379,20 @@ function SessionScreen({
    */
   const agentKnown = agentStateTrusted(status.conversation, status.terminal);
 
-  // Closing from inside the sheet hides the button that was focused, and a
-  // browser drops focus to `<body>` when that happens — so a keyboard user who
-  // dismissed the terminal would be tabbing from the top of the page again. The
-  // control that summoned it is the honest place to land.
+  // The banner's link focuses the same header toggle it operates, so a keyboard
+  // user returns to one stable control whose visible label follows the pane.
   const hatch = useRef<HTMLButtonElement>(null);
-  const dismiss = () => {
-    setSummoned(false);
-    hatch.current?.focus();
-  };
   // The banner's link is the mirror of that: it is the control that summons, and
   // it is gone once the terminal is up because it would be offering what is
   // already on screen — so it hands focus to the header control for the same
   // reason, rather than dropping it to `<body>`.
-  const summon = () => {
+  const summon = useCallback(() => {
     setSummoned(true);
     hatch.current?.focus();
-  };
+  }, []);
 
   // Said in two places, and it has to be the same sentence in both: the banner
-  // when the conversation is on screen, the sheet's own header row when the
-  // terminal is over it.
+  // when the conversation is on screen, the terminal overlay when it is up.
   const waitingDetail = agent.detail ?? 'The agent has stopped and wants an answer.';
 
   return (
@@ -274,41 +401,65 @@ function SessionScreen({
     <main class="screen">
       <header class="bar">
         <button class="ghost bar-back" onClick={onBack} aria-label="Back to sessions">
-          ‹ Sessions
+          <span aria-hidden="true">‹</span>
+          <span class="bar-back-word">Sessions</span>
         </button>
+        {sessionsCollapsed && (
+          <button
+            type="button"
+            class="ghost bar-show-rail"
+            aria-label="Show session sidebar"
+            title="Show sessions"
+            onClick={onShowSessions}
+          >
+            <span class="rail-icon" aria-hidden="true" />
+          </button>
+        )}
         <div class="bar-title">
           <strong>{session.title}</strong>
         </div>
-        {/* The escape hatch, and the only navigation left on this screen. A
-            toggle rather than an open-only button: it is the control that is on
-            screen in both states, and `aria-expanded` is then the truth about
-            the thing it summons. */}
-        <button
-          ref={hatch}
-          type="button"
-          class="ghost bar-term"
-          aria-expanded={summoned}
-          onClick={() => setSummoned((open) => !open)}
-        >
-          Terminal
-        </button>
-        {/* Wrapped together so they occupy one whole row on a phone rather than
-            wrapping only when their own text happens to be long — see `.bar`:
-            a bar that changes height as a status word changes resizes the tmux
-            pane underneath it. */}
+        {session.deadAt === null ? (
+          /* A toggle rather than an open-only control: it remains on screen in
+             both states, and `aria-expanded` names the sheet it summons. */
+          <button
+            ref={hatch}
+            type="button"
+            class="ghost bar-term"
+            aria-expanded={summoned}
+            onClick={() => setSummoned((open) => !open)}
+          >
+            {summoned ? 'Conversation' : 'Terminal'}
+          </button>
+        ) : resumable ? (
+          /* Resume is a conversation action. The row already names the exact
+             provider session, so asking the provider to show a terminal chooser
+             here would make the user select the same conversation twice. */
+          <button
+            type="button"
+            class="primary bar-resume"
+            aria-label="Resume session"
+            disabled={resuming}
+            onClick={() => void resume()}
+          >
+            {resuming ? 'Resuming…' : 'Resume'}
+          </button>
+        ) : null}
+        {/* One non-wrapping status cluster. While the channel is healthy its
+            state is a dot and the agent gets the word; when the channel is not
+            healthy its own word replaces the agent's. That bound is what keeps
+            this bar one fixed row at every phone width. */}
         <div class="bar-chips">
           {/* Gone entirely once the channel has finished, rather than shown
               stale beside it. "Idle" next to "Session not found" is tether
               reporting the agent alive and the session missing at the same
               time, which is what sent a captain looking for lost work — see
-              `agentStateTrusted`. Dropping a chip is a height change the `.bar`
-              rules forbid *inside* a row, not across one: `.bar-chips` is its
-              own row below 600px and one chip is no taller than two.
+              `agentStateTrusted`. The 44px controls already fix this row's
+              height, so changing its compact status contents moves no pane.
 
               The same `agentKnown` as the banners and the live region: this is
               the agent's fact wherever it is printed, and the chip beside it is
               the channel's. */}
-          {agentKnown && (
+          {agentKnown && status[front] === 'live' && (
             <span class={`chip chip-agent-${agent.state}`}>
               {STATE_TEXT[agent.state]}
               {/* Its own component, so the 1s tick re-renders this span and not
@@ -341,14 +492,27 @@ function SessionScreen({
       <div class="crumbs">
         <span class="sr-only">Working directory: {session.cwd}</span>
         <span class="crumb-path" aria-hidden="true" title={session.cwd}>
-          {crumbs(session.cwd).map((segment, at, all) => (
-            <Fragment key={at}>
-              <span class="crumb-sep">/</span>
-              <span class={at === all.length - 1 ? 'crumb-last' : undefined}>{segment}</span>
-            </Fragment>
-          ))}
+          {crumbs(session.cwd).map((segment, at, all) => {
+            // A phone gets the useful end of the path rather than seven tiny,
+            // ellipsised fragments. CSS reveals the full chain in the rail layout.
+            const earlier = at < all.length - 2 ? ' crumb-earlier' : '';
+            return (
+              <Fragment key={at}>
+                <span class={`crumb-sep${earlier}`}>/</span>
+                <span class={`${at === all.length - 1 ? 'crumb-last' : 'crumb-segment'}${earlier}`}>
+                  {segment}
+                </span>
+              </Fragment>
+            );
+          })}
         </span>
       </div>
+
+      {resumeError !== null && (
+        <p class="error resume-error" role="alert">
+          {resumeError}
+        </p>
+      )}
 
       {/* The one announcer of the agent's own state, and it is always in the
           tree: a live region inserted at the same moment as its text is
@@ -366,9 +530,7 @@ function SessionScreen({
          * word for "visible but not to be interacted with": it takes the
          * conversation out of the tab order and the accessibility tree without
          * touching layout, so `scrollTop` and xterm's size survive — everything
-         * `display: none` or an unmount would cost. The tab pair got this free
-         * from hiding the pane; an overlay that deliberately leaves a strip of
-         * the conversation showing has to say it. Preact removes the attribute
+         * `display: none` or an unmount would cost. Preact removes the attribute
          * outright for `false`, so there is no browser where this sticks on.
          */}
         <div class="pane" inert={summoned}>
@@ -422,35 +584,23 @@ function SessionScreen({
           class={summoned ? 'pane termsheet' : 'pane termsheet pane-off'}
           aria-label="Terminal"
         >
-          <div class="termsheet-bar">
-            <h2 class="termsheet-title">Terminal</h2>
-            <p class="termsheet-note">The escape hatch.</p>
-            <button type="button" class="ghost" onClick={dismiss}>
-              Close
-            </button>
-            {/* A user with the terminal up is exactly who needs to know the
-                agent stopped and why, and the reason is the whole point of
-                saying it — "Claude needs your permission to use Bash" clipped
-                at "permission to…" is not a reason. So it hangs below the
-                header rather than sitting in it: out of flow, free to wrap to
-                as many lines as it needs, and costing the header and therefore
-                the terminal pane no height at all. Gated on `summoned` as well
-                as on the state, exactly as `.waiting` is gated on `!summoned`:
-                out of flow it would cost nothing to leave mounted behind a
-                hidden sheet, but then it exists while nobody can see it and
-                every assertion about it passes over a closed overlay. */}
-            {agentKnown && agent.state === 'waiting' && summoned && (
-              <p class="termsheet-waiting">
-                <strong>Waiting for you.</strong> {waitingDetail}
-              </p>
-            )}
-          </div>
-          <TerminalView
-            session={session}
-            onStatus={report('terminal')}
-            onSignedOut={onSignedOut}
-            sender={sender}
-          />
+          {/* No second terminal header: the always-visible session control now
+              says Conversation and is the direct way back. This line overlays
+              the terminal only while it has a reason to say. */}
+          {agentKnown && agent.state === 'waiting' && summoned && (
+            <p class="termsheet-waiting">
+              <strong>Waiting for you.</strong> {waitingDetail}
+            </p>
+          )}
+          {session.deadAt === null && (
+            <TerminalView
+              session={session}
+              active={summoned}
+              onStatus={report('terminal')}
+              onSignedOut={onSignedOut}
+              sender={sender}
+            />
+          )}
         </section>
         {/*
          * Inside `.panes` and absolutely positioned over it, never above it in
@@ -540,11 +690,15 @@ function Login({ onDone }: { onDone: () => void }) {
 
 function Sessions({
   onOpen,
+  onRemoved,
   onSignedOut,
   rail,
+  collapsed,
+  onCollapse,
   openId,
 }: {
   onOpen: (session: Session) => void;
+  onRemoved: (id: string) => void;
   onSignedOut: () => void;
   /**
    * Whether this list is the rail beside an open session rather than the whole
@@ -554,6 +708,10 @@ function Sessions({
    * landmark instead.
    */
   rail: boolean;
+  /** Hidden desktop rail state. It stays mounted so its live poll and scroll
+   * position survive; CSS and `inert` remove it from sight and interaction. */
+  collapsed: boolean;
+  onCollapse?: () => void;
   /**
    * Which row is the session on screen beside this list, or `null` on a phone,
    * where the list is never on screen at the same time as a session and a
@@ -565,6 +723,7 @@ function Sessions({
   const [states, setStates] = useState<api.SessionStates>({});
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [removing, setRemoving] = useState<string | null>(null);
   /**
    * What is typed in the search box. Client-side over the list already fetched
    * — a machine has a handful of sessions, so a server round trip per keystroke
@@ -600,24 +759,62 @@ function Sessions({
     await refresh();
   };
 
+  const remove = async (session: Session) => {
+    if (
+      !confirm(
+        `Remove “${session.title}” from tether?\n\n` +
+          `Its ${providerLabel(session.provider)} transcript stays on disk, but tether will no longer list or resume it.`,
+      )
+    )
+      return;
+    setRemoving(session.id);
+    try {
+      await api.removeSession(session.id);
+      onRemoved(session.id);
+    } catch (failure) {
+      setError(messageOf(failure));
+    } finally {
+      setRemoving(null);
+    }
+    await refresh();
+  };
+
   const groups = groupSessions(sessions ?? [], query, Date.now());
 
   // `.rail` is also what the desktop border keys off, so the class carries the
   // shape rather than the element name doing it.
   const Frame = rail ? 'aside' : 'main';
   return (
-    <Frame class={rail ? 'screen rail' : 'screen'} aria-label={rail ? 'Sessions' : undefined}>
+    <Frame
+      class={rail ? 'screen rail' : 'screen'}
+      aria-label={rail ? 'Sessions' : undefined}
+      aria-hidden={collapsed || undefined}
+      inert={collapsed}
+    >
       <header class="bar">
         <h1 class="wordmark">tether</h1>
-        <button
-          class="ghost"
-          onClick={async () => {
-            await api.logout().catch(() => {});
-            onSignedOut();
-          }}
-        >
-          Sign out
-        </button>
+        <div class="rail-actions">
+          {rail && onCollapse !== undefined && (
+            <button
+              type="button"
+              class="ghost rail-collapse"
+              aria-label="Hide session sidebar"
+              title="Hide sessions"
+              onClick={onCollapse}
+            >
+              <span class="rail-icon" aria-hidden="true" />
+            </button>
+          )}
+          <button
+            class="ghost"
+            onClick={async () => {
+              await api.logout().catch(() => {});
+              onSignedOut();
+            }}
+          >
+            Sign out
+          </button>
+        </div>
       </header>
 
       {/* Over the list rather than inside its scroller, so it is still there
@@ -703,13 +900,22 @@ function Sessions({
                         {STATE_TEXT[states[session.id]!.state]}
                       </span>
                     )}
-                    {session.deadAt === null && (
+                    {session.deadAt === null ? (
                       <button
                         class="ghost danger"
-                        onClick={() => kill(session)}
+                        onClick={() => void kill(session)}
                         aria-label="Kill session"
                       >
                         Kill
+                      </button>
+                    ) : (
+                      <button
+                        class="ghost danger"
+                        disabled={removing === session.id}
+                        onClick={() => void remove(session)}
+                        aria-label="Remove session"
+                      >
+                        {removing === session.id ? 'Removing…' : 'Remove'}
                       </button>
                     )}
                   </div>

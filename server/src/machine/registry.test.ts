@@ -6,9 +6,10 @@
 
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
 
 import { stateDir } from '../db.ts';
@@ -20,6 +21,7 @@ import {
   openRegistry,
   reconcile,
   reconcileWithTmux,
+  removeDeadSession,
   revive,
   setProviderSessionId,
 } from './registry.ts';
@@ -97,6 +99,29 @@ test('the schema is idempotent on reopen and rows survive', async (t) => {
   third.close();
 });
 
+test('an existing registry gains the nullable removal column in place', async (t) => {
+  const path = await dbPathFor(t);
+  await mkdir(dirname(path), { recursive: true });
+  const old = new DatabaseSync(path);
+  old.exec(`
+    CREATE TABLE sessions (
+      id TEXT PRIMARY KEY, machine_id TEXT NOT NULL, provider TEXT NOT NULL,
+      provider_session_id TEXT, cwd TEXT NOT NULL, title TEXT NOT NULL,
+      tmux_name TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL, dead_at INTEGER
+    )
+  `);
+  old.close();
+
+  const migrated = openRegistry(path);
+  t.after(() => migrated.close());
+  const columns = migrated.prepare("PRAGMA table_info('sessions')").all() as unknown as {
+    name: string;
+  }[];
+  assert.ok(columns.some((column) => column.name === 'removed_at'));
+  assert.deepEqual(listSessions(migrated), []);
+});
+
 test('a session round-trips, with machine_id local and no provider session id yet', async (t) => {
   const db = openRegistry(await dbPathFor(t));
   t.after(() => db.close());
@@ -129,6 +154,29 @@ test('provider_session_id starts null and back-fills', async (t) => {
   const filled = getSession(db, created.id)!;
   assert.equal(filled.providerSessionId, 'e5e3b179-8644-43df-a5e6-b07d971c82ea');
   assert.ok(filled.updatedAt >= created.updatedAt);
+});
+
+test('only a dead session can be removed from the list, and its provider claim remains', async (t) => {
+  const db = openRegistry(await dbPathFor(t));
+  t.after(() => db.close());
+
+  const session = createSession(db, sample({ title: 'remove me' }));
+  setProviderSessionId(db, session.id, 'provider-conversation');
+  assert.equal(removeDeadSession(db, session.id), false, 'a running session is never removed');
+  assert.equal(listSessions(db).length, 1);
+
+  markDead(db, session.id);
+  assert.equal(removeDeadSession(db, session.id), true);
+  assert.deepEqual(listSessions(db), []);
+  assert.equal(getSession(db, session.id), undefined, 'ordinary APIs no longer see the row');
+  assert.equal(removeDeadSession(db, session.id), false, 'removal is single-shot');
+  assert.equal(revive(db, session.id), false, 'a removed row cannot be resumed by a stale caller');
+
+  const tombstone = db
+    .prepare('SELECT provider_session_id, removed_at FROM sessions WHERE id = ?')
+    .get(session.id) as { provider_session_id: string; removed_at: number };
+  assert.equal(tombstone.provider_session_id, 'provider-conversation');
+  assert.ok(tombstone.removed_at > 0, 'the hidden row keeps the provider identity claimed');
 });
 
 test('reconcile marks a row dead when its tmux session is gone', async (t) => {

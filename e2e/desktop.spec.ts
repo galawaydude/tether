@@ -16,7 +16,7 @@ import { expect, test, type Locator } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { shots } from './ui.ts';
+import { dismiss, shots, summon } from './ui.ts';
 
 /** Its own directory, like every other spec's: one server, one session list. */
 const project = join(process.env['TETHER_E2E_DIR'] as string, 'desktop');
@@ -91,6 +91,53 @@ test('past 900px the list is a rail beside the open session, not a screen before
   expect(overflow.body).toBeLessThanOrEqual(0);
 
   await shoot(page, '1-rail-beside-the-session');
+
+  // ── The rail gets out of the way and comes back intact ────────────────────
+  await page.getByRole('button', { name: 'Hide session sidebar' }).click();
+  await expect(page.getByRole('complementary', { name: 'Sessions' })).toHaveCount(0);
+  const closedSession = await box(session);
+  expect(closedSession.x).toBeCloseTo(0, 0);
+  expect(closedSession.width).toBeCloseTo(1280, 0);
+  await expect(page.getByRole('button', { name: 'Show session sidebar' })).toHaveCount(1);
+  await shoot(page, '1b-rail-collapsed');
+
+  // It is a workspace preference, not a state lost on every browser refresh.
+  await page.reload();
+  await expect(page.getByRole('button', { name: 'Show session sidebar' })).toHaveCount(1);
+  await expect(page.getByRole('complementary', { name: 'Sessions' })).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Show session sidebar' }).click();
+  await expect(page.getByRole('complementary', { name: 'Sessions' })).toHaveCount(1);
+  expect((await box(rail)).width).toBeGreaterThanOrEqual(280);
+  await expect(row).toHaveAttribute('aria-current', 'true');
+
+  // ── Agent options are a compact tray, not a tall desktop stack ────────────
+  const settings = page.locator('.composer-settings');
+  await settings.locator('summary').click();
+  const options = settings.locator('.composer-opt');
+  await expect(options).toHaveCount(3);
+  const optionBoxes = await options.evaluateAll((elements) =>
+    elements.map((element) => {
+      const rect = element.getBoundingClientRect();
+      return { y: rect.y, width: rect.width };
+    }),
+  );
+  expect(new Set(optionBoxes.map(({ y }) => Math.round(y))).size).toBe(1);
+  for (const option of optionBoxes) expect(option.width).toBeGreaterThan(120);
+  expect((await box(page.locator('.composer'))).height).toBeLessThan(170);
+  await shoot(page, '1c-compact-agent-options');
+  await settings.locator('summary').click();
+
+  // ── The terminal covers the pane cleanly ──────────────────────────────────
+  // A desktop-only inset once exposed 16px of the conversation behind the
+  // terminal, including half a line at its top edge. Presence cannot catch it:
+  // both panes were present and the screenshot merely looked "cut". Their
+  // rectangles must be identical at the breakpoint where that rule existed.
+  await summon(page);
+  await expect(page.locator('.xterm-rows')).toContainText(GREETING);
+  expect(await box(page.locator('.termsheet'))).toEqual(await box(page.locator('.panes')));
+  await shoot(page, '2-terminal-covers-the-pane');
+  await dismiss(page);
 
   // ── And back below the breakpoint ──────────────────────────────────────────
   // The count is the point: a document may have one `<main>`, and the element

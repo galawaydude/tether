@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 
 import { databasePath, stateDir } from './db.ts';
+import { accessHealthy, formatAccessReport, inspectAccess } from './machine/access.ts';
 import { writeHookEndpoint } from './providers/permission.ts';
 import {
   DEFAULT_PROVIDER,
@@ -55,6 +56,7 @@ Usage:
   tether new <dir> [options]       Start a session in <dir>
   tether kill <id>                 Kill a session; <id> is any unambiguous id prefix
   tether resume <id>               Resume a dead session, keeping its conversation
+  tether access status             Check the browser-only Funnel URL end to end
   tether codex-hook <action>       Manage tether's Codex hook: status | install | remove
 
 Options for serve:
@@ -631,6 +633,24 @@ export async function main(argv: readonly string[]): Promise<number> {
   if (command === 'codex-hook') {
     try {
       return await codexHookCommand(rest);
+    } catch (error) {
+      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+      return 1;
+    }
+  }
+
+  // Read-only and independent of the registry: this asks the actual proxy, the
+  // loopback origin and the public URL rather than reporting a saved setup as
+  // though it were still alive.
+  if (command === 'access') {
+    if (rest.length !== 1 || rest[0] !== 'status') {
+      process.stderr.write(USAGE);
+      return 1;
+    }
+    try {
+      const report = await inspectAccess();
+      process.stdout.write(`${formatAccessReport(report)}\n`);
+      return accessHealthy(report) ? 0 : 1;
     } catch (error) {
       process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
       return 1;

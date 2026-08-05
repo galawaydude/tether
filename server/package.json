@@ -12,6 +12,7 @@
     "prepare": "npm run build -w @tether/shared && npm run build"
   },
   "dependencies": {
+    "@fastify/compress": "^9.1.0",
     "@fastify/cookie": "^11.1.2",
     "@fastify/static": "^10.1.2",
     "@fastify/websocket": "^11.3.0",

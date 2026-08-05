@@ -7,7 +7,16 @@
 
 import type { ServerFrame } from '@tether/shared';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, realpath, rm, writeFile, appendFile } from 'node:fs/promises';
+import {
+  appendFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -50,6 +59,7 @@ async function harness(t: TestContext) {
   await mkdir(cwd);
   await mkdir(projectDir(cwd, home), { recursive: true });
   const transcript = join(projectDir(cwd, home), `${PROVIDER_SESSION}.jsonl`);
+  const stateDir = join(home, 'state');
 
   const db = new DatabaseSync(':memory:');
   applyRegistrySchema(db);
@@ -79,6 +89,7 @@ async function harness(t: TestContext) {
     conversations,
     allowedHosts: defaultAllowedHosts('127.0.0.1'),
     loginDelayMs: 0,
+    stateDir,
   });
   t.after(() => app.close());
   await app.listen({ host: '127.0.0.1', port: 0 });
@@ -113,17 +124,79 @@ async function harness(t: TestContext) {
       payload: payload as object,
     });
 
-  return { app, host, token, transcript, get, post, conversations, db };
+  return { app, host, token, transcript, stateDir, get, post, conversations, db };
 }
 
 test('the history route is behind the same default-deny hook as everything else', async (t) => {
   const h = await harness(t);
   assert.equal((await h.get(`/api/sessions/${ID}/conversation`, false)).statusCode, 401);
   assert.equal((await h.get('/api/sessions/not-a-uuid/conversation')).statusCode, 400);
+  assert.equal((await h.get(`/api/sessions/${ID}/conversation?before=nope`)).statusCode, 400);
+  assert.equal((await h.get(`/api/sessions/${ID}/conversation?extra=1`)).statusCode, 400);
   assert.equal(
     (await h.get(`/api/sessions/00000000-0000-4000-8000-000000000000/conversation`)).statusCode,
     404,
   );
+});
+
+test('a pasted image is private, byte-checked and served back only through its session', async (t) => {
+  const h = await harness(t);
+  const png = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.from('private pasted pixels'),
+  ]);
+  const url = `/api/sessions/${ID}/images`;
+  const headers = {
+    host: h.host,
+    origin: `http://${h.host}`,
+    'content-type': 'image/png',
+  };
+
+  assert.equal(
+    (await h.app.inject({ method: 'POST', url, headers, payload: png })).statusCode,
+    401,
+    'the default-deny hook runs before an image body is useful',
+  );
+  const invalid = await h.app.inject({
+    method: 'POST',
+    url,
+    headers: { ...headers, cookie: `${SESSION_COOKIE}=${h.token}` },
+    payload: Buffer.from('not actually a png'),
+  });
+  assert.equal(invalid.statusCode, 400);
+  assert.equal(invalid.json().error, 'invalid_image');
+
+  const uploaded = await h.app.inject({
+    method: 'POST',
+    url,
+    headers: { ...headers, cookie: `${SESSION_COOKIE}=${h.token}` },
+    payload: png,
+  });
+  assert.equal(uploaded.statusCode, 201, uploaded.body);
+  const image = uploaded.json() as {
+    id: string;
+    type: string;
+    size: number;
+    path: string;
+  };
+  assert.match(image.id, /^[0-9a-f-]{36}\.png$/);
+  assert.equal(image.type, 'image/png');
+  assert.equal(image.size, png.length);
+  assert.ok(image.path.startsWith(join(h.stateDir, 'attachments', ID)));
+  assert.deepEqual(await readFile(image.path), png);
+  assert.equal((await stat(image.path)).mode & 0o777, 0o600);
+
+  const shown = await h.get(`/api/sessions/${ID}/images/${image.id}`);
+  assert.equal(shown.statusCode, 200);
+  assert.equal(shown.headers['content-type'], 'image/png');
+  assert.equal(shown.headers['x-content-type-options'], 'nosniff');
+  assert.deepEqual(shown.rawPayload, png);
+  assert.equal((await h.get(`/api/sessions/${ID}/images/${image.id}`, false)).statusCode, 401);
+  assert.equal(
+    (await h.get(`/api/sessions/${ID}/images/00000000-0000-4000-8000-000000000000.png`)).statusCode,
+    404,
+  );
+  assert.equal((await h.get(`/api/sessions/${ID}/images/not-an-id.png`)).statusCode, 400);
 });
 
 test('the history route returns the conversation with its sequence numbers', async (t) => {
@@ -138,6 +211,15 @@ test('the history route returns the conversation with its sequence numbers', asy
   assert.deepEqual(
     body.events.map((e) => e.seq),
     [1, 2],
+  );
+
+  const earlier = await h.get(`/api/sessions/${ID}/conversation?before=2`);
+  assert.equal(earlier.statusCode, 200);
+  const page = earlier.json() as { seq: number; events: { seq: number }[] };
+  assert.equal(page.seq, 2, 'the live cursor stays at the transcript end');
+  assert.deepEqual(
+    page.events.map((e) => e.seq),
+    [1],
   );
 });
 

@@ -87,13 +87,15 @@ locally.
   which CI runs in one step before anything expensive, because nothing else in the
   repo's checks looks at shell at all. What that self-test covers is every branch in
   the file that can be silently wrong: the version parsing (a `tmux 3.4` read as new
-  enough is a session that dies at birth), the PATH message, the two Funnel
-  questions below, and the `TETHER_VERSION` checkout moves. Its consent rule is
+  enough is a session that dies at birth), the PATH message, every supported Linux
+  package-manager plan, launchd/systemd escaping, the two Funnel questions below,
+  and the `TETHER_VERSION` checkout moves. Its consent rule is
   the Codex hook's, generalised: nothing outside tether's own directory changes without
   the exact commands on screen and a yes, declining prints them and stops, and no shell
-  startup file is ever edited. A sentence it cannot back with something it actually
-  checked is deleted rather than softened, because a caveat is itself new length and new
-  claims. Two things about it that the script alone does not
+  startup file is ever edited. Keep the surrounding installer copy short: one risk, the
+  exact commands or service bytes, and the next action; longer rationale belongs in the
+  README. A sentence it cannot back with something it actually checked is deleted rather
+  than softened, because a caveat is itself new length and new claims. Two things about it that the script alone does not
   show. **It installs the highest `vX.Y.Z` tag, so merging to `main` ships nothing** —
   a change reaches the public install line only when a release is cut (README's
   Development → _Cutting a release_), and `install.sh` itself is the one exception,
@@ -113,14 +115,25 @@ locally.
   global prefix is root-owned wherever Node came from a distro package or a tarball,
   which made the last step of the script the one that failed after every expensive
   consented thing had already been spent. Anything that moves `server/dist/cli.js`
-  moves that symlink's target.
-- **Tailscale Funnel is the documented default, and `--funnel` is composition
-  rather than control.** `machine/tailscale.ts` only ever _reads_ — one
-  `tailscale status --json`, four fields — and `install.sh` is what turns Funnel
-  on, because `tailscale funnel` needs root or an operator (`Access denied:
-serve config denied` otherwise) and sets a machine-wide thing that outlives
-  the server. So there is no Tailscale client here and none is wanted; adding
-  one is the "network manager" this was scoped against. Three facts established
+  moves that symlink's target. A public install can additionally write exactly one
+  consented user service — `~/Library/LaunchAgents/dev.tether.server.plist` or
+  `~/.config/systemd/user/tether.service` — after printing its complete bytes and
+  commands. PATH is captured because neither manager reads shell startup files; Linux
+  enables linger so a headless user service starts before login. An already-correct
+  unmanaged server is never killed for migration: the service is enabled for the next
+  login/boot. With no reachable manager or a decline, `nohup` remains the current-boot
+  fallback. The main-vs-release constraint above applies here too: the service may
+  invoke only the long-existing `tether serve --funnel`, never a new helper command.
+- **Tailscale Funnel is the clientless default, and `--funnel` is composition
+  rather than control.** Tailscale is installed only on the host; everyone opening
+  the link uses an ordinary browser and needs no Tailscale account or app.
+  `machine/tailscale.ts` only ever _reads_ the structured `status --json
+--peers=false` and `serve status --json` documents; `install.sh` is what installs
+  Tailscale on the host, turns Funnel on and installs the optional user service,
+  because those are machine/user-wide changes that outlive the server. On macOS it
+  offers Tailscale's signed, recommended Standalone package through the OS package
+  installer, never guesses between app variants silently. The server remains no
+  network manager: `--funnel` never installs, enables or repairs Tailscale. Three facts established
   by putting a header echo behind a real Funnel (tailscale 1.98.10, captured in
   the PR): it forwards `Host: <name>.ts.net` with **no port**, sets
   `X-Forwarded-Proto: https` and a real client `X-Forwarded-For`, and marks
@@ -150,10 +163,12 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   answer the first; permitted-but-unarmed is what a fresh machine _is_, and it
   has to go on and arm. And the permitted answer is **tri-state**: a capability
   set without `funnel` in it is a real no, but a status carrying no capability
-  set at all is `unknown`, which is not a no — reporting it as one sends someone
-  to add an attribute their policy already has, at the one step of the script
-  with no command to offer. `unknown` therefore carries on and lets
-  `tailscale funnel` refuse in its own words. Both are pure string functions
+  set at all is `unknown`, which is not a no. In the server, `no` remains a precise
+  precondition. In the installer both answers are now advisory: current Tailscale's
+  own `funnel` command can open the one-time account approval that enables HTTPS
+  and adds the policy, so blocking before that command strands exactly a fresh
+  install. The installer runs the consented command and lets it refuse in its own
+  words when this user cannot approve it. Both probes remain pure string functions
   taking the document as an argument, which is what lets `--self-test` drive
   them; the fresh-machine pair (`{}` serve status, a status with no `CapMap`) is
   the case that had no coverage and is now the point of that block. **The same
@@ -163,15 +178,23 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   An **empty** capability set is not the unknown case in either — it is a node
   granted nothing, which is a real refusal. Neither is scraped
   out of `tailscale funnel status` — human-readable output another tool owns
-  must never be what a flow is gated on, and here that is not tidiness:
-  `funnel status` _is_ `serve status`, so a tailnet-only `tailscale serve`
-  prints an identical proxy line and would make the installer skip arming and
-  publish a link to nothing. What proves the setup works is
-  functional instead: one `curl` carrying the derived `Host`, which a plain
-  `tether serve` refuses with the very 403 `--funnel` exists to prevent. And
-  `tailscale funnel` **prompts**: without a terminal it waits rather than
-  failing, so the installer passes `--yes` to the command it has already put on
-  screen and taken a yes for. Anything else there would hang `curl | bash`.
+  must never gate a flow, and here that is not tidiness: `funnel status` _is_
+  `serve status`, so a tailnet-only `tailscale serve` prints the same proxy line.
+  Public means **both** `AllowFunnel["<name>:443"]` and the root handler's Proxy;
+  `machine/access.ts` uses the same rule, refuses to follow a non-loopback target
+  (status must not become SSRF), probes loopback with the derived Host, then probes
+  real public HTTPS. `tether access status` prints those facts independently and
+  changes nothing. Before the installer arms Funnel it proves the target port is
+  closed or identifies an existing tether through the exact default-deny 401/body
+  from its protected sessions endpoint — a catch-all 200 is not identity — and
+  sets/confirms the tether password. Reversing that order can temporarily publish
+  an unrelated loopback service or a passwordless shell. The installer writes these
+  checks in shell because main's installer can target an older release without the
+  status command.
+  And `tailscale funnel` **prompts**: without a terminal it waits rather than
+  failing, so the installer passes `--yes` only after putting the machine-wide
+  command on screen and taking a yes; account approval remains Tailscale's own
+  browser flow. Anything else there would hang `curl | bash`.
 - **`cwd` is a trust boundary and `resolveCwd` in `machine/tmux.ts` is the only
   gate.** It resolves the path (symlinks included) _before_ checking it, and confines
   the result to `allowedRoots()` — the user's home unless `TETHER_ALLOWED_ROOTS` (a
@@ -190,10 +213,15 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   failure is silent — tmux 3.7b strips a trailing `;`, eats the backslash of a
   trailing `\;`, and exits 0 either way, so `git status;` loses its `;` with
   nothing to catch. The rule has exactly one home, behind `checkArgs` and the
-  exported `isSeparatorArgument`; `machine/terminal.ts` asks it, and routes what it
-  flags — plus anything with a line break — through the paste buffer, which reaches
-  tmux on stdin and is never argv. The guard is not relaxed for this and must not
-  be. Its other half is blast radius: a frame the guard refuses is an undeliverable
+  exported `isSeparatorArgument`, and every argument-bearing tmux command remains
+  under it. Ordinary `text` no longer builds such a command at all: it writes to
+  the already-attached PTY, which both bypasses the lexer and removes one process
+  spawn per character. Text with a line break still goes through the paste buffer
+  so bracketed paste is not submitted line by line. Unambiguous controls (Enter,
+  Tab, Backspace, Escape and `C-a`–`C-z`) take the same PTY fast path; cursor and
+  navigation keys remain tmux key names because application-key mode decides
+  their bytes. The guard is not relaxed for those. Its other half is blast radius:
+  a frame the guard refuses is an undeliverable
   **frame**, not a dead attach, so `web/term-socket.ts` logs, ACKs and drops it and
   keeps the socket open — only a genuinely gone attach closes at all, and it
   closes with **no code**, so the client reconnects: `CLOSE_ATTACH_FAILED` is the
@@ -223,10 +251,11 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   in by that same effect) while its conversation pane worked perfectly.
   `keys.ts`'s `newClientId` — `getRandomValues`, which carries no gate — and its
   test in `keys.test.ts` are the guard for that one; a new one needs its own.
-  The second one is `copyText` in `conversation.tsx`, which is `execCommand`
-  rather than `navigator.clipboard` for exactly this reason and says so — a
-  deprecated API that works everywhere the app loads beats a modern one that is
-  `undefined` on every device but the host.
+  The second one is `copyText` in `conversation.tsx`: it uses
+  `navigator.clipboard` only when that property exists and falls through on an
+  absent **or refused** modern API to `execCommand`, which carries no secure-context
+  gate. The visible Copy control and its Copied feedback exist on touch too; a
+  hover-only action removes copying from the phone this product is for.
 - **The `term` socket's handshake completes before its route handler runs.**
   `@fastify/websocket` upgrades and _then_ calls the handler, so the browser's
   `onopen` has already fired — and its first act is to send its size and re-send
@@ -246,9 +275,13 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   unauthenticated but authenticated differently (loopback plus the `0600` secret,
   see the hook entry below). A wildcard would answer every
   unmatched path publicly and hand an unauthenticated caller a 404-vs-401 oracle
-  for which API routes exist. `web`'s `prepare` builds `web/dist` on `npm ci` for
-  the same reason `server`'s does — `tether serve` reads it at startup and only
-  warns if it is absent.
+  for which API routes exist. Hashed assets are immutable for a year and ordinary
+  HTTP responses are compressed by `@fastify/compress`; its `onRoute` hook only
+  reaches routes declared after the plugin loads, so `server.ts` registers **all**
+  routes inside the one `app.after()` that already made WebSockets work. Moving a
+  route back out silently sends the full browser bundle over Funnel. `web`'s
+  `prepare` builds `web/dist` on `npm ci` for the same reason `server`'s does —
+  `tether serve` reads it at startup and only warns if it is absent.
 - **All persistent state lives outside the repo, and nearly all of it is one SQLite
   file**, opened by `server/src/db.ts` — `~/.local/state/tether/tether.sqlite`, file
   `0600` in a `0700` directory (`$XDG_STATE_HOME`, or `$TETHER_STATE_DIR`, which tests
@@ -276,12 +309,24 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   guard: the pid is a tether pane's, so a hand-run agent is in no pane and is never
   reached, and `status.ts`'s liveness and `procStart` checks are what say the file
   under that pid is really that pane's.
-  Rows are marked dead, never deleted: a dead row
+  Rows are marked dead, never physically deleted: a dead row
   is what `resumeSession` (`machine/sessions.ts`) restarts through the provider's own
-  resume, and `revive` is the only thing that clears `dead_at`. A row whose
-  `provider_session_id` is still null has no conversation to restore, and resume refuses
-  it rather than starting fresh — a new session presented as a resumed one is the failure
-  mode that silently costs a user their work.
+  resume, and `revive` is the only thing that clears `dead_at`. **Remove** on a dead
+  list row sets nullable `removed_at`, which hides it from every ordinary registry
+  read and makes it unresumable while retaining its tombstone and provider session id;
+  the provider owns the transcript and tether never deletes it, and retaining the id
+  keeps discovery from assigning that conversation elsewhere. Existing databases gain
+  the column in `applyRegistrySchema`'s one compatible `ALTER`; two processes racing the
+  ALTER re-check its postcondition. A live row cannot be removed, and `resumeSession`
+  checks that `revive` changed a row after its awaited spawn, rolling the pane back if a
+  concurrent Remove won. A row whose `provider_session_id` is still null has no
+  conversation to restore, and resume refuses it rather than starting fresh — a new
+  session presented as a resumed one is the failure mode that silently costs a user
+  their work. The browser exposes that same operation on
+  the dead conversation screen, never as a `/resume` typed into a terminal chooser: the
+  row already identifies the exact provider conversation. A successful resume updates the
+  open `Session` and remounts both sockets although its registry id did not change; while
+  it is dead, `SessionScreen` starts no terminal attach at all.
 - **Tests run straight from TypeScript** via `node --test` and Node's built-in type
   stripping. There is no test build step; relative imports carry the `.ts` extension.
 - **HTTP routes are default-deny.** A `preParsing` hook in `server/src/web/server.ts` rejects
@@ -604,10 +649,12 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
 - **`~/.claude/sessions/<pid>.json` outlives its process, so both guards in
   `providers/claude-code/status.ts` are mandatory.** It is deleted on a graceful
   exit and left behind by a `SIGKILL` or a reboot, and pids are reused — so
-  `kill(pid, 0)` is not enough on its own. `procStart` is the identity check,
-  and it is verified to be `/proc/<pid>/stat` **field 22** (`starttime`), found
-  from the **last** `") "` because field 2 is a comm that can contain spaces and
-  `)`. Anything unreadable or unverifiable is `undefined` — "tether cannot say"
+  `kill(pid, 0)` is not enough on its own. `procStart` is the identity check:
+  Linux records `/proc/<pid>/stat` **field 22** (`starttime`), found from the
+  **last** `") "` because field 2 is a comm that can contain spaces and `)`;
+  macOS records the UTC, C-locale output of `ps -o lstart=`. Both are verified
+  against Claude Code 2.1.220, and `processStart` is the one reader. Anything
+  unreadable or unverifiable is `undefined` — "tether cannot say"
   — never a guess: a session wrongly reported `waiting` is a phone notification
   that should not have fired. The file also carries `waitingFor`, which nothing
   reads yet. `undefined` is the _only_ thing the poller may not announce: a
@@ -634,9 +681,22 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   The asymmetry is deliberate: tmux re-derives the terminal exactly on every
   attach, conversation events are re-derivable from nothing the client holds.
   `seq` is the event's position in the mapped stream, which is why the HTTP
-  history route and a live tailer agree without either persisting anything. A
-  `since` older than the in-memory tail is answered with `refetch`, never with a
-  partial history. What decides a `refetch` when the row is re-bound is **what
+  history route and a live tailer agree without either persisting anything. The
+  default history response carries only its latest `TAIL_EVENTS`, with their
+  **absolute** sequence numbers and `truncated: true`; a real Mac transcript
+  reached 5,079 events / 4.1MB mapped JSON and mounting it all made reload look
+  blank. Older history remains reachable without undoing that fix:
+  `?before=<first-seq>` returns the one bounded page immediately before it while
+  `seq` still names the live transcript end, and the browser replaces one archive
+  page with the next rather than accumulating thousands of mounted rows. “Back
+  to latest” returns to the live state, whose socket kept following throughout.
+  `historyPage` in `web/src/conversation.ts` owns the archive page shape so that
+  decision is testable outside JSX. The browser independently caps live `Rows`
+  at `MAX_CONVERSATION_ROWS`, pruning its `byCall` index with them but **never
+  dropping an answerable card**. Every page leaves the provider transcript
+  untouched. A `since` older than the
+  in-memory tail is answered with `refetch`, never with a partial history. What
+  decides a `refetch` when the row is re-bound is **what
   was published, not how the row got bound**: `#restart` asks `live.following`
   (the transcript `#start` really attached to) and `live.seq`, because a bind can
   land while a search is still in flight — a client can hold event 1 from the
@@ -653,7 +713,12 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   and `conversation.tsx` only picks elements. Put a rendering decision in the
   `.tsx` and it silently leaves the test suite. `addEvents` is append-only and
   drops any `seq` at or below the highest applied, which is what makes the
-  `since` replay after a reconnect free of duplicates. The mirror of the data
+  `since` replay after a reconnect free of duplicates. Its rows are also
+  immutable: `conversation.tsx` memoizes `RowView`, and transcript frames are
+  coalesced for one browser frame, so an arriving burst renders once and a tool
+  result replaces only its own card. Mutating a row makes the memo hide the
+  update; removing the memo makes every markdown tree in a long conversation
+  rebuild per event. The mirror of the data
   layer's rule holds here too: an **unknown event kind becomes a grey note, never
   a throw** — one uncaught kind would blank the whole page. The same split holds
   for the session list: `web/src/sessions.ts` owns the search filter, the day
@@ -769,6 +834,21 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   the other direction. `busy` and `retrying` are **not** refused: both
   providers queue a message mid-turn, the unacked set carries one across a
   reconnect, and that is the most valuable thing a phone can do.
+- **A pasted image is a private file plus an ordinary prompt, not a new provider
+  protocol.** `POST /api/sessions/:id/images` accepts only byte-bounded PNG,
+  JPEG, WebP or GIF bodies, checks their signatures, and writes a generated name
+  `0600` under `<state>/attachments/<session-id>/`; SVG is active markup and is
+  never accepted. The browser keeps a local object-URL preview until Send, then
+  uploads before sending one `input` frame carrying the generated id and the
+  absolute path the provider can read. `messageContent` removes that private
+  marker from visible/copyable text and turns only its UUID filename into the
+  authenticated same-session GET URL; the marker in the provider transcript is
+  what makes the image survive reload, with no attachment metadata database and
+  no write into the user's repository. An image makes a leading-slash draft a
+  prompt rather than a command, and image-only prompts are valid. Four images at
+  8 MiB each is the browser and server bound. Removed registry rows expose no
+  image route, but the attachment bytes and provider transcript remain on disk;
+  removing a list entry never silently deletes either.
 - **A slash command from the composer is just text on the terminal socket; the
   whole feature is knowing where its answer will show up.** `submit` in
   `conversation.tsx` branches on `planSend`, and a command
@@ -867,25 +947,34 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   browser); and a `not_confirmed` **names the mode the pane was left in**, which
   is why `ApiError` carries the refusal's body at all — reaching `plan` cycles
   through `acceptEdits`, so a stalled cycle can lower the bar with no warning
-  shown. The composer is also `flex: 0 1 auto` with `overflow-y: auto`: the
-  warning is a third child outside the message box's height budget, and
+  shown. The composer is also `flex: 0 1 auto` with `overflow-y: auto`; its
+  `.composer-shell` is one visual boundary around the borderless textarea,
+  preview/warning and toolbar rather than one outlined box per control. The
+  warning remains outside the textarea's height budget inside that shell, and
   `e2e/options.spec.ts` asserts at 360×340 that the document never grew and that
   Cancel, the confirm and Send are each fully in the viewport.
 - **The conversation is the interface and the terminal is summoned over it.**
   There is no tab pair: opening a session lands on the conversation, and
-  `.termsheet` (`app.tsx`, `style.css`) is an overlay a header control raises and
-  its own Close puts away. Both panes still stay mounted and the one behind is
-  hidden with `visibility: hidden` (`.pane-off`) — that one property is the whole
-  of "summoning preserves both scroll positions", and it also keeps the hidden
-  pane out of the tab order and the accessibility tree. `display: none` resets
-  `scrollTop` and refits xterm to 0×0 and back on every tap, which resizes the
-  tmux pane for every other viewer too; unmounting costs a full tmux replay or a
-  conversation refetch. The overlay's box is therefore **identical open and
-  closed** — only `visibility` changes — and it is inset at the top so a strip of
-  the conversation shows, which is what makes it read as summoned rather than as
-  the other half of a pair. Two consequences: nothing inside a hidden pane is
-  focusable, so anything driving xterm's textarea has to summon first; and the
-  conversation is visible-but-covered while the overlay is up, so it carries
+  `.termsheet` (`app.tsx`, `style.css`) is an overlay controlled by one header
+  toggle: it says Terminal while closed and Conversation while open. Both pane
+  **boxes** stay mounted and the one behind is
+  hidden with `visibility: hidden` (`.pane-off`), which preserves both scroll
+  positions and keeps the hidden pane out of the tab order and accessibility
+  tree. The expensive exception is deliberate: `terminal.tsx` dynamically loads
+  and creates xterm only on the first summon and sends `{c:'output'}` on the same
+  term socket the composer keeps for sequenced input. `output=0` on its initial
+  URL makes `terminal.ts` skip the 5,000-line replay, live bytes stop at
+  `term-socket.ts`, and enabling output starts with `Terminals.refresh` plus
+  tmux's exact replay. Without that split the 339KB xterm module, the initial
+  replay and every live TUI repaint cross Funnel and are parsed under the
+  conversation nobody can see; `visibility` prevents paint, not work. After
+  xterm exists its DOM is never unmounted or fitted to 0×0. The overlay's
+  box is therefore **identical open and closed** — only `visibility` changes —
+  and it fills `.panes`; the session header's toggle is the whole navigation,
+  rather than a second toolbar or an unexplained strip of covered conversation. Two
+  consequences: nothing inside a hidden pane is focusable, so anything driving
+  xterm's textarea has to summon first; and the
+  conversation is covered while the overlay is up, so it carries
   `inert` — the platform's own word for it, and the one thing that takes it out
   of the tab order without touching layout. The two views share nothing else —
   they are two renderings of one process from two independent sources (report
@@ -960,7 +1049,11 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   (900px) it renders `.workspace`: the session list as a rail beside the open
   session. A media query cannot do that, because it cannot mount a component,
   which is why `useWide` exists — and it uses `matchMedia`, which carries no
-  secure-context gate. Crossing the breakpoint remounts the session screen, so
+  secure-context gate. There is still no router, but the open row writes
+  `?session=<id>` with `replaceState`; authentication restores that row before it
+  reveals the app, so reload neither flashes the list nor makes the user find a
+  running agent again. Back and sign-out remove it, and a stale id degrades to the
+  list. Crossing the breakpoint remounts the session screen, so
   it costs one tmux replay and one conversation refetch; that is acceptable
   because a phone never crosses it (390×844 rotated is still 844) and nothing
   is lost, only re-derived. Which element is the `<main>` follows the shape, so
@@ -969,7 +1062,14 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   `<main>` — the open session, or `.blank` when nothing is open — and the list
   becomes a complementary landmark named "Sessions" (`rail` is the only thing
   that prop decides). The rail's border keys off `.rail`, never off `main`: a
-  border that follows the landmark moves the day the landmark does.
+  border that follows the landmark moves the day the landmark does. The desktop
+  rail may collapse, but it remains mounted in a zero-width grid track with
+  `visibility: hidden`/`inert`: its poll, state and scroll position survive while
+  its whole subtree leaves hit testing and the accessibility tree. The session
+  header owns the restore control because it is the one surface still visible;
+  localStorage persistence is feature-detected and failure is harmless. No open
+  session means no collapse control, so the blank workspace can never hide the
+  only way to choose one.
 - **The desktop rail keeps the session list mounted beside the open session, so
   its 5s poll no longer stops when a session is opened.** On a phone `Sessions`
   unmounts and `clearInterval` runs; past `WIDE` it does not, so every tick is a
@@ -986,9 +1086,11 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
   only when its own text happens to be long changes height as a session runs —
   which resizes the terminal, which resizes the tmux pane, which makes the agent
   redraw its prompt into the scrollback. `e2e/session.spec.ts`'s reload
-  comparison is what catches it, as one stray line in the "after" screen. Hence
-  `.bar-chips` takes a whole row below 600px and `.bar` is `nowrap` above it:
-  both heights are constant for every status word.
+  comparison is what catches it, as one stray line in the "after" screen. The
+  bar is therefore one `nowrap` row at every width: mobile Back is a chevron, a
+  healthy channel is a dot beside the agent state, an unhealthy channel replaces
+  that state with its own word, and the title takes only what remains. Those
+  bounded pieces keep the height constant for every status.
 - **A `.conv` child needs `flex: none`.** The list is a column flex container,
   which shrinks its items to fit rather than overflowing; a collapsed tool card
   has no text holding it open, so every card renders as a 6px stripe without it.
@@ -1077,10 +1179,12 @@ serve config denied` otherwise) and sets a machine-wide thing that outlives
     fires it, because the hold needs the conversation on screen and typing needs the
     terminal over it; it fires when both have landed, in either order, so nothing depends
     on which round-trip won. Writing the trigger _without_ dismissing is how the
-    watch/hold test gets the opposite case, and the timeout case never summons the
-    terminal — that would release the hold it is watching expire — reading `.xterm-rows`
-    through the hidden pane instead. A spec that needs new agent behaviour appends to the
-    transcript the stub already opened rather than teaching the stub a new trick.
+    watch/hold test gets the opposite case, and the timeout case does not summon the
+    terminal until the hold has expired — doing so earlier would release what it is
+    watching. Hidden xterm output is deliberately dropped for performance, so the
+    positive pane assertion happens after that first summon and its tmux replay. A spec
+    that needs new agent behaviour appends to the transcript the stub already opened
+    rather than teaching the stub a new trick.
   - Two Playwright projects, `phone` and `desktop`, each with a `testIgnore`/`testMatch`
     so neither runs the other's spec at the wrong width. `e2e/ui.ts` is the harness beside
     `serve.ts`: the summon/dismiss recipe is spelled there once rather than in every spec

@@ -28,6 +28,7 @@ import {
   CLOSE_NO_SESSION,
   CLOSE_SESSION_ENDED,
   attachClose,
+  parseClientFrame,
 } from './term-socket.ts';
 
 async function registry(t: TestContext): Promise<DatabaseSync> {
@@ -48,6 +49,16 @@ function seed(db: DatabaseSync) {
     tmuxName: `tether-${id.slice(0, 8)}`,
   });
 }
+
+test('output control is boolean and carries no input sequence', () => {
+  assert.deepEqual(parseClientFrame('{"c":"output","enabled":true}'), {
+    c: 'output',
+    enabled: true,
+  });
+  for (const value of [null, 0, 1, 'true']) {
+    assert.equal(parseClientFrame(JSON.stringify({ c: 'output', enabled: value })), null);
+  }
+});
 
 test('a dead session says it ended, not that the server lost it', async (t) => {
   const db = await registry(t);

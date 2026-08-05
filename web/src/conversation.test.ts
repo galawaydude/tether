@@ -11,7 +11,11 @@ import {
   diffExtras,
   elapsedLabel,
   errorAdvice,
+  historyPage,
   markUndelivered,
+  MAX_CONVERSATION_ROWS,
+  messageContent,
+  messageWithImages,
   noRows,
   rebuild,
   sendBlocked,
@@ -62,9 +66,42 @@ test('the three things a conversation is made of become three kinds of row', () 
     // what the view draws. They are the same characters, parsed once.
     text: 'add a test',
     blocks: [{ block: 'p', spans: [{ span: 'text', text: 'add a test' }] }],
+    images: [],
   });
   // Presence only: the row carries no text, because the transcript carries none.
   assert.deepEqual(rows[1], { key: '2', row: 'thinking' });
+});
+
+test('a pasted image marker gives the provider a path and the browser only an opaque id', () => {
+  const id = '11111111-2222-4333-8444-555555555555.png';
+  const source = messageWithImages('look at this', [
+    { id, path: '/private/state dir/attachments/image.png' },
+  ]);
+  assert.equal(
+    source,
+    'look at this\n\n' +
+      '[Image attached: 11111111-2222-4333-8444-555555555555.png at "/private/state dir/attachments/image.png"]',
+  );
+  assert.deepEqual(messageContent(source), {
+    text: 'look at this',
+    blocks: [{ block: 'p', spans: [{ span: 'text', text: 'look at this' }] }],
+    images: [{ id }],
+  });
+  assert.deepEqual(messageContent(messageWithImages('', [{ id, path: '/state/image.png' }])), {
+    text: '',
+    blocks: [],
+    images: [{ id }],
+  });
+  assert.deepEqual(messageContent('[Image attached: not-controlled.png at "/etc/passwd"]'), {
+    text: '[Image attached: not-controlled.png at "/etc/passwd"]',
+    blocks: [
+      {
+        block: 'p',
+        spans: [{ span: 'text', text: '[Image attached: not-controlled.png at "/etc/passwd"]' }],
+      },
+    ],
+    images: [],
+  });
 });
 
 test('a tool result folds into its call rather than becoming a second row', () => {
@@ -346,7 +383,53 @@ test('appending reuses the rows already built', () => {
   assert.notEqual(second.rows, first.rows);
 });
 
-test('a result arriving later mutates its card in place, keeping the list stable', () => {
+test('a live conversation keeps only its latest rows', () => {
+  const count = MAX_CONVERSATION_ROWS + 8;
+  const state = addEvents(
+    noRows(),
+    stream(
+      ...Array.from({ length: count }, (_, index) => ({
+        kind: 'assistant' as const,
+        id: `a-${index}`,
+        at: AT + index,
+        text: `reply ${index}`,
+      })),
+    ),
+  );
+
+  assert.equal(state.seq, count, 'the resume cursor still covers the whole stream');
+  assert.equal(state.rows.length, MAX_CONVERSATION_ROWS);
+  assert.equal(state.truncated, true);
+  assert.equal(state.rows[0]?.row === 'message' ? state.rows[0].text : '', 'reply 8');
+});
+
+test('an archive response becomes one bounded, labelled page', () => {
+  const events = stream(
+    { kind: 'assistant', id: 'a1', at: AT, text: 'older one' },
+    { kind: 'assistant', id: 'a2', at: AT + 1, text: 'older two' },
+  ).map((event) => ({ ...event, seq: event.seq + 100 }));
+  const page = historyPage(events, true);
+  assert.notEqual(page, null);
+  assert.equal(page?.first, 101);
+  assert.equal(page?.last, 102);
+  assert.equal(page?.more, true);
+  assert.deepEqual(
+    page?.view.rows.map((row) => (row.row === 'message' ? row.text : row.row)),
+    ['older one', 'older two'],
+  );
+  assert.equal(historyPage([], false), null);
+});
+
+test('archive navigation uses its cursor instead of pairing context', () => {
+  const events = stream(
+    { kind: 'tool_call', id: 'a1', at: AT, tool: 'Bash', input: {}, callId: 'c' },
+    { kind: 'tool_result', id: 'u1', at: AT + 1, callId: 'c', output: 'ok', isError: false },
+  ).map((event, index) => ({ ...event, seq: index === 0 ? 1 : 513 }));
+
+  assert.equal(historyPage(events, true, 3)?.first, 3);
+});
+
+test('a result arriving later replaces only its card, keeping the list stable', () => {
   const call = addEvents(noRows(), [
     { seq: 1, e: { kind: 'tool_call', id: 'a#0', at: AT, tool: 'Bash', input: {}, callId: 'c' } },
   ]);
@@ -357,6 +440,7 @@ test('a result arriving later mutates its card in place, keeping the list stable
     },
   ]);
   assert.equal(done.rows.length, 1);
+  assert.notEqual(done.rows[0], call.rows[0], 'the changed card renders through memo');
   assert.equal((done.rows[0] as ToolRow).result, 'ok');
   assert.equal(done.seq, 2);
 });
@@ -396,6 +480,26 @@ const PROPOSED: Extract<ConversationEvent, { kind: 'tool_call' }> = {
   callId: 'toolu_1',
 };
 
+test('bounding a long view never drops an answerable permission card', () => {
+  let state = addPending(noRows(), PROPOSED, AT + 20_000);
+  state = addEvents(
+    state,
+    stream(
+      ...Array.from({ length: MAX_CONVERSATION_ROWS + 1 }, (_, index) => ({
+        kind: 'assistant' as const,
+        id: `after-${index}`,
+        at: AT + index,
+        text: `after ${index}`,
+      })),
+    ),
+  );
+
+  assert.equal(state.truncated, true);
+  assert.equal(state.rows.length, MAX_CONVERSATION_ROWS);
+  assert.equal(state.rows[0]?.row, 'tool');
+  assert.notEqual((state.rows[0] as ToolRow).answerable, null);
+});
+
 test('a proposed tool call is a card of its own, marked pending', () => {
   const state = addPending(noRows(), PROPOSED);
   assert.deepEqual(state.rows.length, 1);
@@ -420,6 +524,7 @@ test('the transcript record replaces the pending card rather than adding a secon
 
   assert.equal(after.rows.length, 1, 'one card, not two');
   const row = after.rows[0] as ToolRow;
+  assert.notEqual(row, proposed.rows[0], 'the changed card renders through memo');
   assert.equal(row.pending, false, 'and it is no longer a proposal');
   assert.equal(row.key, 'pending:toolu_1', 'the same row, so it does not jump in the list');
   assert.equal(after.seq, 1, 'the record itself did move the cursor');

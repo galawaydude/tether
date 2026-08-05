@@ -17,8 +17,8 @@
  *     re-deriving instead of resuming.
  */
 
-import { FitAddon } from '@xterm/addon-fit';
-import { Terminal } from '@xterm/xterm';
+import type { FitAddon as XtermFitAddon } from '@xterm/addon-fit';
+import type { Terminal as XtermTerminal } from '@xterm/xterm';
 import type { ClientFrame, Session } from '@tether/shared';
 import { useEffect, useRef } from 'preact/hooks';
 
@@ -85,11 +85,14 @@ export type Send = { current: ((message: string) => void) | null };
 
 export function TerminalView({
   session,
+  active,
   onStatus,
   onSignedOut,
   sender,
 }: {
   session: Session;
+  /** Whether the terminal sheet, rather than the conversation, is in front. */
+  active: boolean;
   onStatus: (status: Status) => void;
   onSignedOut: () => void;
   sender?: Send;
@@ -97,6 +100,9 @@ export function TerminalView({
   const host = useRef<HTMLDivElement>(null);
   const send = useRef<(frame: InputFrame) => void>(() => {});
   const focus = useRef<() => void>(() => {});
+  const activate = useRef<(active: boolean) => void>(() => {});
+  const visible = useRef(active);
+  visible.current = active;
 
   // Through refs, because the effect below owns the socket and the xterm instance
   // and must not be torn down and replayed because a parent re-rendered.
@@ -106,22 +112,21 @@ export function TerminalView({
   setStatus.current = onStatus;
 
   useEffect(() => {
-    const term = new Terminal({
-      // Small enough that a phone still gets a workable column count — tmux is
-      // resized to whatever fits rather than the browser pretending to be 80x24.
-      fontSize: window.innerWidth < 480 ? 12 : 14,
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-      cursorBlink: true,
-      scrollback: 5000,
-      // The background matches `.term`'s in `style.css` — any difference shows
-      // as a seam around the rows — and the cursor is the app's accent, which
-      // is the one colour in the product that means a human is involved.
-      theme: { background: '#16181d', foreground: '#eceef2', cursor: '#ffb454' },
-    });
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.open(host.current as HTMLDivElement);
-    focus.current = () => term.focus();
+    // The terminal is the largest part of the browser bundle and xterm keeps
+    // parsing output even under `visibility: hidden`. The conversation is the
+    // landing view, so both the module and the renderer are created only when
+    // the sheet is summoned. The input socket still opens now for the
+    // composer's exactly-once messages, but asks the server not to put terminal
+    // bytes on the wire while the conversation is in front.
+    let term: XtermTerminal | undefined;
+    let fit: XtermFitAddon | undefined;
+    let terminalReady: Promise<void> | undefined;
+    // The initial attach replay is intentionally dropped while hidden. Once
+    // xterm exists it needs one fresh replay before anything can be shown.
+    let needsReplay = true;
+    // Keep the last visible screen in place while a resummon's replay is in
+    // flight; clear it atomically with the first replacement bytes, not before.
+    let resetOnOutput = false;
 
     // One identity for the whole view, kept across reconnects: the server drops a
     // sequence it has already applied, so a frame resent on a new socket is
@@ -161,6 +166,9 @@ export function TerminalView({
     }
 
     const sendSize = () => {
+      // Opening the conversation must not resize a tmux pane nobody is looking
+      // at. It also avoids doing layout through xterm while that pane is hidden.
+      if (!visible.current || term === undefined || fit === undefined) return;
       // `proposeDimensions` returns nothing while the element has no layout, and
       // xterm legitimately reports 0x0 then. Resizing tmux to that would be a
       // real bug for every other viewer of the same session.
@@ -171,15 +179,22 @@ export function TerminalView({
     };
 
     const connect = () => {
-      // The replay is the whole terminal, every time. Start from nothing.
-      term.reset();
-      const ws = new WebSocket(termSocketUrl(session.tmuxName, clientId));
+      // A reconnect while the terminal is visible starts with the whole replay;
+      // a hidden one is input-only and captures nothing until it is summoned.
+      const wantsOutput = visible.current && term !== undefined;
+      term?.reset();
+      resetOnOutput = false;
+      needsReplay = !wantsOutput;
+      const ws = new WebSocket(termSocketUrl(session.tmuxName, clientId, wantsOutput));
       ws.binaryType = 'arraybuffer';
       socket = ws;
 
       ws.onopen = () => {
         backoff = RECONNECT_MIN_MS;
         setStatus.current('live');
+        // The view may have changed while the upgrade and server attach were in
+        // flight. This frame is queued by the route before that attach completes.
+        post({ c: 'output', enabled: visible.current && term !== undefined });
         sendSize();
         // Before anything the user types on this socket, and in the order they
         // were composed: `Map` iterates by insertion, and the server applies
@@ -187,10 +202,24 @@ export function TerminalView({
         for (const frame of unacked.values()) post(frame);
       };
       ws.onmessage = (event: MessageEvent) => {
-        // Bytes in, bytes out — nothing decodes terminal output. The JSON text
-        // frames on this socket are control only, and `ack` is the sole one:
-        // it is what stops a composed message being resent on the next connect.
-        if (event.data instanceof ArrayBuffer) return term.write(new Uint8Array(event.data));
+        // Bytes in, bytes out — nothing decodes terminal output. While the
+        // conversation is in front they are deliberately dropped rather than
+        // parsed and painted by a hidden xterm. Summoning reconnects and lets
+        // tmux replay the exact current screen, so dropping is not state loss.
+        if (event.data instanceof ArrayBuffer) {
+          if (!visible.current || term === undefined) {
+            needsReplay = true;
+            return;
+          }
+          if (resetOnOutput) {
+            term.reset();
+            resetOnOutput = false;
+          }
+          term.write(new Uint8Array(event.data));
+          return;
+        }
+        // The JSON text frames on this socket are control only, and `ack` is the
+        // sole one: it stops a composed message being resent on the next connect.
         if (typeof event.data !== 'string') return;
         // A text frame that is not JSON is the server's problem, not a crash in
         // an event handler nothing is waiting on.
@@ -237,9 +266,59 @@ export function TerminalView({
       backoff = Math.min(backoff * 2, RECONNECT_MAX_MS);
     };
 
-    term.onData((data) => {
-      for (const frame of encodeInput(data)) send.current(frame);
-    });
+    const ensureTerminal = (): Promise<void> => {
+      if (terminalReady !== undefined) return terminalReady;
+      terminalReady = Promise.all([import('@xterm/xterm'), import('@xterm/addon-fit')]).then(
+        ([xterm, addon]) => {
+          if (closed) return;
+          term = new xterm.Terminal({
+            // Small enough that a phone still gets a workable column count — tmux is
+            // resized to whatever fits rather than the browser pretending to be 80x24.
+            fontSize: window.innerWidth < 480 ? 12 : 14,
+            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+            cursorBlink: true,
+            scrollback: 5000,
+            // The background matches `.term`'s in `style.css` — any difference shows
+            // as a seam around the rows — and the cursor is the app's accent.
+            theme: { background: '#16181d', foreground: '#eceef2', cursor: '#ffb454' },
+          });
+          fit = new addon.FitAddon();
+          term.loadAddon(fit);
+          term.open(host.current as HTMLDivElement);
+          focus.current = () => term?.focus();
+          term.onData((data) => {
+            for (const frame of encodeInput(data)) send.current(frame);
+          });
+        },
+      );
+      return terminalReady;
+    };
+
+    activate.current = (isActive) => {
+      if (!isActive) {
+        // Keep the sequenced input channel, but stop both the network traffic and
+        // hidden xterm work. The next enable asks tmux for a current replay.
+        needsReplay = true;
+        post({ c: 'output', enabled: false });
+        return;
+      }
+      void ensureTerminal().then(
+        () => {
+          if (closed || !visible.current) return;
+          if (needsReplay) {
+            resetOnOutput = term !== undefined;
+            needsReplay = false;
+            post({ c: 'output', enabled: true });
+          }
+          sendSize();
+          // Opening the terminal is an intent to interact with it. Desktop can
+          // type immediately; mobile browsers that require a direct tap still
+          // focus when the terminal itself is touched.
+          focus.current();
+        },
+        () => setStatus.current('failed'),
+      );
+    };
 
     const scheduleResize = () => {
       clearTimeout(resizing);
@@ -252,19 +331,24 @@ export function TerminalView({
     observer.observe(host.current as HTMLDivElement);
     window.visualViewport?.addEventListener('resize', scheduleResize);
 
+    // Input is available immediately. The URL starts muted; `activate` above
+    // enables output only after its lazily loaded renderer exists.
     connect();
 
     return () => {
       closed = true;
+      activate.current = () => {};
       clearTimeout(reconnect);
       clearTimeout(resizing);
       observer.disconnect();
       window.visualViewport?.removeEventListener('resize', scheduleResize);
       socket?.close();
-      term.dispose();
+      term?.dispose();
       if (sender !== undefined) sender.current = null;
     };
   }, [session.tmuxName, sender]);
+
+  useEffect(() => activate.current(active), [active]);
 
   return (
     <>
@@ -286,9 +370,6 @@ export function TerminalView({
             {key.label}
           </button>
         ))}
-        <button type="button" aria-label="Show the keyboard" onClick={() => focus.current()}>
-          ⌨
-        </button>
       </nav>
     </>
   );

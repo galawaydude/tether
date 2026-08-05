@@ -10,7 +10,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { TailscaleError, funnelHostname } from './tailscale.ts';
+import { TailscaleError, funnelHostname, funnelProxyTarget } from './tailscale.ts';
 
 const FIXTURE = join(import.meta.dirname, 'fixtures', 'tailscale-status.json');
 
@@ -129,5 +129,33 @@ test('no MagicDNS name is refused rather than guessed at from HostName', async (
 test('junk is a refusal, never a throw of some other kind', () => {
   for (const value of [undefined, null, 42, 'Running', {}, { Self: 7 }, []]) {
     refuses(value, /not running/);
+  }
+});
+
+test('the public mapping requires both AllowFunnel and the root proxy', () => {
+  const armed = {
+    Web: {
+      'my-box.tailnet-1234.ts.net:443': {
+        Handlers: { '/': { Proxy: 'http://127.0.0.1:8787' } },
+      },
+    },
+    AllowFunnel: { 'my-box.tailnet-1234.ts.net:443': true },
+  };
+  assert.equal(funnelProxyTarget(armed, 'my-box.tailnet-1234.ts.net'), 'http://127.0.0.1:8787');
+
+  // `tailscale serve` has the same Web proxy and is private. The explicit
+  // public marker is what keeps access status from handing it to a browser that
+  // is not on the tailnet.
+  assert.equal(funnelProxyTarget({ Web: armed.Web }, 'my-box.tailnet-1234.ts.net'), undefined);
+  assert.equal(
+    funnelProxyTarget({ AllowFunnel: armed.AllowFunnel }, 'my-box.tailnet-1234.ts.net'),
+    undefined,
+  );
+  assert.equal(funnelProxyTarget(armed, 'other.tailnet-1234.ts.net'), undefined);
+});
+
+test('an unreadable Funnel mapping is off, never guessed from a matching token', () => {
+  for (const value of [undefined, null, 42, '', [], {}, { AllowFunnel: null }]) {
+    assert.equal(funnelProxyTarget(value, 'my-box.tailnet-1234.ts.net'), undefined);
   }
 });

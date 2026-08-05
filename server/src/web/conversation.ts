@@ -6,7 +6,7 @@
  *
  * The client's contract, which is the whole point of the `seq`:
  *
- *   1. `GET /api/sessions/:id/conversation` → `{ seq, events }`.
+ *   1. `GET /api/sessions/:id/conversation` → latest bounded `{ seq, events }`.
  *   2. connect to `/api/sessions/:id/conv?since=<seq>`.
  *   3. every `{c:'conv', seq, e}` from then on is the next event, exactly once.
  *   4. a `{c:'refetch'}` means the gap is wider than the server's memory: go
@@ -21,8 +21,12 @@
 
 import type { ConvClientFrame, PermissionDecision, ServerFrame } from '@tether/shared';
 import type { FastifyInstance } from 'fastify';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 
+import { stateDir as defaultStateDir } from '../db.ts';
 import type { Conversations } from '../machine/conversations.ts';
 import { getSession } from '../machine/registry.ts';
 
@@ -39,6 +43,69 @@ const PARAMS = {
   properties: { id: ID },
 } as const;
 
+/** Images paste as bytes, never base64 JSON. Keep this mirrored in `web/src/api.ts`. */
+export const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+
+/** SVG is deliberately absent: pasted images are inert pixels, never active markup. */
+export const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] as const;
+
+type ImageType = (typeof IMAGE_TYPES)[number];
+
+const IMAGE_EXTENSIONS: Record<ImageType, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+};
+
+const EXTENSION_TYPES: Record<string, ImageType> = Object.fromEntries(
+  Object.entries(IMAGE_EXTENSIONS).map(([type, extension]) => [extension, type as ImageType]),
+);
+
+const IMAGE_FILE = {
+  type: 'string',
+  pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.(?:png|jpg|webp|gif)$',
+} as const;
+
+const IMAGE_PARAMS = {
+  type: 'object',
+  required: ['id', 'file'],
+  additionalProperties: false,
+  properties: { id: ID, file: IMAGE_FILE },
+} as const;
+
+/** Register before routes: Fastify otherwise rejects image bodies as unsupported media. */
+export function registerImageParsers(app: FastifyInstance): void {
+  for (const type of IMAGE_TYPES) {
+    app.addContentTypeParser(
+      type,
+      { parseAs: 'buffer', bodyLimit: MAX_IMAGE_BYTES },
+      (_request, body, done) => done(null, body),
+    );
+  }
+}
+
+function isImage(type: ImageType, bytes: Buffer): boolean {
+  if (bytes.length === 0 || bytes.length > MAX_IMAGE_BYTES) return false;
+  if (type === 'image/png')
+    return bytes
+      .subarray(0, 8)
+      .equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  if (type === 'image/jpeg') return bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  if (type === 'image/gif') {
+    const signature = bytes.subarray(0, 6).toString('ascii');
+    return signature === 'GIF87a' || signature === 'GIF89a';
+  }
+  return (
+    bytes.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    bytes.subarray(8, 12).toString('ascii') === 'WEBP'
+  );
+}
+
+function imageDirectory(root: string, sessionId: string): string {
+  return join(root, 'attachments', sessionId);
+}
+
 /**
  * A string, not an integer: `buildServer` turns ajv's `coerceTypes` off, so a
  * query parameter arrives as the string it was sent as and an `integer` schema
@@ -51,6 +118,15 @@ const CONV_SCHEMA = {
     type: 'object',
     additionalProperties: false,
     properties: { since: { type: 'string', pattern: '^[0-9]{1,15}$' } },
+  },
+} as const;
+
+const HISTORY_SCHEMA = {
+  params: PARAMS,
+  querystring: {
+    type: 'object',
+    additionalProperties: false,
+    properties: { before: { type: 'string', pattern: '^[1-9][0-9]{0,14}$' } },
   },
 } as const;
 
@@ -100,18 +176,79 @@ export function registerConversationRoutes(
   app: FastifyInstance,
   db: DatabaseSync,
   conversations: Conversations,
+  options: { stateDir?: string } = {},
 ): void {
-  app.get<{ Params: Params }>(
+  const attachmentRoot = options.stateDir ?? defaultStateDir();
+
+  app.get<{ Params: Params; Querystring: { before?: string } }>(
     '/api/sessions/:id/conversation',
-    { schema: { params: PARAMS } },
+    { schema: HISTORY_SCHEMA },
     async (request, reply) => {
       const session = getSession(db, request.params.id);
       if (session === undefined) return reply.code(404).send({ error: 'no_such_session' });
       // A transcript that exists and cannot be read is a fault, not an empty
       // conversation; the reason is on the server's stderr, not in this reply.
-      const history = await conversations.history(session).catch(() => undefined);
+      const before = request.query.before === undefined ? undefined : Number(request.query.before);
+      const history = await conversations.history(session, before).catch(() => undefined);
       if (history === undefined) return reply.code(500).send({ error: 'transcript_unreadable' });
       return reply.send(history);
+    },
+  );
+
+  /**
+   * A pasted image becomes a private file the provider can read by absolute path.
+   * The path goes into the composed prompt; the id is what the browser retains
+   * and later uses to draw the image without exposing a filesystem route.
+   *
+   * The parser is byte-bounded before this handler runs, and the signature is
+   * checked rather than trusting Content-Type. SVG is not accepted: an image
+   * pasted into a shell supervisor has no reason to become active browser markup.
+   */
+  app.post<{ Params: Params; Body: Buffer }>(
+    '/api/sessions/:id/images',
+    { schema: { params: PARAMS }, bodyLimit: MAX_IMAGE_BYTES },
+    async (request, reply) => {
+      const session = getSession(db, request.params.id);
+      if (session === undefined) return reply.code(404).send({ error: 'no_such_session' });
+      if (session.deadAt !== null) return reply.code(409).send({ error: 'session_dead' });
+      const type = request.headers['content-type']?.split(';', 1)[0] as ImageType | undefined;
+      if (type === undefined || !IMAGE_TYPES.includes(type) || !isImage(type, request.body)) {
+        return reply.code(400).send({ error: 'invalid_image' });
+      }
+
+      const id = `${randomUUID()}.${IMAGE_EXTENSIONS[type]}`;
+      const directory = imageDirectory(attachmentRoot, session.id);
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      await chmod(directory, 0o700);
+      const path = join(directory, id);
+      await writeFile(path, request.body, { mode: 0o600, flag: 'wx' });
+      return reply.code(201).send({ id, type, size: request.body.length, path });
+    },
+  );
+
+  /**
+   * Authenticated and session-scoped: knowing a random attachment id is not a
+   * second door around the cookie, and a removed registry row exposes nothing.
+   * `nosniff` makes the signature check above remain the browser's answer too.
+   */
+  app.get<{ Params: Params & { file: string } }>(
+    '/api/sessions/:id/images/:file',
+    { schema: { params: IMAGE_PARAMS } },
+    async (request, reply) => {
+      const session = getSession(db, request.params.id);
+      if (session === undefined) return reply.code(404).send({ error: 'no_such_session' });
+      const extension = request.params.file.split('.').at(-1) ?? '';
+      const type = EXTENSION_TYPES[extension];
+      if (type === undefined) return reply.code(404).send({ error: 'no_such_image' });
+      const bytes = await readFile(
+        join(imageDirectory(attachmentRoot, session.id), request.params.file),
+      ).catch(() => undefined);
+      if (bytes === undefined) return reply.code(404).send({ error: 'no_such_image' });
+      return reply
+        .header('content-type', type)
+        .header('x-content-type-options', 'nosniff')
+        .header('cache-control', 'private, max-age=31536000, immutable')
+        .send(bytes);
     },
   );
 

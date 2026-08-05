@@ -18,13 +18,11 @@ import type { IPty } from 'node-pty';
 import { createEscapeFilter } from './escape.ts';
 import {
   captureScrollback,
-  isSeparatorArgument,
   paneSize,
   pasteText,
   refreshClients,
   resizeWindow,
   sendKeys,
-  sendText,
   tmuxArgv,
 } from './tmux.ts';
 
@@ -36,6 +34,25 @@ const DEFAULT_HISTORY_LINES = 5000;
  * literal newline rather than a submit; the spike found 50–300ms reliable.
  */
 const SUBMIT_DELAY_MS = 100;
+
+/**
+ * Keys whose terminal bytes are unambiguous. Sending them through the existing
+ * attach PTY avoids one `tmux send-keys` process per press; cursor/navigation
+ * keys still go through tmux because its current application-key mode decides
+ * their bytes.
+ */
+export function directKeyBytes(keys: readonly string[]): string | undefined {
+  let bytes = '';
+  for (const key of keys) {
+    if (key === 'Enter') bytes += '\r';
+    else if (key === 'Tab') bytes += '\t';
+    else if (key === 'BSpace') bytes += '\x7f';
+    else if (key === 'Escape') bytes += '\x1b';
+    else if (/^C-[a-z]$/.test(key)) bytes += String.fromCharCode(key.charCodeAt(2) - 0x60);
+    else return undefined;
+  }
+  return bytes;
+}
 
 /** Receives raw terminal bytes. One per connected socket. */
 export type Viewer = (bytes: Uint8Array) => void;
@@ -109,7 +126,14 @@ export interface Terminals {
    * dies — the tmux session was killed, or its server went away — because a
    * viewer that is never told sits on a terminal that will never move again.
    */
-  attach(session: string, viewer: Viewer, onEnd?: () => void): Promise<() => void>;
+  attach(
+    session: string,
+    viewer: Viewer,
+    onEnd?: () => void,
+    initialReplay?: boolean,
+  ): Promise<() => void>;
+  /** Replay the current tmux state to an already attached viewer. */
+  refresh(session: string, viewer: Viewer, replay: Viewer): Promise<void>;
   /** Last viewer's dimensions win. */
   resize(session: string, cols: number, rows: number): Promise<void>;
   /** Message text: pasted (newline-safe), then submitted. Returns false if replayed. */
@@ -176,12 +200,18 @@ export function createTerminals(socket: string, historyLines = DEFAULT_HISTORY_L
     };
   }
 
-  async function open(session: string, viewer: Viewer, onEnd: () => void): Promise<Attached> {
+  async function open(
+    session: string,
+    viewer: Viewer,
+    onEnd: () => void,
+    initialReplay: boolean,
+  ): Promise<Attached> {
     const { spawn } = await loadPty();
     const size = await paneSize(socket, session);
     // Captured before the attach exists, so the repaint the attach emits lands
-    // strictly after the history it is meant to sit below.
-    viewer(await replay(session, size.rows));
+    // strictly after the history it is meant to sit below. A conversation-only
+    // viewer skips it entirely and asks `refresh` when its terminal is summoned.
+    if (initialReplay) viewer(await replay(session, size.rows));
 
     const pty = spawn('tmux', tmuxArgv(socket, ['attach-session', '-t', session]), {
       name: 'xterm-256color',
@@ -209,11 +239,15 @@ export function createTerminals(socket: string, historyLines = DEFAULT_HISTORY_L
   }
 
   return {
-    attach(session, viewer, onEnd = () => {}) {
+    attach(session, viewer, onEnd = () => {}, initialReplay = true) {
       return serialize(session, async () => {
         const existing = attached.get(session);
         if (existing === undefined) {
-          return detacher(session, await open(session, viewer, onEnd), viewer);
+          return detacher(session, await open(session, viewer, onEnd, initialReplay), viewer);
+        }
+        if (!initialReplay) {
+          existing.viewers.set(viewer, onEnd);
+          return detacher(session, existing, viewer);
         }
         const size = await paneSize(socket, session);
         const head = await replay(session, size.rows);
@@ -222,7 +256,7 @@ export function createTerminals(socket: string, historyLines = DEFAULT_HISTORY_L
         // the last viewer can leave and take the PTY with it while we capture.
         // Joining that corpse would leave this viewer permanently blank.
         if (attached.get(session) !== existing) {
-          return detacher(session, await open(session, viewer, onEnd), viewer);
+          return detacher(session, await open(session, viewer, onEnd, true), viewer);
         }
         viewer(head);
         existing.viewers.set(viewer, onEnd);
@@ -236,6 +270,18 @@ export function createTerminals(socket: string, historyLines = DEFAULT_HISTORY_L
           throw error;
         }
         return detach;
+      });
+    },
+
+    refresh(session, viewer, replayViewer) {
+      return serialize(session, async () => {
+        const existing = attached.get(session);
+        if (existing === undefined || !existing.viewers.has(viewer)) return;
+        const size = await paneSize(socket, session);
+        const head = await replay(session, size.rows);
+        if (attached.get(session) !== existing || !existing.viewers.has(viewer)) return;
+        replayViewer(head);
+        await refreshClients(socket, session);
       });
     },
 
@@ -265,20 +311,19 @@ export function createTerminals(socket: string, historyLines = DEFAULT_HISTORY_L
     text(session, clientId, seq, text) {
       return serialize(session, async () => {
         if (!accept(applied, session, clientId, seq)) return false;
-        // `send-keys -l` is one spawn and covers everything a keyboard produces
-        // except two cases, both of which the paste buffer handles because it
-        // reaches tmux on stdin and so never becomes an argv element: a line break
-        // (`send-keys -l` silently drops it — report §3), and any text tmux's own
-        // lexer would eat before send-keys ever saw it — a standalone `;`, `{` or
-        // `}`, or anything ending in `;`, which `isSeparatorArgument` is the single
-        // definition of. `;` is a key a phone user really does press; `{` and `}`
-        // are keys a developer presses constantly; `git status;` is a whole pasted
-        // line. Neither the argv guard nor `sendText`'s own rule is relaxed here —
-        // the delivery mechanism is chosen to suit the text.
-        if (isSeparatorArgument(text) || /[\n\r]/.test(text)) {
-          await pasteText(socket, session, text);
-        } else {
-          await sendText(socket, session, text);
+        // The socket already owns an attached tmux client. Writing ordinary
+        // typing to that PTY removes a process spawn from every character and,
+        // crucially, removes the serial spawn backlog when somebody types faster
+        // than those processes finish. It also never exposes text to tmux's argv
+        // lexer, so `;`, `{` and `}` arrive literally without a paste-buffer
+        // round trip. A multi-line bracketed paste keeps the paste-buffer path:
+        // tmux then restores the application's paste markers and does not submit
+        // its first line as Enter.
+        if (/[\n\r]/.test(text)) await pasteText(socket, session, text);
+        else {
+          const entry = attached.get(session);
+          if (entry === undefined) throw new Error(`terminal ${session} is not attached`);
+          entry.pty.write(text);
         }
         return true;
       });
@@ -287,7 +332,13 @@ export function createTerminals(socket: string, historyLines = DEFAULT_HISTORY_L
     key(session, clientId, seq, keys) {
       return serialize(session, async () => {
         if (!accept(applied, session, clientId, seq)) return false;
-        await sendKeys(socket, session, keys);
+        const bytes = directKeyBytes(keys);
+        if (bytes === undefined) await sendKeys(socket, session, keys);
+        else {
+          const entry = attached.get(session);
+          if (entry === undefined) throw new Error(`terminal ${session} is not attached`);
+          entry.pty.write(bytes);
+        }
         return true;
       });
     },

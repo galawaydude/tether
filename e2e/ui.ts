@@ -1,9 +1,9 @@
 /**
  * The handful of things every spec does to the app, spelled once.
  *
- * The summon/dismiss recipe in particular: `.termsheet`, the Close button's name
- * and the `aria-expanded` handshake were written out in four specs, so renaming
- * the control meant finding all four. It lives here beside `serve.ts` for the
+ * The summon/dismiss recipe in particular: the header toggle and its
+ * `aria-expanded` handshake were written out in four specs, so changing the
+ * control meant finding all four. It lives here beside `serve.ts` for the
  * same reason that does — it is harness, not a claim.
  */
 
@@ -22,18 +22,21 @@ export const KEYBOARD_UP = { width: 360, height: 340 } as const;
 /** Where a reviewer's copies go; set by the runner, ignored when it is not. */
 const evidence = process.env['TETHER_E2E_SHOTS'];
 
-/** The one control that summons the terminal, and the one that puts it away. */
-export const hatch = (page: Page): Locator =>
-  page.getByRole('button', { name: 'Terminal', exact: true });
+/** The one control that switches between conversation and terminal. */
+export const hatch = (page: Page): Locator => page.locator('.bar-term');
 
 export async function summon(page: Page): Promise<void> {
+  await expect(hatch(page)).toHaveText('Terminal');
   await hatch(page).click();
   await expect(hatch(page)).toHaveAttribute('aria-expanded', 'true');
+  await expect(hatch(page)).toHaveText('Conversation');
 }
 
 export async function dismiss(page: Page): Promise<void> {
-  await page.locator('.termsheet').getByRole('button', { name: 'Close' }).click();
+  await expect(hatch(page)).toHaveText('Conversation');
+  await hatch(page).click();
   await expect(hatch(page)).toHaveAttribute('aria-expanded', 'false');
+  await expect(hatch(page)).toHaveText('Terminal');
 }
 
 /**

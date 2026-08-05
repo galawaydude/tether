@@ -40,7 +40,8 @@ const SCHEMA = `
     tmux_name           TEXT NOT NULL UNIQUE,
     created_at          INTEGER NOT NULL,
     updated_at          INTEGER NOT NULL,
-    dead_at             INTEGER
+    dead_at             INTEGER,
+    removed_at          INTEGER
   );
 `;
 
@@ -64,6 +65,24 @@ export function openRegistry(path?: string): DatabaseSync {
 /** The same schema on a database someone else opened. For tests and `:memory:`. */
 export function applyRegistrySchema(db: DatabaseSync): void {
   db.exec(SCHEMA);
+  // Existing installations predate list removal. There is no migration
+  // framework; one nullable column is the compatible migration, applied once.
+  const columns = db.prepare("PRAGMA table_info('sessions')").all() as unknown as {
+    name: string;
+  }[];
+  if (!columns.some((column) => column.name === 'removed_at')) {
+    try {
+      db.exec('ALTER TABLE sessions ADD COLUMN removed_at INTEGER');
+    } catch (error) {
+      // Two CLI processes can open an old installation together. If the other
+      // one won the ALTER race, the postcondition is already true; anything
+      // else remains the real migration failure.
+      const now = db.prepare("PRAGMA table_info('sessions')").all() as unknown as {
+        name: string;
+      }[];
+      if (!now.some((column) => column.name === 'removed_at')) throw error;
+    }
+  }
 }
 
 function rows(db: DatabaseSync, sql: string, ...params: string[]): Session[] {
@@ -99,16 +118,20 @@ export function createSession(
   return getSession(db, session.id)!;
 }
 
-/** Newest first. Dead rows are included: a dead session is resumable, not gone. */
+/** Newest first. Dead rows stay until the user explicitly removes them. */
 export function listSessions(db: DatabaseSync): Session[] {
-  return rows(db, `SELECT ${COLUMNS} FROM sessions ORDER BY created_at DESC`);
+  return rows(
+    db,
+    `SELECT ${COLUMNS} FROM sessions WHERE removed_at IS NULL ORDER BY created_at DESC`,
+  );
 }
 
 /** By full id, or by any prefix that identifies exactly one row. */
 export function getSession(db: DatabaseSync, idOrPrefix: string): Session | undefined {
   const matches = rows(
     db,
-    `SELECT ${COLUMNS} FROM sessions WHERE id = ? OR id LIKE ? ESCAPE '\\' LIMIT 2`,
+    `SELECT ${COLUMNS} FROM sessions
+     WHERE removed_at IS NULL AND (id = ? OR id LIKE ? ESCAPE '\\') LIMIT 2`,
     idOrPrefix,
     `${idOrPrefix.replace(/[\\%_]/g, '\\$&')}%`,
   );
@@ -121,7 +144,11 @@ export function getSession(db: DatabaseSync, idOrPrefix: string): Session | unde
  * only handle it has when an attach fails and it has to say why.
  */
 export function getSessionByTmuxName(db: DatabaseSync, tmuxName: string): Session | undefined {
-  return rows(db, `SELECT ${COLUMNS} FROM sessions WHERE tmux_name = ? LIMIT 1`, tmuxName)[0];
+  return rows(
+    db,
+    `SELECT ${COLUMNS} FROM sessions WHERE tmux_name = ? AND removed_at IS NULL LIMIT 1`,
+    tmuxName,
+  )[0];
 }
 
 /** Back-fill the provider's own session id once the provider has created one. */
@@ -130,11 +157,9 @@ export function setProviderSessionId(
   id: string,
   providerSessionId: string,
 ): void {
-  db.prepare('UPDATE sessions SET provider_session_id = ?, updated_at = ? WHERE id = ?').run(
-    providerSessionId,
-    Date.now(),
-    id,
-  );
+  db.prepare(
+    'UPDATE sessions SET provider_session_id = ?, updated_at = ? WHERE id = ? AND removed_at IS NULL',
+  ).run(providerSessionId, Date.now(), id);
 }
 
 /**
@@ -148,7 +173,8 @@ export function getSessionByProviderSessionId(
 ): Session | undefined {
   return rows(
     db,
-    `SELECT ${COLUMNS} FROM sessions WHERE provider_session_id = ? AND dead_at IS NULL
+    `SELECT ${COLUMNS} FROM sessions
+     WHERE provider_session_id = ? AND dead_at IS NULL AND removed_at IS NULL
      ORDER BY created_at DESC LIMIT 1`,
     providerSessionId,
   )[0];
@@ -171,11 +197,10 @@ export function claimedProviderSessionIds(db: DatabaseSync, exceptId: string): S
 /** Idempotent — the first death is the one that is recorded. */
 export function markDead(db: DatabaseSync, id: string): void {
   const now = Date.now();
-  db.prepare('UPDATE sessions SET dead_at = COALESCE(dead_at, ?), updated_at = ? WHERE id = ?').run(
-    now,
-    now,
-    id,
-  );
+  db.prepare(
+    `UPDATE sessions SET dead_at = COALESCE(dead_at, ?), updated_at = ?
+     WHERE id = ? AND removed_at IS NULL`,
+  ).run(now, now, id);
 }
 
 /**
@@ -185,9 +210,31 @@ export function markDead(db: DatabaseSync, id: string): void {
  * started the replacement pane: a row whose `dead_at` is null and whose tmux
  * session is not running is the state reconcile exists to prevent.
  */
-export function revive(db: DatabaseSync, id: string): void {
+export function revive(db: DatabaseSync, id: string): boolean {
   const now = Date.now();
-  db.prepare('UPDATE sessions SET dead_at = NULL, updated_at = ? WHERE id = ?').run(now, id);
+  const result = db
+    .prepare(
+      `UPDATE sessions SET dead_at = NULL, updated_at = ?
+       WHERE id = ? AND removed_at IS NULL`,
+    )
+    .run(now, id);
+  return Number(result.changes) === 1;
+}
+
+/**
+ * Hide a dead row from tether while retaining its tombstone. The provider owns
+ * its transcript, so removing a list entry never deletes that file; retaining
+ * the provider id here also prevents discovery from assigning it to another row.
+ */
+export function removeDeadSession(db: DatabaseSync, id: string): boolean {
+  const now = Date.now();
+  const result = db
+    .prepare(
+      `UPDATE sessions SET removed_at = ?, updated_at = ?
+       WHERE id = ? AND dead_at IS NOT NULL AND removed_at IS NULL`,
+    )
+    .run(now, now, id);
+  return Number(result.changes) === 1;
 }
 
 /**
@@ -221,7 +268,8 @@ export function reconcile(
   const result = db
     .prepare(
       `UPDATE sessions SET dead_at = ?, updated_at = ?
-       WHERE dead_at IS NULL AND created_at <= ? AND updated_at <= ? ${alive}`,
+       WHERE dead_at IS NULL AND removed_at IS NULL
+         AND created_at <= ? AND updated_at <= ? ${alive}`,
     )
     .run(now, now, snapshotAt, snapshotAt, ...liveTmuxNames);
   return Number(result.changes);

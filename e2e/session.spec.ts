@@ -24,6 +24,9 @@ const project = join(process.env['TETHER_E2E_DIR'] as string, 'project');
 /** The overlay test's own, for the same reason every other spec has one. */
 const overlay = join(process.env['TETHER_E2E_DIR'] as string, 'overlay');
 
+/** A dead row resumed entirely from its conversation screen. */
+const resumeUi = join(process.env['TETHER_E2E_DIR'] as string, 'resume-ui');
+
 /** And the geometry test's, which puts a session into `waiting` of its own. */
 const chrome = join(process.env['TETHER_E2E_DIR'] as string, 'chrome');
 
@@ -105,10 +108,9 @@ test('a reload loses nothing: scrollback and conversation come back intact and o
   // socket and all of the app's state. What comes back is re-derived — the
   // terminal from tmux, the conversation from the transcript.
   await page.reload();
-  // By name, not `.row-open`: `permission.spec.ts` shares this server and has a
-  // session of its own in the list, and reopening the wrong one would compare
-  // this session's terminal against another's.
-  await page.getByRole('button', { name: `project ${project}` }).click();
+  // The session id is in the URL, so a refresh restores this screen directly
+  // rather than dropping to the list and making the user find it again.
+  await expect(page.getByRole('button', { name: 'Back to sessions' })).toHaveCount(1);
 
   await expect(conversation.getByText(GREETING, { exact: true })).toHaveCount(1);
   await expect(conversation.getByText(TYPED, { exact: true })).toHaveCount(1);
@@ -120,6 +122,87 @@ test('a reload loses nothing: scrollback and conversation come back intact and o
   // Identical, not merely "contains": a replay that repeated itself, dropped a
   // line, or leaked an escape sequence all show up here and only here.
   expect(await screen(rows)).toBe(before);
+});
+
+test('a transient restore failure keeps the selected session retryable', async ({ page }) => {
+  await page.goto('/');
+  await page.getByLabel('Password').fill(process.env['TETHER_E2E_PASSWORD'] as string);
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await page.getByRole('button', { name: 'New session' }).click();
+  await page.getByLabel('Working directory').fill(project);
+  await page.getByRole('button', { name: 'Start' }).click();
+  await expect(page).toHaveURL(/\?session=/);
+  const selected = page.url();
+  let failed = false;
+  await page.route('**/api/machines/local/sessions/*', async (route) => {
+    if (!failed && route.request().method() === 'GET') {
+      failed = true;
+      await route.fulfill({ status: 503, contentType: 'application/json', body: '{}' });
+    } else await route.continue();
+  });
+
+  await page.reload();
+  await expect(page.getByRole('alert')).toContainText('server failed');
+  expect(page.url()).toBe(selected);
+  await page.getByRole('button', { name: 'Retry' }).click();
+  await expect(page.getByRole('button', { name: 'Back to sessions' })).toHaveCount(1);
+});
+
+test('a dead conversation resumes from its own screen without opening a terminal chooser', async ({
+  page,
+}) => {
+  mkdirSync(resumeUi, { recursive: true });
+  await page.goto('/');
+  await page.getByLabel('Password').fill(process.env['TETHER_E2E_PASSWORD'] as string);
+  await page.getByRole('button', { name: 'Sign in' }).click();
+
+  await page.getByRole('button', { name: 'New session' }).click();
+  await page.getByLabel('Working directory').fill(resumeUi);
+  await page.getByRole('button', { name: 'Start' }).click();
+  const conversation = page.locator('.conv');
+  await expect(conversation.getByText(GREETING, { exact: true })).toHaveCount(1);
+
+  await page.getByRole('button', { name: 'Back to sessions' }).click();
+  const row = page.locator('.row').filter({ hasText: 'resume-ui' });
+  page.once('dialog', (dialog) => void dialog.accept());
+  await row.getByRole('button', { name: 'Kill session' }).click();
+  await expect(row.getByText('dead', { exact: true })).toHaveCount(1);
+
+  // Review the saved conversation first. Its exact provider session id is on
+  // the row, so Resume can start that conversation directly; no `/resume`
+  // command and no provider-owned terminal chooser should appear.
+  await row.locator('.row-open').click();
+  await expect(conversation.getByText(GREETING, { exact: true })).toHaveCount(1);
+  await expect(page.getByRole('button', { name: 'Resume session' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Terminal' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Resume session' }).click();
+
+  await expect(page.getByRole('button', { name: 'Terminal' })).toBeVisible();
+  await expect(page.getByRole('status')).toHaveText('Live');
+  await expect(page.locator('.termsheet')).toHaveClass(/pane-off/);
+
+  // The resumed process accepts a new prompt through the conversation composer;
+  // proving this without summoning the terminal is the feature, not just the
+  // presence of a button with the right label.
+  await page.getByLabel('Message').fill('continued from conversation');
+  await page.getByRole('button', { name: 'Send' }).click();
+  await expect(
+    conversation.getByText('echo continued from conversation', { exact: true }),
+  ).toHaveCount(1);
+
+  // Dead rows are useful until they are not. Once this one is stopped again it
+  // can be removed from tether's list, with the provider transcript explicitly
+  // left alone by both the confirmation and the server operation.
+  await page.getByRole('button', { name: 'Back to sessions' }).click();
+  page.once('dialog', (dialog) => void dialog.accept());
+  await row.getByRole('button', { name: 'Kill session' }).click();
+  await expect(row.getByText('dead', { exact: true })).toHaveCount(1);
+  page.once('dialog', (dialog) => {
+    expect(dialog.message()).toContain('transcript stays on disk');
+    void dialog.accept();
+  });
+  await row.getByRole('button', { name: 'Remove session' }).click();
+  await expect(row).toHaveCount(0);
 });
 
 /**
@@ -179,7 +262,7 @@ test('the terminal is summoned over the conversation and dismissed, and neither 
   const place = await conversation.evaluate((element) => element.scrollTop);
   expect(place).toBeGreaterThan(0);
 
-  // ── summoned, and over rather than instead ─────────────────────────────────
+  // ── summoned as one simple full-pane terminal ──────────────────────────────
   await summon(page);
   await expect(page.locator('header .chip[role="status"]')).toHaveText('Live');
   await expect(rows).toContainText(GREETING);
@@ -187,16 +270,26 @@ test('the terminal is summoned over the conversation and dismissed, and neither 
   const panes = await page.locator('.panes').boundingBox();
   const over = await sheet.boundingBox();
   if (panes === null || over === null) throw new Error('the overlay is not laid out');
-  // A strip of the conversation still shows above it, which is the difference
-  // between an overlay and a replacement — and it is asserted in pixels because
-  // "the sheet is there" is true of a sheet that took the whole pane.
-  expect(over.y).toBeGreaterThan(panes.y);
-  expect(over.height).toBeLessThan(panes.height);
-  expect(over.height).toBeGreaterThan(panes.height / 2);
+  // No unexplained strip of disabled conversation remains above it. The header
+  // toggle now says Conversation and provides the direct way back.
+  expect(over.y).toBe(panes.y);
+  expect(over.height).toBe(panes.height);
   // Everything the conversation offers is behind it, the composer included —
-  // visible in the strip above, and `inert`, so a keyboard cannot reach a
-  // control the terminal is sitting on top of.
+  // and `inert`, so a keyboard cannot reach a control the terminal covers.
   await expect(page.locator('.pane:not(.termsheet)')).toHaveAttribute('inert', '');
+  const keyTray = sheet.locator('.keys');
+  await expect(keyTray.getByRole('button')).toHaveCount(7);
+  const keyGeometry = await keyTray.evaluate((element) => ({
+    sideways: element.scrollWidth - element.clientWidth,
+    shortest: Math.min(
+      ...Array.from(
+        element.querySelectorAll('button'),
+        (button) => button.getBoundingClientRect().width,
+      ),
+    ),
+  }));
+  expect(keyGeometry.sideways).toBe(0);
+  expect(keyGeometry.shortest).toBeGreaterThanOrEqual(44);
   await shoot(page, '2-terminal-summoned');
   const screenBefore = await screen(rows);
 
@@ -314,8 +407,8 @@ test('tether’s own chrome never resizes the terminal pane', async ({ page }) =
   ).toEqual({ sideways: 0, down: 0 });
   await reachable(
     page,
-    page.locator('.termsheet').getByRole('button', { name: 'Close' }),
-    'the terminal’s Close, with the waiting line above it',
+    hatch(page),
+    'the terminal’s Conversation toggle, with the waiting line below it',
   );
 
   // …and back to idle, still with the terminal up.

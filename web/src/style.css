@@ -151,6 +151,19 @@ body {
   height: 100dvh;
 }
 
+/* The rail remains mounted: its 5s live poll and list scroll position are worth
+   preserving. `visibility` removes every descendant from hit testing and the
+   accessibility tree while the zero track gives the conversation the screen. */
+.workspace-rail-closed {
+  grid-template-columns: 0 minmax(0, 1fr);
+}
+
+.workspace-rail-closed > .rail {
+  visibility: hidden;
+  overflow: hidden;
+  border-right: 0;
+}
+
 /* The grid row is the height now; a `100dvh` child inside it would overflow. */
 .workspace > .screen {
   height: auto;
@@ -173,6 +186,45 @@ body {
   display: none;
 }
 
+.rail-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.rail-collapse,
+.bar-show-rail {
+  flex: none;
+  width: var(--tap);
+  padding: 0;
+  color: var(--muted);
+}
+
+/* A tiny panel glyph rather than a chevron whose direction changes with writing
+   mode. The filled left strip is the thing being hidden or restored. */
+.rail-icon {
+  position: relative;
+  display: inline-block;
+  width: 18px;
+  height: 15px;
+  border: 1px solid currentcolor;
+  border-radius: 3px;
+  background: linear-gradient(to right, currentcolor 0 4px, transparent 4px);
+}
+
+.rail-icon::after {
+  content: '';
+  position: absolute;
+  top: 4px;
+  left: 7px;
+  width: 7px;
+  height: 1px;
+  background: currentcolor;
+  box-shadow:
+    0 3px 0 currentcolor,
+    0 6px 0 currentcolor;
+}
+
 /* Nothing open. Says what the space is for rather than leaving it blank. */
 .blank {
   display: flex;
@@ -192,20 +244,13 @@ body {
 
 /* ── bars ───────────────────────────────────────────────────────────────── */
 
-/* Two rows on a phone, one past 600px. On a 390px screen the back button, a
-   long session title and two chips do not fit on one line, and clipping the
-   title to "tether …" is the one thing on this bar that cannot be recovered by
-   looking harder.
- *
- * The chips take a whole row rather than wrapping onto one when they happen not
- * to fit, and that is load-bearing rather than tidy: their text changes as the
- * session runs — "Connecting…" becomes "Live", "Idle" becomes "Waiting for you"
- * — and a bar whose height follows its own text resizes the terminal underneath
- * it, which resizes the tmux pane, which makes the agent redraw its prompt. A
- * status word is not allowed to reflow a running session. */
+/* One fixed row at every width. A bar whose height follows a status word resizes
+   the terminal underneath it, which resizes the tmux pane for every viewer. The
+   phone spends only a chevron on Back, a normal connection is one dot, and the
+   title ellipsizes; those bounds make even "Waiting for you" fit without wrap. */
 .bar {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 8px 10px;
   padding: 10px 12px;
@@ -214,12 +259,8 @@ body {
   border-bottom: 1px solid var(--line);
 }
 
-/* `flex: 1 1 0`, not `1 1 auto`, and the zero basis is what keeps the bar two
-   rows rather than three. A wrapping flex container fills a line at each item's
-   *base* size and only then shrinks what is on it, so a title whose basis is its
-   own content pushes the Terminal button onto a line of its own — on a 390px
-   phone, for a title short enough to have fitted. At a zero basis the title is
-   simply what is left over, and it ellipsizes as it always did. */
+/* Zero basis: the title is exactly the room left by controls whose tap targets
+   cannot shrink, and ellipsizes rather than moving any of them. */
 .bar-title {
   flex: 1 1 0;
   min-width: 0;
@@ -285,19 +326,44 @@ body {
   flex: none;
 }
 
+/* On a phone the full path becomes a row of unrelated ellipses. Keep its last
+   two directories — the part that identifies the work — and leave the complete
+   value in the accessible line and title above. */
+@media (max-width: 599px) {
+  .bar-back-word,
+  .crumb-earlier {
+    display: none;
+  }
+
+  .bar-back {
+    width: var(--tap);
+    padding-inline: 0;
+    font-size: 24px;
+  }
+}
+
 /* The way to the terminal, on the same row as the title rather than under it:
    the back button already makes that row 44px tall, so this control costs the
    bar no height at all — and a bar that grows resizes the tmux pane. Bordered
    rather than borderless, like the sheet's Cancel: a control that only says
    "Terminal" has to read as a control. */
-.bar .bar-term {
+.bar .bar-term,
+.bar .bar-resume {
   flex: none;
+}
+
+.bar .bar-term {
   border-color: var(--line-lit);
+}
+
+.bar .bar-resume {
+  min-height: var(--tap);
+  padding-inline: 14px;
 }
 
 .bar-chips {
   display: flex;
-  flex-basis: 100%;
+  flex: none;
   align-items: center;
   justify-content: flex-end;
   gap: 6px;
@@ -727,6 +793,19 @@ label {
   --tone: var(--ok);
 }
 
+/* In the session header, "Live" is the normal case rather than a second status
+   sentence beside "Idle". Keep it as a quiet connected dot; failures still use
+   their full words, and list rows keep their own explicit live badge. */
+.bar-chips .chip-live {
+  width: 10px;
+  height: 10px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: var(--ok);
+  font-size: 0;
+}
+
 .chip-retrying,
 .chip-connecting {
   --tone: var(--work);
@@ -832,32 +911,17 @@ label {
   visibility: hidden;
 }
 
-/* The escape hatch, and it has to look like one.
- *
- * It is *over* the conversation rather than instead of it: the inset at the top
- * leaves a strip of the conversation showing, and the shadow and the rounded
- * top edge say the same thing again — this is a thing that was summoned and can
- * be put away, not the other half of a pair. The box is identical open and
- * closed (only `visibility` changes), so summoning resizes nothing and the tmux
- * pane never learns this happened.
- *
- * It declares no palette of its own. It used to — the whole app was light and
- * this one surface had to be dark, because an agent's TUI chooses its ANSI
- * colours for a dark terminal. The app is dark now, so the seven token
- * overrides that lived here are gone; the sheet reads the same tokens as
- * everything else and simply picks the darkest surface among them, `--wash`,
- * for its own frame. That is the honest choice as well as the legible one: this
- * box is the terminal's frame, and the terminal is deeper than the app. A
- * shadow alone cannot say "summoned" on a dark theme, so the separation is
- * carried by the surface step, the lit top edge and the inset. */
+/* A simple full-pane terminal. The earlier inset, rounded frame and glimpse of
+ * conversation left an unexplained strip above the terminal on a phone. The
+ * session header's toggle changes to Conversation while this is open, which is
+ * all the context and navigation it needs; filling `.panes` gives the terminal
+ * the rest of the useful screen. Open and
+ * closed remain the same laid-out box — visibility alone changes — so neither
+ * pane loses its position. */
 .termsheet {
-  top: 24px;
-  border-radius: 16px 16px 0 0;
   overflow: hidden;
   background: var(--wash);
   color: var(--fg);
-  border-top: 1px solid var(--line-lit);
-  box-shadow: 0 -10px 34px rgb(0 0 0 / 55%);
 }
 
 /* The accessory bar belongs to the sheet's frame, not to the app's chrome. */
@@ -865,55 +929,13 @@ label {
   background: var(--wash);
 }
 
-/* Its own header, so the way out is inside the thing rather than only behind
-   it. One row, and its height cannot follow its text — the same rule as `.bar`,
-   for the same reason: it sits directly above the pane xterm is fitted to. */
-.termsheet-bar {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 8px 6px 14px;
-  border-bottom: 1px solid var(--line);
-  /* The anchor for the waiting line that hangs below it, and a stacking context
-     so that line paints over the terminal rather than under xterm's own layers. */
-  position: relative;
-  z-index: 1;
-}
-
-.termsheet-title {
-  flex: none;
-  margin: 0;
-  font: 600 13px/1 var(--mono);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
-/* What this is, said once and quietly. Dropped below 360px, where the title and
-   the way out are all the row has room for — a clipped explanation is worse than
-   none, and everything it says is said again by the shape of the thing. */
-.termsheet-note {
-  flex: 1 1 auto;
-  min-width: 0;
-  margin: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 13px;
-  color: var(--dim);
-}
-
-/* The waiting banner, said again where a user with the terminal up will see it.
-   `top: 100%` hangs it off the header whatever height that row happens to be,
-   and being out of flow is what lets it wrap to as many lines as the reason
-   needs while the header — and therefore the pane xterm is fitted to — keeps
-   exactly the height it had. Amber and `--on-accent` like the banner itself, so
-   it is the same fact in the same colour rather than a second treatment; and
-   click-through, because it lies over a terminal a user may be typing at. */
+/* The waiting fact overlays the terminal's top edge without creating a second
+   toolbar or changing xterm's box. It sits above xterm's internal z-index 10
+   layers and remains click-through while somebody is typing. */
 .termsheet-waiting {
   position: absolute;
-  top: 100%;
+  z-index: 11;
+  top: 0;
   right: 0;
   left: 0;
   margin: 0;
@@ -924,15 +946,11 @@ label {
   pointer-events: none;
 }
 
-@media (max-width: 359px) {
-  .termsheet-note {
-    display: none;
-  }
-}
-
-.termsheet-bar .ghost {
+/* A failed resume belongs to a dead conversation, where no terminal pane can be
+   resized. Keep the sentence between its location and its history. */
+.resume-error {
   flex: none;
-  margin-left: auto;
+  margin: 8px 12px 0;
 }
 
 /* ── conversation ───────────────────────────────────────────────────────── */
@@ -984,6 +1002,7 @@ label {
 }
 
 .msg-who {
+  min-height: 28px;
   margin: 0 0 6px;
   font: 600 11px/1 var(--mono);
   color: var(--dim);
@@ -1000,6 +1019,34 @@ label {
      pushing the message wider. Line breaks are the renderer's job now: a
      paragraph is a `<p>`, so `pre-wrap` here would double every blank line. */
   overflow-wrap: anywhere;
+}
+
+/* Pasted pixels are part of the user's prompt, not a tool artefact. They sit in
+   the message flow, stay bounded on a phone, and open at full resolution in a
+   separate tab so inspecting detail never replaces a live session. */
+.msg-images {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.msg-images a {
+  display: flex;
+  min-width: 0;
+  max-height: min(38dvh, 320px);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--wash);
+  overflow: hidden;
+}
+
+.msg-images img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: min(38dvh, 320px);
+  object-fit: contain;
 }
 
 /* ── rendered markdown ───────────────────────────────────────────────────────
@@ -1142,57 +1189,33 @@ label {
 
 /* ── per-message actions ─────────────────────────────────────────────────────
  *
- * Quiet furniture that is not furniture: present only where there is a pointer
- * to reveal it with, and revealed only on hover or focus. On a touch screen it
- * is not rendered at all — a permanent button on every message is exactly the
- * density a 360px phone cannot spend, and `hover: hover` is the platform's own
- * way of asking which kind of device this is.
- *
- * `:focus-within` rather than hover alone is what keeps it reachable from a
- * keyboard: the button is in the tab order either way, and focusing it is what
- * makes it visible. */
+ * Copy is useful most often on the phone, so it may not disappear behind hover.
+ * It floats in the attribution row, whose reserved height keeps it off the text,
+ * and changes its own word to “Copied” so a successful tap is never silent. */
 .msg-actions {
-  display: none;
+  position: absolute;
+  top: -8px;
+  right: 0;
+  z-index: 1;
+  display: flex;
 }
 
-@media (hover: hover) {
-  .msg-actions {
-    position: absolute;
-    top: 0;
-    right: 0;
-    display: flex;
-    opacity: 0;
-    transition: opacity 120ms ease;
-  }
+.msg-actions > button {
+  min-width: 62px;
+  min-height: var(--tap);
+  padding: 0 9px;
+  background: transparent;
+  border-color: transparent;
+  color: var(--dim);
+  font: 11.5px/1 var(--mono);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
 
-  .msg:hover > .msg-actions,
-  .msg:focus-within > .msg-actions {
-    opacity: 1;
-  }
-
-  /* It floats over the message's own first line, so it carries the surface that
-     message sits on — otherwise the text underneath reads straight through a
-     `.ghost` control and both become unreadable at once. Two values, because
-     the asymmetry above means the two kinds of message sit on different
-     surfaces: prose on the ground, yours in a `--panel` box. */
-  .msg-actions > button {
-    min-height: var(--tap);
-    padding: 0 10px;
-    background: var(--bg);
-    border-color: var(--line);
-    font: 12px/1 var(--mono);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-  }
-
-  .msg-user .msg-actions > button {
-    background: var(--panel);
-  }
-
-  .msg-actions > button:hover {
-    background: var(--raise);
-    color: var(--fg);
-  }
+.msg-actions > button:hover,
+.msg-actions > button:focus-visible {
+  background: var(--raise);
+  color: var(--fg);
 }
 
 .thinking,
@@ -1231,6 +1254,25 @@ label {
   background: var(--panel);
   color: var(--muted);
   line-height: 1.55;
+}
+
+.history-note,
+.history-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.history-note {
+  flex: none;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.history-note > button,
+.history-actions button {
+  min-height: var(--tap);
+  padding-inline: 12px;
 }
 
 /* A turn the agent's own CLI reported as failed.
@@ -1715,26 +1757,103 @@ label {
   min-height: 0;
   overflow-y: auto;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px 12px;
-  padding-bottom: max(10px, env(safe-area-inset-bottom));
+  gap: 6px;
+  padding: 8px 10px;
+  padding-bottom: max(8px, env(safe-area-inset-bottom));
   background: var(--panel);
   border-top: 1px solid var(--line);
 }
 
-/* The controls row: the agent's option controls, then Send.
- *
- * The reference is a desktop app with room for five controls in a line. At
- * 360px three of them plus Send do not fit at any readable label width, so the
- * row **wraps** — chosen over the alternatives deliberately: a horizontal
- * scroller hides controls behind an edge a thumb cannot find, and squeezing
- * them onto one line clips "Permission mode" to something unreadable on the one
- * control where guessing is dangerous.
- *
- * Wrapping costs a second 52px row, which is affordable everywhere except the
- * keyboard-open case — so that case is paid for by the height query below
- * rather than by making this row lie. Send is last and pushed to the end, so it
- * is on the final row wherever the options break. */
+/* The controls row: occasional agent settings behind one native disclosure and
+ * the Send action that must never move. The old layout permanently spent two
+ * full tap-target rows — over 100px on a phone — on settings before a message
+ * could be sent. They expand in flow only while somebody is actually changing
+ * one; `<details>` supplies the keyboard and screen-reader behaviour. */
+/* One compose surface rather than a text box with a row of unrelated pills
+   underneath it. The outer edge carries the control; writing and its toolbar
+   are separated only by a quiet rule. Focus moves that one edge, so a keyboard
+   still gets an unmistakable location without putting another box inside it. */
+.composer-shell {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 3px 5px;
+  border: 1px solid var(--line-lit);
+  border-radius: 15px;
+  background: var(--bg);
+  transition:
+    border-color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.composer-shell:focus-within {
+  border-color: color-mix(in srgb, var(--accent-ink) 70%, var(--line-lit));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-ink) 18%, transparent);
+}
+
+.composer-shell .composer-text {
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+}
+
+.composer-shell .composer-text:focus-visible {
+  outline: 0;
+}
+
+/* Local previews appear before upload. A compact filmstrip keeps the composer
+   sleek; the image itself is a link to the uncropped object URL, and Remove is
+   a full tap target even though only its × is visually loud. */
+.composer-images {
+  display: flex;
+  flex: none;
+  gap: 8px;
+  min-height: 76px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+.composer-image {
+  position: relative;
+  flex: 0 0 104px;
+  height: 76px;
+  border: 1px solid var(--line-lit);
+  border-radius: 10px;
+  background: var(--wash);
+  overflow: hidden;
+}
+
+.composer-image > a,
+.composer-image img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.composer-image img {
+  object-fit: cover;
+}
+
+.composer-image-remove {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: var(--tap);
+  min-height: var(--tap);
+  padding: 0;
+  border: 0;
+  border-radius: 0 9px 0 10px;
+  background: rgb(22 24 29 / 86%);
+  color: var(--fg);
+  font-size: 22px;
+}
+
+.composer-image-error {
+  color: var(--danger);
+}
+
 .composer-bar {
   /* Never shrinks. It is a column flex item like everything else in this panel,
      and a default `flex-shrink: 1` lets it give up height when the command list
@@ -1742,13 +1861,78 @@ label {
      the row that has to stay reachable. The list gives way instead. */
   flex: none;
   display: flex;
-  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+  padding-top: 2px;
+  border-top: 1px solid var(--line);
+}
+
+.composer-attach {
+  flex: none;
+  display: flex;
   align-items: center;
+  gap: 5px;
+  padding-inline: 9px;
+  color: var(--muted);
+}
+
+.composer-attach > span:first-child {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.composer-settings {
+  flex: 0 1 180px;
+  min-width: 0;
+}
+
+.composer-settings > summary {
+  display: flex;
+  align-items: center;
+  min-height: var(--tap);
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  list-style: none;
+}
+
+.composer-settings > summary:hover {
+  background: var(--raise);
+  color: var(--fg);
+}
+
+.composer-settings > summary::-webkit-details-marker {
+  display: none;
+}
+
+.composer-settings > summary::after {
+  content: '›';
+  margin-left: auto;
+  font: 600 20px/1 var(--sans);
+  transform: rotate(90deg);
+}
+
+.composer-settings[open] > summary::after {
+  transform: rotate(-90deg);
+}
+
+.composer-options {
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
+  margin-top: 5px;
 }
 
 .composer-send {
+  flex: none;
+  min-width: 66px;
   margin-left: auto;
+  padding-inline: 12px;
+  border-radius: 9px;
 }
 
 /* Deliberately the *native* control. A `<select>` is the platform's own menu:
@@ -1759,19 +1943,18 @@ label {
    the popup is not bound by the control's width, which is what lets these be
    narrow while their values are not.
  *
- * `flex: 1 1 0` with `min-width: 0` against the global `select { width: 100% }`,
- * which is sized for the New session sheet's stacked form and would give each of
- * these the full row. `font-size` stays at the global 16px: under it, iOS Safari
- * zooms the page on focus and never zooms back.
+ * The controls share rows only while the disclosure is open. `font-size` stays
+ * at the global 16px: under it, iOS Safari zooms the page on focus and never
+ * zooms back.
  *
  * Cool and quiet, never amber — amber in this app means a human is needed, and
  * these set machine state. Sans rather than mono for the same reason: what the
  * control shows is tether's own word for the axis, not the machine's. */
 .composer-opt {
-  flex: 1 1 auto;
+  flex: 1 1 140px;
   width: auto;
   min-width: 0;
-  max-width: 200px;
+  max-width: none;
   padding: 0 8px;
   border-radius: 999px;
   border: 1px solid var(--line-lit);
@@ -1820,8 +2003,8 @@ label {
      conversation is the failure a 360×640 screen finds first. */
   min-height: var(--tap);
   max-height: 30dvh;
-  padding: 11px 13px;
-  border-radius: 10px;
+  padding: 8px 11px;
+  border-radius: 8px;
   border: 1px solid var(--line-lit);
   background: var(--bg);
   color: var(--fg);
@@ -1964,22 +2147,24 @@ label {
   height: 100%;
 }
 
-/* The accessory bar: above the on-screen keyboard, thumb-sized, scrollable if
-   the screen is too narrow for all of it. */
+/* The seven keys a phone keyboard lacks, all visible without a sideways tray at
+   the 360px floor. Tapping Terminal focuses xterm, so a separate keyboard-icon
+   button was an eighth control that only made the useful keys scroll away. */
 .keys {
   display: flex;
-  gap: 8px;
-  padding: 8px 10px;
-  padding-bottom: max(8px, env(safe-area-inset-bottom));
-  overflow-x: auto;
+  gap: 4px;
+  padding: 6px 8px;
+  padding-bottom: max(6px, env(safe-area-inset-bottom));
+  overflow: hidden;
   background: var(--panel);
   border-top: 1px solid var(--line);
 }
 
 .keys button {
-  flex: 1 0 auto;
-  min-width: 52px;
-  padding: 0 10px;
+  flex: 1 1 44px;
+  min-width: 44px;
+  max-width: 52px;
+  padding: 0;
   font-family: var(--mono);
   font-size: 15px;
   color: var(--muted);
@@ -2046,19 +2231,28 @@ label {
 }
 
 @media (min-width: 600px) {
-  /* One row, and it may not wrap: see `.bar`. There is room here for the title
-     to keep its line even beside the longest pair of chips. */
-  .bar {
-    flex-wrap: nowrap;
-  }
-
-  .bar-chips {
-    flex-basis: auto;
-  }
-
   .sheet {
     align-items: center;
   }
+
+  /* Open settings use one compact horizontal tray on a roomy screen rather
+     than the tall 180px-wide stack a phone needs. Send stays at the far edge. */
+  .composer-settings[open] {
+    flex: 1 1 auto;
+  }
+
+  .composer-settings[open] > summary {
+    width: 180px;
+  }
+
+  .composer-settings[open] .composer-options {
+    flex-wrap: nowrap;
+  }
+
+  .composer-settings[open] .composer-opt {
+    flex: 1 1 140px;
+  }
+
   /* Thumb-filling widths are a phone answer; on a desktop they are just large. */
   .keys {
     justify-content: center;
@@ -2066,6 +2260,7 @@ label {
   .keys button {
     flex: 0 0 auto;
     min-width: 64px;
+    max-width: none;
   }
 }
 
@@ -2090,15 +2285,6 @@ label {
      message rather than out at the window edge. */
   .crumbs {
     padding-inline: max(12px, calc((100% - var(--column)) / 2));
-  }
-
-  /* Inset from the pane's edges rather than full-bleed: with room to spare on
-     either side, the conversation stays visible around it and the sheet reads as
-     summoned. On a phone there is no room to spend, so it keeps its full width. */
-  .termsheet {
-    top: 16px;
-    right: 16px;
-    left: 16px;
   }
 
   .waiting {

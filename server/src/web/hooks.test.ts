@@ -36,6 +36,7 @@ const noTerminals: Terminals = {
   async attach() {
     return () => {};
   },
+  async refresh() {},
   async resize() {},
   async input() {
     return true;

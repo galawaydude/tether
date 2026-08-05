@@ -9,12 +9,13 @@
  *    one process from two independent sources (report §3). There is no shared
  *    cursor, so there is nothing to reconcile, and anything that syncs them is
  *    inventing a consistency problem the design does not have.
- *  - **It does not rebuild the list per event.** Rows are appended by
- *    `addEvents` and carry a stable `key`, so an arriving event is one new node
- *    in the diff — or, for a `tool_result`, one card's contents.
+ *  - **It does not rebuild the list per event.** Transcript frames are batched,
+ *    rows are immutable, and `RowView` is memoized, so a burst renders once and
+ *    touches only its new nodes — or, for a `tool_result`, its one changed card.
  */
 
 import type { ServerFrame, SessionState } from '@tether/shared';
+import { memo } from 'preact/compat';
 import { useEffect, useRef, useState } from 'preact/hooks';
 
 import {
@@ -22,7 +23,13 @@ import {
   ApiError,
   convSocketUrl,
   fetchConversation,
+  IMAGE_TYPES,
+  imageUrl,
+  MAX_IMAGE_BYTES,
+  MAX_MESSAGE_IMAGES,
   setPermissionMode,
+  uploadImage,
+  type UploadedImage,
 } from './api.ts';
 import { matchCommands, planSend, whereLabel } from './commands.ts';
 import {
@@ -33,7 +40,10 @@ import {
   addPending,
   diffExtras,
   errorAdvice,
+  historyPage,
   markUndelivered,
+  messageContent,
+  messageWithImages,
   noRows,
   rebuild,
   sendBlocked,
@@ -41,11 +51,12 @@ import {
   toolResult,
   toolState,
   type Diff,
+  type HistoryPage,
   type Row,
   type Rows,
   type ToolRow,
 } from './conversation.ts';
-import { markdown, type Block, type Span } from './markdown.ts';
+import type { Block, Span } from './markdown.ts';
 import {
   axesFor,
   choiceIn,
@@ -122,6 +133,14 @@ export function ConversationView({
 }) {
   const [state, setState] = useState<Rows>(noRows);
   const [failed, setFailed] = useState(false);
+  const [earliest, setEarliest] = useState<number | null>(null);
+  const [archive, setArchive] = useState<HistoryPage | null>(null);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  // Whether a live update should keep the current page pinned to its end. Also
+  // set when moving between bounded history pages, whose natural entry point is
+  // their newest event.
+  const stuck = useRef(true);
   // Also reported up, but the composer needs it here: a message pasted at a
   // permission prompt answers the prompt.
   const [agent, setAgent] = useState<SessionState>('idle');
@@ -156,6 +175,25 @@ export function ConversationView({
     // rather than read back out of state so a frame arriving between renders
     // still moves it.
     let since = 0;
+    // A transcript flush often contains a burst of records. The server keeps
+    // their order but sends one frame per event; rendering once per frame makes
+    // a long conversation re-diff itself dozens of times in one browser frame.
+    // Coalesce only transcript events and flush before every out-of-band update.
+    let queued: Extract<ServerFrame, { c: 'conv' }>[] = [];
+    let flushTimer: ReturnType<typeof setTimeout> | undefined;
+    const flushEvents = () => {
+      clearTimeout(flushTimer);
+      flushTimer = undefined;
+      if (queued.length === 0 || closed) return;
+      const batch = queued;
+      queued = [];
+      setState((current) => addEvents(current, batch));
+    };
+    const queueEvent = (frame: Extract<ServerFrame, { c: 'conv' }>) => {
+      queued.push(frame);
+      since = Math.max(since, frame.seq);
+      flushTimer ??= setTimeout(flushEvents, 16);
+    };
 
     /**
      * The documented handshake: history over HTTP, then follow from its `seq`.
@@ -179,7 +217,10 @@ export function ConversationView({
         // the documented handshake, and `connect` needs it now, whereas an
         // updater does not run until the next render.
         since = history.seq;
-        setState((current) => rebuild(current, history.events));
+        setEarliest(history.before ?? history.events[0]?.seq ?? null);
+        setArchive(null);
+        setHistoryError(null);
+        setState((current) => rebuild(current, history.events, history.truncated === true));
         connect();
       } catch {
         if (closed) return;
@@ -203,6 +244,10 @@ export function ConversationView({
         const frame = parse(event.data);
         if (frame === undefined) return;
         if (frame.c === 'refetch') {
+          // A refetch supersedes anything queued from the stream being left.
+          clearTimeout(flushTimer);
+          flushTimer = undefined;
+          queued = [];
           // The gap is wider than the server's memory. Close first: `load`
           // reconnects, and two sockets on one session would double every event.
           ws.onclose = null;
@@ -218,6 +263,8 @@ export function ConversationView({
           return;
         }
         if (frame.c === 'pending') {
+          // Keep wire order against a transcript card this may put buttons on.
+          flushEvents();
           // No `since` move: a proposal is not a transcript event and has no
           // position in the `seq` stream. `addPending` only moves the buttons if
           // the record already arrived, which is how the two orderings both come
@@ -226,19 +273,17 @@ export function ConversationView({
           return;
         }
         if (frame.c === 'answer') {
+          flushEvents();
           setState((current) => addAnswer(current, frame.callId, frame.outcome));
           return;
         }
         if (frame.c !== 'conv') return;
-        setState((current) => {
-          const next = addEvents(current, [{ seq: frame.seq, e: frame.e }]);
-          since = next.seq;
-          return next;
-        });
+        queueEvent(frame);
       };
       ws.onclose = (event: CloseEvent) => {
         socket = null;
         live.current = null;
+        flushEvents();
         if (closed) return;
         // `CLOSE_NO_SESSION` on *this* channel is the one honest use of it: the
         // route sends it only where `getSession` found no row at all. Reporting
@@ -266,6 +311,8 @@ export function ConversationView({
     return () => {
       closed = true;
       clearTimeout(reconnect);
+      clearTimeout(flushTimer);
+      queued = [];
       live.current = null;
       if (socket !== null) {
         socket.onclose = null;
@@ -283,12 +330,41 @@ export function ConversationView({
 
   // Stick to the end only when already there: a user reading back through a long
   // session must not be yanked to the bottom every time the agent says something.
-  const stuck = useRef(true);
   useEffect(() => {
     const element = list.current;
     if (element === null || !stuck.current) return;
     element.scrollTop = element.scrollHeight;
-  }, [state]);
+  }, [state, archive]);
+
+  const showEarlier = async () => {
+    const before = archive?.first ?? earliest;
+    if (before === null || before <= 1 || loadingEarlier) return;
+    setLoadingEarlier(true);
+    setHistoryError(null);
+    try {
+      const history = await fetchConversation(sessionId, before);
+      const page = historyPage(history.events, history.truncated === true, history.before);
+      if (page === null) {
+        setHistoryError('No earlier history was found.');
+        return;
+      }
+      stuck.current = true;
+      setArchive(page);
+    } catch (failure) {
+      setHistoryError(
+        failure instanceof ApiError ? failure.message : 'Could not load earlier history.',
+      );
+    } finally {
+      setLoadingEarlier(false);
+    }
+  };
+
+  const backToLatest = () => {
+    stuck.current = true;
+    setArchive(null);
+    setHistoryError(null);
+  };
+  const shown = archive?.view ?? state;
 
   return (
     <>
@@ -306,10 +382,50 @@ export function ConversationView({
             Cannot read this conversation. The terminal still shows everything.
           </p>
         )}
-        {state.rows.length === 0 && state.echoes.length === 0 && !failed && (
+        {archive === null && state.truncated && (
+          <div class="note history-note">
+            <span>Earlier conversation is available in fast, bounded pages.</span>
+            <button
+              type="button"
+              class="ghost"
+              disabled={loadingEarlier || earliest === null}
+              onClick={() => void showEarlier()}
+            >
+              {loadingEarlier ? 'Loading…' : 'Load earlier'}
+            </button>
+          </div>
+        )}
+        {archive !== null && (
+          <div class="note history-note">
+            <span>
+              Earlier history, events {archive.first}–{archive.last}.
+            </span>
+            <span class="history-actions">
+              {archive.more && (
+                <button
+                  type="button"
+                  class="ghost"
+                  disabled={loadingEarlier}
+                  onClick={() => void showEarlier()}
+                >
+                  {loadingEarlier ? 'Loading…' : 'Load earlier'}
+                </button>
+              )}
+              <button type="button" class="ghost" onClick={backToLatest}>
+                Back to latest
+              </button>
+            </span>
+          </div>
+        )}
+        {historyError !== null && (
+          <p class="error" role="alert">
+            {historyError}
+          </p>
+        )}
+        {shown.rows.length === 0 && shown.echoes.length === 0 && !failed && (
           <p class="muted">Nothing yet. The terminal shows the session as it starts.</p>
         )}
-        {state.rows.map((row) => (
+        {shown.rows.map((row) => (
           <RowView
             key={row.key}
             row={row}
@@ -321,20 +437,14 @@ export function ConversationView({
         {/* Keyed by position: an echo is retired from the front, so the key of
             everything behind it shifts by one and Preact re-renders text into
             cards that are already on screen rather than replacing them. */}
-        {state.echoes.map((echo, at) => (
-          <article
-            class={`msg msg-user ${echo.undelivered === null ? 'msg-sending' : 'msg-undelivered'}`}
+        {shown.echoes.map((echo, at) => (
+          <EchoView
             key={`echo:${at}`}
-          >
-            {/* The same label the record that replaces it will carry, so the
-                swap changes the note and nothing else. */}
-            <h3 class="msg-who">{whoLabel('user', provider)}</h3>
-            {/* Rendered the same way the record that replaces it will be, so a
-                message with a code fence in it does not change shape a second
-                later when the transcript catches up. */}
-            <Markdown blocks={markdown(echo.text)} />
-            <p class="msg-note">{echo.undelivered ?? 'Sending…'}</p>
-          </article>
+            source={echo.text}
+            undelivered={echo.undelivered}
+            provider={provider}
+            sessionId={sessionId}
+          />
         ))}
       </div>
       <Composer
@@ -359,6 +469,56 @@ export function ConversationView({
   );
 }
 
+function MessageImages({
+  images,
+  sessionId,
+}: {
+  images: readonly { id: string }[];
+  sessionId: string;
+}) {
+  if (images.length === 0) return null;
+  return (
+    <div class="msg-images">
+      {images.map((image, at) => {
+        const src = imageUrl(sessionId, image.id);
+        return (
+          <a
+            key={image.id}
+            href={src}
+            target="_blank"
+            rel="noreferrer"
+            aria-label={`View pasted image ${at + 1} full size`}
+          >
+            <img src={src} alt={`Pasted image ${at + 1}`} loading="lazy" />
+          </a>
+        );
+      })}
+    </div>
+  );
+}
+
+function EchoView({
+  source,
+  undelivered,
+  provider,
+  sessionId,
+}: {
+  source: string;
+  undelivered: string | null;
+  provider: string;
+  sessionId: string;
+}) {
+  const content = messageContent(source);
+  return (
+    <article class={`msg msg-user ${undelivered === null ? 'msg-sending' : 'msg-undelivered'}`}>
+      <h3 class="msg-who">{whoLabel('user', provider)}</h3>
+      {content.text !== '' && <Markdown blocks={content.blocks} />}
+      <MessageImages images={content.images} sessionId={sessionId} />
+      <p class="msg-note">{undelivered ?? 'Sending…'}</p>
+    </article>
+  );
+}
+
 /**
  * The composer: a real textarea and a real button, and **no submit on Enter**.
  *
@@ -374,6 +534,9 @@ export function ConversationView({
  * A `<form>` around a textarea is safe for exactly the same reason: Enter only
  * submits a form implicitly from a single-line control.
  */
+type DraftImage = { key: number; file: File; preview: string };
+let nextDraftImage = 1;
+
 function Composer({
   agent,
   provider,
@@ -392,7 +555,22 @@ function Composer({
   sessionId: string;
 }) {
   const [text, setText] = useState('');
+  const [images, setImages] = useState<readonly DraftImage[]>([]);
+  const [imageError, setImageError] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+  const imagesNow = useRef<readonly DraftImage[]>([]);
+  imagesNow.current = images;
   const box = useRef<HTMLTextAreaElement>(null);
+  const imageInput = useRef<HTMLInputElement>(null);
+
+  // Object URLs hold the pasted bytes. Release every one when this composer is
+  // replaced; successful sends and explicit removes release theirs sooner.
+  useEffect(
+    () => () => {
+      for (const image of imagesNow.current) URL.revokeObjectURL(image.preview);
+    },
+    [],
+  );
   /** A choice held back until its warning has been read. Never more than one:
    *  a second warning stacked behind the first is a warning nobody reads. */
   const [held, setHeld] = useState<{ axis: Axis; choice: Choice; note: string } | null>(null);
@@ -436,9 +614,46 @@ function Composer({
    *  which is the whole of when this list is not there. */
   const matches = matchCommands(provider, text);
 
-  const clear = () => {
+  const clearText = () => {
     setText('');
     if (box.current !== null) box.current.style.height = '';
+  };
+
+  const clearImages = () => {
+    for (const image of imagesNow.current) URL.revokeObjectURL(image.preview);
+    imagesNow.current = [];
+    setImages([]);
+    if (imageInput.current !== null) imageInput.current.value = '';
+  };
+
+  const addImages = (files: readonly File[]) => {
+    setImageError(null);
+    const accepted: DraftImage[] = [];
+    for (const file of files) {
+      if (imagesNow.current.length + accepted.length >= MAX_MESSAGE_IMAGES) {
+        setImageError(`Attach up to ${MAX_MESSAGE_IMAGES} images to one prompt.`);
+        break;
+      }
+      if (!IMAGE_TYPES.has(file.type)) {
+        setImageError('Use a PNG, JPEG, WebP or GIF image.');
+        continue;
+      }
+      if (file.size === 0 || file.size > MAX_IMAGE_BYTES) {
+        setImageError(`Each image must be no larger than ${MAX_IMAGE_BYTES / 1024 / 1024} MB.`);
+        continue;
+      }
+      accepted.push({ key: nextDraftImage++, file, preview: URL.createObjectURL(file) });
+    }
+    if (accepted.length > 0) setImages((current) => [...current, ...accepted]);
+  };
+
+  const removeImage = (key: number) => {
+    setImages((current) => {
+      const removed = current.find((image) => image.key === key);
+      if (removed !== undefined) URL.revokeObjectURL(removed.preview);
+      return current.filter((image) => image.key !== key);
+    });
+    setImageError(null);
   };
 
   /** Whatever the composer last said is about something nobody is doing now.
@@ -466,14 +681,43 @@ function Composer({
    * provider's own permission dialog answers the dialog, and a slash command is
    * no less dangerous there than a prompt.
    */
-  const submit = (event: Event) => {
+  const submit = async (event: Event) => {
     event.preventDefault();
-    if (message === '' || blocked !== null) return;
-    const plan = planSend(provider, message);
+    if ((message === '' && images.length === 0) || blocked !== null || sending) return;
     clearNotes();
+
+    // An attachment is a prompt even when its caption begins with `/`: routing
+    // it as a slash command would run the command and silently leave the image
+    // out. Upload first so the one input frame carries paths that already exist.
+    if (images.length > 0) {
+      setSending(true);
+      setImageError(null);
+      try {
+        const uploaded: UploadedImage[] = [];
+        for (const image of images) uploaded.push(await uploadImage(sessionId, image.file));
+        const composed = messageWithImages(message, uploaded);
+        const nowBlocked = sendBlocked(agent, composed, terminal);
+        if (nowBlocked !== null) {
+          setImageError(nowBlocked);
+          return;
+        }
+        onSend(composed);
+        clearText();
+        clearImages();
+      } catch (failure) {
+        setImageError(
+          failure instanceof ApiError ? failure.message : 'Could not attach that image. Try again.',
+        );
+      } finally {
+        setSending(false);
+      }
+      return;
+    }
+
+    const plan = planSend(provider, message);
     if (plan.plan === 'message') {
       onSend(message);
-      clear();
+      clearText();
       return;
     }
     // Refused, so the text stays in the box: the note says what to change about
@@ -484,7 +728,7 @@ function Composer({
     }
     onApply([plan.send]);
     setSaid({ text: plan.note, hatch: plan.hatch });
-    clear();
+    clearText();
   };
 
   /**
@@ -575,82 +819,153 @@ function Composer({
       <label class="sr-only" for="composer-text">
         Message
       </label>
-      <textarea
-        id="composer-text"
-        ref={box}
-        class="composer-text"
-        rows={1}
-        placeholder={composerHint(providerLabel(provider))}
-        aria-describedby={blocked === null ? undefined : 'composer-blocked'}
-        value={text}
-        onInput={(event) => {
-          const element = event.currentTarget;
-          setText(element.value);
-          // Grow to fit, capped by CSS `max-height`. Reset first: without it the
-          // box only ever gets taller, since `scrollHeight` of an already-tall
-          // element is its own height.
-          element.style.height = '';
-          element.style.height = `${element.scrollHeight}px`;
-        }}
-      />
-      {held !== null && (
-        <div class="composer-warn" role="group" aria-label={`Confirm ${held.axis.label}`}>
-          <p role="alert">
-            <strong>{held.choice.label}</strong> — {held.note}
-          </p>
-          <div class="composer-warn-acts">
-            <button type="button" onClick={() => setHeld(null)}>
-              Cancel
-            </button>
-            <button
-              type="button"
-              class="primary"
-              disabled={optionsBlocked || (held.axis.via === 'permission-mode' && modeBusy)}
-              onClick={() => {
-                apply(held.choice, held.axis);
-                setHeld(null);
-              }}
-            >
-              {`Set ${held.axis.label.toLowerCase()} to ${held.choice.label}`}
-            </button>
+      <div class="composer-shell">
+        {images.length > 0 && (
+          <div class="composer-images" aria-label="Images attached to this prompt">
+            {images.map((image, at) => (
+              <div class="composer-image" key={image.key}>
+                <a
+                  href={image.preview}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label={`View pasted image ${at + 1} full size`}
+                >
+                  <img src={image.preview} alt={`Pasted image ${at + 1}`} />
+                </a>
+                <button
+                  type="button"
+                  class="composer-image-remove"
+                  aria-label={`Remove pasted image ${at + 1}`}
+                  onClick={() => removeImage(image.key)}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
           </div>
-        </div>
-      )}
-      <div class="composer-bar">
-        {/* Each control is a menu of values, never a display of the agent's
+        )}
+        <textarea
+          id="composer-text"
+          ref={box}
+          class="composer-text"
+          rows={1}
+          placeholder={composerHint(providerLabel(provider))}
+          aria-describedby={
+            [
+              blocked === null ? null : 'composer-blocked',
+              imageError === null ? null : 'image-error',
+            ]
+              .filter((id) => id !== null)
+              .join(' ') || undefined
+          }
+          value={text}
+          onPaste={(event) => {
+            const pasted = [...(event.clipboardData?.items ?? [])]
+              .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+              .map((item) => item.getAsFile())
+              .filter((file): file is File => file !== null);
+            if (pasted.length === 0) return;
+            event.preventDefault();
+            addImages(pasted);
+          }}
+          onInput={(event) => {
+            const element = event.currentTarget;
+            setText(element.value);
+            // Grow to fit, capped by CSS `max-height`. Reset first: without it the
+            // box only ever gets taller, since `scrollHeight` of an already-tall
+            // element is its own height.
+            element.style.height = '';
+            element.style.height = `${element.scrollHeight}px`;
+          }}
+        />
+        {held !== null && (
+          <div class="composer-warn" role="group" aria-label={`Confirm ${held.axis.label}`}>
+            <p role="alert">
+              <strong>{held.choice.label}</strong> — {held.note}
+            </p>
+            <div class="composer-warn-acts">
+              <button type="button" onClick={() => setHeld(null)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                class="primary"
+                disabled={optionsBlocked || (held.axis.via === 'permission-mode' && modeBusy)}
+                onClick={() => {
+                  apply(held.choice, held.axis);
+                  setHeld(null);
+                }}
+              >
+                {`Set ${held.axis.label.toLowerCase()} to ${held.choice.label}`}
+              </button>
+            </div>
+          </div>
+        )}
+        <div class="composer-bar">
+          <input
+            ref={imageInput}
+            class="sr-only"
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/gif"
+            multiple
+            tabindex={-1}
+            onChange={(event) => addImages([...(event.currentTarget.files ?? [])])}
+          />
+          <button
+            type="button"
+            class="ghost composer-attach"
+            aria-label="Add image"
+            title="Paste an image into the text box, or choose one"
+            disabled={sending || images.length >= MAX_MESSAGE_IMAGES}
+            onClick={() => imageInput.current?.click()}
+          >
+            <span aria-hidden="true">＋</span>
+            <span>Image</span>
+          </button>
+          {/* Each control is a menu of values, never a display of the agent's
             current one — tether cannot read most of those from a running pane,
             and a stale value beside a live agent is worse than no value. So it
             shows the axis, resets to it after applying, and the pane's own
-            answer in the conversation above is the confirmation. */}
-        {axes.map((axis) => (
-          <select
-            key={axis.id}
-            class="composer-opt"
-            aria-label={axis.label}
-            disabled={optionsBlocked || (axis.via === 'permission-mode' && modeBusy)}
-            value=""
-            onChange={(event) => {
-              const element = event.currentTarget;
-              const value = element.value;
-              element.value = '';
-              if (value !== '') pick(axis, value);
-            }}
+            answer in the conversation above is the confirmation.
+
+            The options scroll inside their own one-line strip while Send stays
+            fixed at the edge. Three always-visible rows of agent settings were
+            taking more space than the message on the phone this UI is for. */}
+          <details class="composer-settings">
+            <summary>Agent options</summary>
+            <div class="composer-options">
+              {axes.map((axis) => (
+                <select
+                  key={axis.id}
+                  class="composer-opt"
+                  aria-label={axis.label}
+                  disabled={optionsBlocked || (axis.via === 'permission-mode' && modeBusy)}
+                  value=""
+                  onChange={(event) => {
+                    const element = event.currentTarget;
+                    const value = element.value;
+                    element.value = '';
+                    if (value !== '') pick(axis, value);
+                  }}
+                >
+                  <option value="">{axis.label}</option>
+                  {axis.choices.map((choice) => (
+                    <option key={choice.value} value={choice.value}>
+                      {choice.label}
+                    </option>
+                  ))}
+                </select>
+              ))}
+            </div>
+          </details>
+          <button
+            type="submit"
+            class="composer-send primary"
+            disabled={(message === '' && images.length === 0) || blocked !== null || sending}
           >
-            <option value="">{axis.label}</option>
-            {axis.choices.map((choice) => (
-              <option key={choice.value} value={choice.value}>
-                {choice.label}
-              </option>
-            ))}
-          </select>
-        ))}
-        <button
-          type="submit"
-          class="composer-send primary"
-          disabled={message === '' || blocked !== null}
-        >
-          Send
-        </button>
+            {sending ? 'Sending…' : 'Send'}
+          </button>
+        </div>
       </div>
       {/* What the permission-mode request *did*, which is the only thing this
           axis is allowed to claim — the server read the pane back to say it. */}
@@ -684,6 +999,11 @@ function Composer({
           )}
         </p>
       )}
+      {imageError !== null && (
+        <p class="composer-note composer-image-error" id="image-error" role="alert">
+          {imageError}
+        </p>
+      )}
       {blocked !== null && (
         <p class="composer-note" id="composer-blocked" role="status">
           {blocked}
@@ -707,23 +1027,30 @@ function parse(data: unknown): ServerFrame | undefined {
 }
 
 /**
- * Copy, and deliberately **not** `navigator.clipboard`.
+ * Copy across both kinds of origin tether supports.
  *
- * That API is secure-context only, and tether is plain HTTP off loopback by
- * design — so it is present on the machine serving the app and absent on the
- * phone this product exists for, which is exactly the failure mode
- * `CLAUDE.md`'s insecure-context entry records costing a whole terminal pane.
- * `execCommand('copy')` carries no such gate. It is deprecated and it is also
- * the only thing here that works everywhere this app is loaded.
- *
- * ponytail: a textarea and one call, no permission flow and no fallback chain.
- * If a browser ever drops `execCommand` this needs `navigator.clipboard` in
- * front of it, guarded on being defined rather than on the context.
+ * `navigator.clipboard` is the clean path where a browser exposes it, but it is
+ * secure-context-only and tether is plain HTTP off loopback by design. Feature
+ * detection—not an origin guess—keeps the phone path on `execCommand('copy')`,
+ * which has no such gate. A permission refusal on the modern path falls back as
+ * well; a button that stays silent after one failed API call is not a copy
+ * feature.
  */
-function copyText(text: string): void {
-  // Where focus was, because removing the textarea drops it to `<body>`: the
-  // actions are revealed by `:focus-within`, so a keyboard user who did not get
-  // their button back has lost both the row and their place in the tab order.
+async function copyText(text: string): Promise<boolean> {
+  // Modern where the browser exposes it; remote plain HTTP withholds it, so its
+  // absence or refusal falls through to the path that works there too.
+  if (navigator.clipboard?.writeText !== undefined) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // Permission policy and browser settings can refuse even in a secure
+      // context. The fallback below has a different permission model.
+    }
+  }
+
+  // Where focus was, because removing the textarea drops it to `<body>`: a
+  // keyboard user whose button is not restored has lost their place.
   const was = document.activeElement;
   const box = document.createElement('textarea');
   box.value = text;
@@ -731,12 +1058,10 @@ function copyText(text: string): void {
   box.setAttribute('aria-hidden', 'true');
   box.style.cssText = 'position:fixed;top:-1000px;opacity:0';
   document.body.append(box);
-  // Focused explicitly: where `select()` alone does not move focus, the copy
-  // takes the document's existing selection instead of this text.
   box.focus();
   box.select();
   try {
-    document.execCommand('copy');
+    return document.execCommand('copy');
   } finally {
     box.remove();
     if (was instanceof HTMLElement) was.focus();
@@ -744,16 +1069,35 @@ function copyText(text: string): void {
 }
 
 /**
- * The one per-message action, and it is furniture only where there is a pointer
- * to reveal it with — `style.css` does not render it at all on a touch screen,
- * where a permanent button on every message is density a 360px phone cannot
- * spend. Inside the `<article>`, so hover and focus scope to one message.
+ * One action per text-bearing message, visible on touch as well as pointer
+ * devices. Its success state is local to the row so copying one reply cannot
+ * make every identical button claim it was copied.
  */
 function MessageActions({ text, label }: { text: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (timer.current !== null) clearTimeout(timer.current);
+    },
+    [],
+  );
   return (
     <div class="msg-actions">
-      <button type="button" class="ghost" aria-label={label} onClick={() => copyText(text)}>
-        Copy
+      <button
+        type="button"
+        class="ghost"
+        aria-label={copied ? `${label} — copied` : label}
+        onClick={() => {
+          void copyText(text).then((ok) => {
+            if (!ok) return;
+            setCopied(true);
+            if (timer.current !== null) clearTimeout(timer.current);
+            timer.current = setTimeout(() => setCopied(false), 1600);
+          });
+        }}
+      >
+        {copied ? 'Copied' : 'Copy'}
       </button>
     </div>
   );
@@ -866,7 +1210,7 @@ function Spans({ spans }: { spans: readonly Span[] }) {
   );
 }
 
-function RowView({
+const RowView = memo(function RowView({
   row,
   provider,
   sessionId,
@@ -885,8 +1229,11 @@ function RowView({
           {/* Markdown, and not a dependency: `markdown.ts` is a bounded subset
               that returns data, and this renders data. Copy still copies what
               the agent actually wrote. */}
-          <Markdown blocks={row.blocks} />
-          <MessageActions text={row.text} label={copyLabel(row.who, provider)} />
+          {row.text !== '' && <Markdown blocks={row.blocks} />}
+          <MessageImages images={row.images} sessionId={sessionId} />
+          {row.text !== '' && (
+            <MessageActions text={row.text} label={copyLabel(row.who, provider)} />
+          )}
         </article>
       );
     case 'thinking':
@@ -954,7 +1301,7 @@ function RowView({
     case 'tool':
       return <ToolCard row={row} sessionId={sessionId} provider={provider} />;
   }
-}
+});
 
 /**
  * `<details>` rather than a state hook: collapsed by default is the element's

@@ -329,7 +329,9 @@ export async function resumeSession(
     roots,
   });
   try {
-    revive(db, current.id);
+    if (!revive(db, current.id)) {
+      throw new Error(`session ${current.id} was removed while it was resuming`);
+    }
   } catch (error) {
     // Same rule as `startSession`: a pane the registry does not point at is
     // invisible garbage — worse here, because the row stays dead and every later

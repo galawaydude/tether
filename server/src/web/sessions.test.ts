@@ -28,6 +28,7 @@ import {
 import { Conversations } from '../machine/conversations.ts';
 import { createTerminals } from '../machine/terminal.ts';
 import { killServer, listPanes, listSessions as listTmuxSessions } from '../machine/tmux.ts';
+import { processStart } from '../providers/claude-code/status.ts';
 import { createAuthStore } from './auth.ts';
 import { defaultAllowedHosts } from './guards.ts';
 import { SESSION_COOKIE, buildServer } from './server.ts';
@@ -156,6 +157,7 @@ test('every session route rejects an unauthenticated request', async (t) => {
     ['GET', `${BASE}/${id}`],
     ['DELETE', `${BASE}/${id}`],
     ['POST', `${BASE}/${id}/resume`],
+    ['POST', `${BASE}/${id}/forget`],
   ];
 
   for (const [method, url, payload] of requests) {
@@ -350,6 +352,24 @@ test('delete is idempotent, and unknown ids are 404 rather than 500', async (t) 
   }
 });
 
+test('remove hides only a dead row and leaves live sessions alone', async (t) => {
+  const h = await harness(t);
+  const session = (await create(h, h.root, { title: 'removable' })).json().session;
+
+  const live = await call(h, 'POST', `${BASE}/${session.id}/forget`);
+  assert.equal(live.statusCode, 409);
+  assert.equal(live.json().error, 'session_live');
+  assert.equal((await call(h, 'GET', BASE)).json().sessions.length, 1);
+
+  await call(h, 'DELETE', `${BASE}/${session.id}`);
+  const removed = await call(h, 'POST', `${BASE}/${session.id}/forget`);
+  assert.equal(removed.statusCode, 204, removed.body);
+  assert.deepEqual((await call(h, 'GET', BASE)).json().sessions, []);
+  assert.equal((await call(h, 'GET', `${BASE}/${session.id}`)).statusCode, 404);
+  assert.equal((await call(h, 'POST', `${BASE}/${session.id}/resume`)).statusCode, 404);
+  assert.equal((await call(h, 'POST', `${BASE}/${session.id}/forget`)).statusCode, 404);
+});
+
 test('the list reconciles: a session killed behind tether’s back reads as dead', async (t) => {
   const h = await harness(t);
 
@@ -375,8 +395,8 @@ async function publishStatus(
   pid: number,
   fields: { sessionId?: string; status: string },
 ): Promise<void> {
-  const stat = await readFile(`/proc/${pid}/stat`, 'utf8');
-  const procStart = stat.slice(stat.lastIndexOf(') ') + 2).split(' ')[19];
+  const procStart = await processStart(pid);
+  assert.ok(procStart, 'this platform publishes a process start identity tether understands');
   await mkdir(join(home, '.claude', 'sessions'), { recursive: true });
   await writeFile(
     join(home, '.claude', 'sessions', `${pid}.json`),

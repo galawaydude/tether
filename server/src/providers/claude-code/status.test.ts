@@ -12,21 +12,19 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { readSession, sessionStatusPath } from './status.ts';
+import { processStart, readSession, sessionStatusPath } from './status.ts';
 
 const SESSION_ID = '261d15fb-c568-41fa-ae66-917b107857bd';
 
-/** `/proc/<pid>/stat` field 22, exactly as `procStart` records it. */
+/** The process identity Claude Code records on this operating system. */
 async function realProcStart(pid: number): Promise<string> {
-  const stat = await readFile(`/proc/${pid}/stat`, 'utf8');
-  const after = stat.slice(stat.lastIndexOf(') ') + 2);
-  const started = after.split(' ')[19];
-  assert.ok(started, 'this platform has a procfs, which these tests assume');
+  const started = await processStart(pid);
+  assert.ok(started, 'this platform publishes a process start identity tether understands');
   return started;
 }
 
