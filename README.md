@@ -107,7 +107,11 @@ leaves the file alone.
 - **Tailscale on the host only**, for the default public link. Linux uses
   Tailscale's own distro-aware installer after consent. On macOS tether offers
   Tailscale's signed **Standalone** package, the variant Tailscale currently
-  recommends; macOS verifies its package signature. Viewers install nothing.
+  [recommends](https://tailscale.com/docs/concepts/macos-variants); macOS verifies
+  its package signature. Although that page's comparison table says Funnel is
+  unavailable, Tailscale's specific [Funnel documentation](https://tailscale.com/docs/features/tailscale-funnel)
+  says Standalone can proxy ports (but not files or directories), which is the
+  only Funnel mode tether uses. Viewers install nothing.
 
 ### Upgrading, and uninstalling
 
