@@ -175,6 +175,34 @@ serving_as() {
 	curl -fsS -o /dev/null --max-time 5 -H "Host: $1" "http://127.0.0.1:$PORT/" 2>/dev/null
 }
 
+publication_target_safe() {
+	serving_as "$1" && return 0
+	curl -sS -o /dev/null --max-time 5 "http://127.0.0.1:$PORT/" 2>/dev/null
+	[ "$?" -eq 7 ]
+}
+
+set_tether_password() {
+	step "Setting tether's password"
+	note "One account, one password. It is the only thing between that public"
+	note "address and a shell on this machine, so make it a real one."
+	[ -e /dev/tty ] || {
+		note "There is no terminal to prompt on. Run \`tether set-password\` yourself,"
+		note "then re-run this installer."
+		return 1
+	}
+	"$BIN_DIR/tether" set-password --if-unset </dev/tty
+}
+
+prepare_publication() {
+	set_tether_password || return 1
+	publication_target_safe "$1" || {
+		step "Something else is already using 127.0.0.1:$PORT"
+		note "It could not be identified as tether serving for $1, so Funnel was not"
+		note "turned on. Stop that service, then re-run this installer."
+		return 1
+	}
+}
+
 # The one way this script reads Tailscale, and it is the structured document
 # rather than any of the human-readable output the same binary prints:
 # `tailscale status --json`, which server/src/machine/tailscale.ts reads too.
@@ -782,6 +810,12 @@ self_test() {
 	# Funnel on for a different host on this tailnet.
 	check 1 funnel_armed "$armed" other-box.tailnet-1234.ts.net
 
+	check_out password-port bash -c "$(declare -f prepare_publication); set_tether_password() { printf password-; }; publication_target_safe() { printf port; }; prepare_publication host"
+	check 0 bash -c "$(declare -f publication_target_safe); serving_as() { return 0; }; curl() { return 1; }; publication_target_safe host"
+	check 0 bash -c "$(declare -f publication_target_safe); serving_as() { return 1; }; curl() { return 7; }; publication_target_safe host"
+	check 1 bash -c "$(declare -f publication_target_safe); serving_as() { return 1; }; curl() { return 0; }; publication_target_safe host"
+	check 1 bash -c "$(declare -f publication_target_safe); serving_as() { return 1; }; curl() { return 28; }; publication_target_safe host"
+
 	# Moving an existing install to another ref, which the shallow clone makes the
 	# non-obvious half of this script: a fresh clone can be told to fetch any ref,
 	# an existing one holds exactly the one it was cloned at. Both cases that
@@ -983,6 +1017,12 @@ reachability() {
 	# capability strands a fresh user before the command that fixes it, so the
 	# capability read is advisory and the command's own refusal is authoritative.
 	host=$(ts_dns_name "$status")
+	[ -n "$host" ] || {
+		step "Tailscale reports no public name for this machine"
+		note "Enable MagicDNS, then re-run this installer before publishing Funnel."
+		return 1
+	}
+	prepare_publication "$host" || return 1
 	if [ -n "$host" ] && funnel_armed "$(tailscale serve status --json 2>/dev/null || true)" "$host"; then
 		note "Funnel already points at 127.0.0.1:$PORT."
 	else
@@ -1052,19 +1092,6 @@ reachability() {
 	}
 	url="https://$host"
 
-	# Before tether starts and therefore before the address is answerable at all.
-	# `--if-unset` is what makes a re-run leave a working password alone rather
-	# than asking for it again.
-	step "Setting tether's password"
-	note "One account, one password. It is the only thing between that public"
-	note "address and a shell on this machine, so make it a real one."
-	[ -e /dev/tty ] || {
-		note "There is no terminal to prompt on. Run \`tether set-password\` yourself,"
-		note "then \`tether serve --funnel\`."
-		return 1
-	}
-	"$BIN_DIR/tether" set-password --if-unset </dev/tty || return 1
-
 	log=$(serve_log)
 	# 0700 to match the directory tether itself creates for its state; -m applies
 	# only where this is the thing creating it.
@@ -1074,17 +1101,6 @@ reachability() {
 	if serving_as "$host"; then
 		already=1
 		note "tether is already serving on 127.0.0.1:$PORT for $host."
-	elif curl -fsS -o /dev/null --max-time 5 "http://127.0.0.1:$PORT/" 2>/dev/null; then
-		# Answers on loopback, refuses the published name: a `tether serve`
-		# started without --funnel. Printing the address now would hand over a
-		# link that 403s on every request, so this stops instead of succeeding.
-		step "Something else is already serving on 127.0.0.1:$PORT"
-		note "It answers on loopback but refuses $host, so it was not started"
-		note "with --funnel and every request through Funnel would fail with a 403."
-		note "Stop it, then start tether again:"
-		note ""
-		note "  tether serve --funnel --port $PORT"
-		return 1
 	fi
 
 	kind=$(service_kind)
