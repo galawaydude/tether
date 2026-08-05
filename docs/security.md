@@ -13,7 +13,7 @@ tether serve
 Security defaults:
 
 - The server binds `127.0.0.1` unless `--host` is supplied.
-- `--host` and `--funnel` refuse to start without a password.
+- An off-loopback `--host` and every `--funnel` refuse to start without a password.
 - `--allowed-host` controls accepted `Host` headers.
 - `--trusted-proxy` controls which proxies may supply `X-Forwarded-*` headers.
 - Session directories must resolve inside your home directory. Widen this with a
