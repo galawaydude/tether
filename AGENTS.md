@@ -183,8 +183,13 @@ locally.
   `machine/access.ts` uses the same rule, refuses to follow a non-loopback target
   (status must not become SSRF), probes loopback with the derived Host, then probes
   real public HTTPS. `tether access status` prints those facts independently and
-  changes nothing. The installer does the same functional local/public checks in
-  shell because main's installer can target an older release without that command.
+  changes nothing. Before the installer arms Funnel it proves the target port is
+  closed or identifies an existing tether through the exact default-deny 401/body
+  from its protected sessions endpoint — a catch-all 200 is not identity — and
+  sets/confirms the tether password. Reversing that order can temporarily publish
+  an unrelated loopback service or a passwordless shell. The installer writes these
+  checks in shell because main's installer can target an older release without the
+  status command.
   And `tailscale funnel` **prompts**: without a terminal it waits rather than
   failing, so the installer passes `--yes` only after putting the machine-wide
   command on screen and taking a yes; account approval remains Tailscale's own

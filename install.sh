@@ -175,8 +175,22 @@ serving_as() {
 	curl -fsS -o /dev/null --max-time 5 -H "Host: $1" "http://127.0.0.1:$PORT/" 2>/dev/null
 }
 
+# A catch-all web server can return 200 for any Host, so the public root is not
+# an identity check. This protected route and exact default-deny response exist
+# in every release the installer can select. It needs no cookie and reveals no
+# session data; it only proves that the listener speaks tether's API.
+tether_serving_as() {
+	local response status body
+	response=$(curl -sS --max-time 5 -H "Host: $1" \
+		-w '\n%{http_code}' "http://127.0.0.1:$PORT/api/machines/local/sessions" 2>/dev/null) ||
+		return 1
+	status=${response##*$'\n'}
+	body=${response%$'\n'*}
+	[ "$status" = 401 ] && [ "$body" = '{"error":"unauthorized"}' ]
+}
+
 publication_target_safe() {
-	serving_as "$1" && return 0
+	[ -n "$1" ] && tether_serving_as "$1" && return 0
 	curl -sS -o /dev/null --max-time 5 "http://127.0.0.1:$PORT/" 2>/dev/null
 	[ "$?" -eq 7 ]
 }
@@ -194,13 +208,14 @@ set_tether_password() {
 }
 
 prepare_publication() {
-	set_tether_password || return 1
 	publication_target_safe "$1" || {
 		step "Something else is already using 127.0.0.1:$PORT"
-		note "It could not be identified as tether serving for $1, so Funnel was not"
-		note "turned on. Stop that service, then re-run this installer."
+		note "It could not be identified by tether's protected API response for"
+		note "${1:-the future Funnel hostname}, so Funnel was not turned on. Stop that"
+		note "service, then re-run this installer."
 		return 1
 	}
+	set_tether_password
 }
 
 # The one way this script reads Tailscale, and it is the structured document
@@ -810,11 +825,14 @@ self_test() {
 	# Funnel on for a different host on this tailnet.
 	check 1 funnel_armed "$armed" other-box.tailnet-1234.ts.net
 
-	check_out password-port bash -c "$(declare -f prepare_publication); set_tether_password() { printf password-; }; publication_target_safe() { printf port; }; prepare_publication host"
-	check 0 bash -c "$(declare -f publication_target_safe); serving_as() { return 0; }; curl() { return 1; }; publication_target_safe host"
-	check 0 bash -c "$(declare -f publication_target_safe); serving_as() { return 1; }; curl() { return 7; }; publication_target_safe host"
-	check 1 bash -c "$(declare -f publication_target_safe); serving_as() { return 1; }; curl() { return 0; }; publication_target_safe host"
-	check 1 bash -c "$(declare -f publication_target_safe); serving_as() { return 1; }; curl() { return 28; }; publication_target_safe host"
+	check_out port-password bash -c "$(declare -f prepare_publication); set_tether_password() { printf password; }; publication_target_safe() { printf port-; }; prepare_publication host"
+	check 0 bash -c "$(declare -f publication_target_safe); tether_serving_as() { return 0; }; curl() { return 1; }; publication_target_safe host"
+	check 0 bash -c "$(declare -f publication_target_safe); tether_serving_as() { return 1; }; curl() { return 7; }; publication_target_safe host"
+	check 0 bash -c "$(declare -f publication_target_safe); tether_serving_as() { return 1; }; curl() { return 7; }; publication_target_safe ''"
+	check 1 bash -c "$(declare -f publication_target_safe); tether_serving_as() { return 1; }; curl() { return 0; }; publication_target_safe host"
+	check 1 bash -c "$(declare -f publication_target_safe); tether_serving_as() { return 1; }; curl() { return 28; }; publication_target_safe host"
+	check 0 bash -c "$(declare -f tether_serving_as); PORT=8787; curl() { printf '{\"error\":\"unauthorized\"}\n401'; }; tether_serving_as host"
+	check 1 bash -c "$(declare -f tether_serving_as); PORT=8787; curl() { printf 'catch-all\n200'; }; tether_serving_as host"
 
 	# Moving an existing install to another ref, which the shallow clone makes the
 	# non-obvious half of this script: a fresh clone can be told to fetch any ref,
@@ -1017,11 +1035,10 @@ reachability() {
 	# capability strands a fresh user before the command that fixes it, so the
 	# capability read is advisory and the command's own refusal is authoritative.
 	host=$(ts_dns_name "$status")
-	[ -n "$host" ] || {
-		step "Tailscale reports no public name for this machine"
-		note "Enable MagicDNS, then re-run this installer before publishing Funnel."
-		return 1
-	}
+	# A password and an unoccupied target are knowable before Funnel. The hostname
+	# might not be: Tailscale's own first-use approval can enable MagicDNS, so an
+	# absent pre-approval name is passed through only while a closed port proves
+	# there is nothing it could accidentally publish.
 	prepare_publication "$host" || return 1
 	if [ -n "$host" ] && funnel_armed "$(tailscale serve status --json 2>/dev/null || true)" "$host"; then
 		note "Funnel already points at 127.0.0.1:$PORT."
