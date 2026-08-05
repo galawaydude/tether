@@ -27,11 +27,10 @@ jobs:
           fetch-depth: 0
 
       # The installer is shell, so none of the checks below see it. Its own
-      # --self-test covers the branches that can be silently wrong: the version
-      # parsing, the PATH message, the two Funnel questions — whether the
-      # tailnet permits it and whether it is already armed — neither of which
-      # may be answered from the other's field, and the TETHER_VERSION checkout
-      # moves, an existing shallow install sent to a newer tag or to a branch.
+      # --self-test covers the branches that can be silently wrong: version and
+      # PATH parsing, every Linux package plan, launchd/systemd service syntax,
+      # the two distinct Funnel questions (permitted versus actually armed),
+      # and TETHER_VERSION moves of an existing shallow checkout.
       # Runs before anything expensive:
       # it needs nothing installed and takes milliseconds.
       - name: Installer
