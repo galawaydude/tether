@@ -1,7 +1,7 @@
 # Tailscale fixture
 
 Captured from **tailscale 1.98.10** on 2026-07-31, on a real tailnet with Funnel
-enabled, with `tailscale status --json`.
+enabled, with `tailscale status --json --peers=false`.
 
 CI must never call the real `tailscale` binary or touch a real tailnet, so
 `tailscale.test.ts` drives `funnelHostname` from this file instead. The impure
@@ -26,7 +26,7 @@ be captured at all.
 ## How the capture was made
 
 ```sh
-tailscale status --json | python3 redact.py > tailscale-status.json
+tailscale status --json --peers=false | python3 redact.py > tailscale-status.json
 ```
 
 To refresh it, re-capture the same way, redact the same fields, and record the

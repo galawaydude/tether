@@ -242,6 +242,19 @@ test('an unknown command fails and prints usage', async (t) => {
   assert.match(result.stderr, /Unknown command/);
 });
 
+test('access is read-only and accepts only its status action', async (t) => {
+  const stateDir = tempState(t);
+  const result = await cli(['access', 'publish'], stateDir);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /tether access status/);
+  assert.equal(statSync(stateDir).isDirectory(), true, 'the temporary harness made the directory');
+  assert.throws(
+    () => statSync(join(stateDir, 'tether.sqlite')),
+    /ENOENT/,
+    'diagnosis never opens or creates the registry',
+  );
+});
+
 // ── ls | new | kill, against a real tmux server ──
 
 interface Tether {

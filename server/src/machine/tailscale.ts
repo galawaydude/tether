@@ -1,6 +1,6 @@
 /**
- * The whole of what tether knows about Tailscale: one `tailscale status --json`,
- * and the four fields `serve --funnel` reads out of it.
+ * The whole of what tether knows about Tailscale: structured status documents,
+ * and only the fields `serve --funnel` and `access status` read out of them.
  *
  * It only ever *reads*. Turning Funnel on needs root or an operator and changes
  * a machine-wide setting that outlives the server, so `install.sh` asks for that
@@ -18,12 +18,11 @@ import { promisify } from 'node:util';
 const run = promisify(execFile);
 
 /**
- * `tailscale status --json` serialises every peer on the tailnet, so Node's
- * default 1 MiB is a size a real tailnet reaches — and the failure is silent in
- * the worst way: `execFile` kills the child, hands back *truncated* stdout, and
- * that parses as "did not print JSON" on a node where Funnel works perfectly.
- * 64 MiB is past any plausible tailnet, and the truncation is named below rather
- * than left to the JSON parser.
+ * The command excludes peers because every question is about Self. Keep an
+ * explicit ceiling anyway: `execFile` otherwise kills a child at Node's 1 MiB
+ * default and hands back truncated stdout, which looks like malformed JSON
+ * rather than the real failure. Truncation is named below instead of left to
+ * the parser.
  */
 const STATUS_MAX_BUFFER = 64 * 1024 * 1024;
 
@@ -127,7 +126,10 @@ export function funnelHostname(status: unknown): string {
 export async function tailscaleStatus(): Promise<unknown> {
   let stdout: string;
   try {
-    ({ stdout } = await run('tailscale', ['status', '--json'], {
+    // Every question is about Self. Excluding peers prevents a large tailnet
+    // from turning one local status read into tens of megabytes and prevents a
+    // peer's DNS name or capabilities from ever being mistaken for this node's.
+    ({ stdout } = await run('tailscale', ['status', '--json', '--peers=false'], {
       maxBuffer: STATUS_MAX_BUFFER,
     }));
   } catch (error) {
@@ -143,23 +145,77 @@ export async function tailscaleStatus(): Promise<unknown> {
     // JSON would be reported as tailscale printing something unreadable.
     if (err.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
       throw new TailscaleError(
-        `\`tailscale status --json\` printed more than ${STATUS_MAX_BUFFER} bytes, so tether\n` +
-          'stopped reading it. Run it yourself to see what this tailnet reports.',
+        `\`tailscale status --json --peers=false\` printed more than ${STATUS_MAX_BUFFER} bytes, so tether\n` +
+          'stopped reading it. Run it yourself to see what this node reports.',
       );
     }
     if (typeof err.stdout !== 'string' || err.stdout.trim() === '') {
-      throw new TailscaleError(`Could not run \`tailscale status --json\` — ${err.message}`);
+      throw new TailscaleError(
+        `Could not run \`tailscale status --json --peers=false\` — ${err.message}`,
+      );
     }
     stdout = err.stdout;
   }
   try {
     return JSON.parse(stdout);
   } catch {
-    throw new TailscaleError('`tailscale status --json` did not print JSON tether could read.');
+    throw new TailscaleError(
+      '`tailscale status --json --peers=false` did not print JSON tether could read.',
+    );
   }
 }
 
-/** The two above, composed — what `serve --funnel` calls. */
+/**
+ * The backend URL Funnel currently sends this hostname to, if it is actually
+ * public. `tailscale serve status --json` uses the public listener's port in
+ * the map key and the local service's port in `Proxy`; both are significant.
+ * A private `tailscale serve` entry carries the same proxy but no
+ * `AllowFunnel`, and must never be reported as a browser-only public link.
+ */
+export function funnelProxyTarget(status: unknown, hostname: string): string | undefined {
+  const root = record(status);
+  const publicName = `${hostname}:443`;
+  const allowFunnel = record(root?.['AllowFunnel']);
+  if (allowFunnel?.[publicName] !== true) return undefined;
+
+  const web = record(root?.['Web']);
+  const publicServer = record(web?.[publicName]);
+  const handlers = record(publicServer?.['Handlers']);
+  const rootHandler = record(handlers?.['/']);
+  const proxy = rootHandler?.['Proxy'];
+  return typeof proxy === 'string' && proxy !== '' ? proxy : undefined;
+}
+
+/** `tailscale serve status --json`, parsed without scraping its human output. */
+export async function tailscaleServeStatus(): Promise<unknown> {
+  let stdout: string;
+  try {
+    ({ stdout } = await run('tailscale', ['serve', 'status', '--json'], {
+      maxBuffer: STATUS_MAX_BUFFER,
+    }));
+  } catch (error) {
+    const err = error as NodeJS.ErrnoException & { stdout?: string };
+    if (err.code === 'ENOENT') {
+      throw new TailscaleError(
+        'Tailscale is not installed. Install it from https://tailscale.com/download — or\n' +
+          're-run tether’s installer, which offers to do it for you.',
+      );
+    }
+    if (typeof err.stdout !== 'string' || err.stdout.trim() === '') {
+      throw new TailscaleError(`Could not run \`tailscale serve status --json\` — ${err.message}`);
+    }
+    stdout = err.stdout;
+  }
+  try {
+    return JSON.parse(stdout);
+  } catch {
+    throw new TailscaleError(
+      '`tailscale serve status --json` did not print JSON tether could read.',
+    );
+  }
+}
+
+/** The status and hostname check composed — what `serve --funnel` calls. */
 export async function funnelHost(): Promise<string> {
   return funnelHostname(await tailscaleStatus());
 }
