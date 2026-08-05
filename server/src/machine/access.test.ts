@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
 import test from 'node:test';
 
-import { accessHealthy, formatAccessReport, inspectAccess } from './access.ts';
+import { accessHealthy, formatAccessReport, inspectAccess, probe } from './access.ts';
 
 const HOST = 'my-box.tailnet-1234.ts.net';
 const ARMED = {
@@ -98,6 +99,33 @@ test('a catch-all HTTP 200 is not identified as tether', async () => {
     serveStatus: async () => ARMED,
     probe: async (url, _host, expectedBody) =>
       url.protocol === 'http:' && expectedBody === undefined ? 200 : undefined,
+  });
+
+  assert.equal(report.localStatus, undefined);
+  assert.equal(accessHealthy(report), false);
+});
+
+test('an oversized catch-all response settles as unhealthy', async (t) => {
+  const server = createServer((_request, response) => response.end('x'.repeat(1_000)));
+  server.listen(0, '127.0.0.1');
+  await new Promise<void>((resolve) => server.once('listening', resolve));
+  t.after(() => server.close());
+  const address = server.address();
+  assert.notEqual(address, null);
+  assert.equal(typeof address, 'object');
+
+  const report = await inspectAccess({
+    hostname: async () => HOST,
+    serveStatus: async () => ({
+      Web: {
+        [`${HOST}:443`]: {
+          Handlers: { '/': { Proxy: `http://127.0.0.1:${address.port}` } },
+        },
+      },
+      AllowFunnel: { [`${HOST}:443`]: true },
+    }),
+    probe: async (url, host, body) =>
+      url.protocol === 'http:' ? probe(url, host, body) : 200,
   });
 
   assert.equal(report.localStatus, undefined);

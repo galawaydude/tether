@@ -24,13 +24,20 @@ type AccessDependencies = {
  * accepting that Host is part of `--funnel`; a bare 127.0.0.1 check can pass on
  * a server that will return 403 to every real Funnel request.
  */
-async function probe(
+export async function probe(
   url: URL,
   host?: string | undefined,
   expectedBody?: string | undefined,
 ): Promise<number | undefined> {
   const request = url.protocol === 'https:' ? httpsRequest : httpRequest;
   return new Promise((resolve) => {
+    let settled = false;
+    const settle = (status: number | undefined) => {
+      if (!settled) {
+        settled = true;
+        resolve(status);
+      }
+    };
     const req = request(
       url,
       {
@@ -40,24 +47,33 @@ async function probe(
       (response) => {
         if (expectedBody === undefined) {
           response.resume();
-          resolve(response.statusCode);
+          settle(response.statusCode);
           return;
         }
         const chunks: Buffer[] = [];
         let length = 0;
         response.on('data', (chunk: Buffer) => {
           length += chunk.length;
-          if (length > Buffer.byteLength(expectedBody)) response.destroy();
+          if (length > Buffer.byteLength(expectedBody)) {
+            settle(undefined);
+            response.destroy();
+          }
           else chunks.push(chunk);
         });
         response.once('end', () =>
-          resolve(Buffer.concat(chunks).toString() === expectedBody ? response.statusCode : undefined),
+          settle(Buffer.concat(chunks).toString() === expectedBody ? response.statusCode : undefined),
         );
-        response.once('error', () => resolve(undefined));
+        response.once('aborted', () => settle(undefined));
+        response.once('close', () => settle(undefined));
+        response.once('error', () => settle(undefined));
       },
     );
-    req.setTimeout(PROBE_TIMEOUT_MS, () => req.destroy());
-    req.once('error', () => resolve(undefined));
+    req.setTimeout(PROBE_TIMEOUT_MS, () => {
+      settle(undefined);
+      req.destroy();
+    });
+    req.once('close', () => settle(undefined));
+    req.once('error', () => settle(undefined));
     req.end();
   });
 }
