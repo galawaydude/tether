@@ -35,7 +35,7 @@ before you put tether anywhere but loopback.
 **The installer offers to put this machine on the public internet, and that is
 the path it leads with.** It sets up [Tailscale
 Funnel](#tailscale-funnel--a-public-https-address-nothing-to-install-on-the-phone),
-because it is the only way to reach tether from a phone with nothing installed
+because it is the default way to reach tether from a phone with nothing installed
 on it — and the cost is that your login page ends up somewhere anyone can find,
 with the one password above as the only thing behind it. It shows you the exact
 commands and waits for a yes; declining leaves tether installed and working on
@@ -554,7 +554,7 @@ detail rather than in passing.
 Funnel puts your tailnet machine on the **public internet** at
 `https://my-box.tailnet-1234.ts.net/`, with a real certificate, reachable from a
 device that has never heard of Tailscale. That is its whole appeal and its whole
-risk: it is the only option here that needs nothing installed on the other
+risk: it is the default option here that needs nothing installed on the other
 device, and it is also **the option that puts your login page where anyone can
 find it.** One password is then the only thing between the internet and a shell
 on this machine. The address is not a secret, either: the certificate Funnel gets
@@ -618,7 +618,8 @@ launchctl bootstrap gui/$UID ~/Library/LaunchAgents/dev.tether.server.plist  # s
 ```
 
 Stopping tether leaves Funnel's durable mapping aimed at an empty loopback port;
-`sudo tailscale funnel --bg off` removes the public mapping too. That command separately reports whether Funnel is armed, whether tether answers
+`sudo tailscale funnel --bg off` removes the public mapping too. `tether access
+status` separately reports whether Funnel is armed, whether tether answers
 on loopback for the public `Host`, and whether the real HTTPS URL responds. A
 private `tailscale serve` mapping has the same-looking local proxy, so it also
 requires `AllowFunnel` in the structured status before calling the link public.
