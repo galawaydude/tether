@@ -16,7 +16,7 @@ export function stateDir(): string {
   const root = xdg && xdg.length > 0 ? xdg : join(homedir(), '.local', 'state');
   const current = join(root, 'remote-control-agent');
   const legacy = join(root, 'tether');
-  return existsSync(current) || !existsSync(legacy) ? current : legacy;
+  return existsSync(legacy) ? legacy : current;
 }
 
 export function databasePath(): string {

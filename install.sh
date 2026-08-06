@@ -26,7 +26,7 @@ DATA_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}"
 # take the new name. Moving it would break the command symlink before replacement.
 default_install_dir() {
 	local root=$1 current="$1/remote-control-agent" legacy="$1/tether"
-	if [ -d "$legacy/.git" ] && [ ! -e "$current" ]; then
+	if [ -d "$legacy/.git" ]; then
 		printf '%s\n' "$legacy"
 	else
 		printf '%s\n' "$current"
@@ -169,7 +169,7 @@ PORT=8787
 # beside the state rather than in it.
 default_state_dir() {
 	local root=$1 current="$1/remote-control-agent" legacy="$1/tether"
-	if [ -d "$legacy" ] && [ ! -e "$current" ]; then current=$legacy; fi
+	if [ -d "$legacy" ]; then current=$legacy; fi
 	printf '%s\n' "$current"
 }
 
@@ -768,12 +768,12 @@ self_test() {
 	mkdir -p "$migration_tmp/data/tether/.git"
 	check_out "$migration_tmp/data/tether" default_install_dir "$migration_tmp/data"
 	mkdir -p "$migration_tmp/data/remote-control-agent"
-	check_out "$migration_tmp/data/remote-control-agent" default_install_dir "$migration_tmp/data"
+	check_out "$migration_tmp/data/tether" default_install_dir "$migration_tmp/data"
 	check_out "$migration_tmp/state/remote-control-agent" default_state_dir "$migration_tmp/state"
 	mkdir -p "$migration_tmp/state/tether"
 	check_out "$migration_tmp/state/tether" default_state_dir "$migration_tmp/state"
 	mkdir -p "$migration_tmp/state/remote-control-agent"
-	check_out "$migration_tmp/state/remote-control-agent" default_state_dir "$migration_tmp/state"
+	check_out "$migration_tmp/state/tether" default_state_dir "$migration_tmp/state"
 	rm -rf "$migration_tmp"
 
 	# Service files are security-relevant setup outside tether's own directory.

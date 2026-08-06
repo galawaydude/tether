@@ -90,7 +90,7 @@ test('the state directory is private, honours XDG and keeps a legacy install', a
   await mkdir(join(root, 'tether'));
   assert.equal(stateDir(), join(root, 'tether'));
   await mkdir(join(root, 'remote-control-agent'));
-  assert.equal(stateDir(), join(root, 'remote-control-agent'));
+  assert.equal(stateDir(), join(root, 'tether'));
   process.env['RCAGENT_STATE_DIR'] = join(root, 'chosen');
   assert.equal(stateDir(), join(root, 'chosen'));
 });
