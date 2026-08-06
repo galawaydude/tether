@@ -4,11 +4,14 @@
 [![Latest release](https://img.shields.io/github/v/release/galawaydude/remote-control-agent)](https://github.com/galawaydude/remote-control-agent/releases/latest)
 [![License](https://img.shields.io/github/license/galawaydude/remote-control-agent)](LICENSE)
 
-**Run persistent Claude Code and OpenAI Codex sessions on your machine, then control them from a phone-friendly browser.**
+**Run persistent Claude Code and OpenAI Codex sessions on your machine, then
+control them from a phone-friendly browser.**
 
-Sessions run under your OS user in durable tmux processes. Provider credentials stay with the provider CLI on the host.
+Sessions run under your OS user in durable tmux processes. Provider credentials
+stay with the provider CLI on the host.
 
-Remote Control Agent was formerly **tether**. Existing state, sessions, hooks, services, `TETHER_*` settings and the `tether` command continue to work.
+Remote Control Agent was formerly **tether**. Existing state, sessions, hooks,
+services, `TETHER_*` settings and the `tether` command continue to work.
 
 ## Features
 
@@ -27,7 +30,8 @@ Remote Control Agent was formerly **tether**. Existing state, sessions, hooks, s
 There is one shared password, no read-only mode and no per-person permissions.
 Anyone with access can run commands as your OS user inside the allowed roots.
 The default installer offers a **public** Funnel URL; viewers need only a browser
-and the Remote Control Agent password. Use `--access local` to keep Remote Control Agent on the host.
+and the Remote Control Agent password. Use `--access local` to keep Remote
+Control Agent on the host.
 
 Read the [security and remote-access guide](docs/security.md) before exposing it.
 
@@ -40,7 +44,8 @@ curl -fsSL https://raw.githubusercontent.com/galawaydude/remote-control-agent/ma
 ```
 
 The installer shows every system command and service file before asking. It can
-set up Tailscale on the host and keep Remote Control Agent running through launchd or systemd.
+set up Tailscale on the host and keep Remote Control Agent running through
+launchd or systemd.
 Nothing is installed on viewing devices.
 
 For loopback-only installation:

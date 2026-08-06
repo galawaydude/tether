@@ -46,7 +46,7 @@ const DEFAULT_HOST = '127.0.0.1';
 /** The off-loopback warning is not a one-off: it repeats for as long as it is true. */
 const WARN_INTERVAL_MS = 10 * 60 * 1000;
 
-const USAGE = `Remote Control Agent — remote control for persistent coding-agent sessions
+const USAGE = `Remote Control Agent — remote control for persistent coding agents
 
 Usage:
   rcagent set-password [--if-unset] Set the single account's password (prompts; never echoes).
