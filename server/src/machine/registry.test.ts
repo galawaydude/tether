@@ -58,7 +58,7 @@ function sample(overrides: Partial<Parameters<typeof createSession>[1]> = {}) {
   };
 }
 
-test('the state directory is created 0700 and honours XDG_STATE_HOME', async (t) => {
+test('the state directory is private, honours XDG and keeps a legacy install', async (t) => {
   const path = await dbPathFor(t);
   const db = openRegistry(path);
   t.after(() => db.close());
@@ -68,20 +68,31 @@ test('the state directory is created 0700 and honours XDG_STATE_HOME', async (t)
 
   const previous = {
     xdg: process.env['XDG_STATE_HOME'],
-    override: process.env['TETHER_STATE_DIR'],
+    current: process.env['RCAGENT_STATE_DIR'],
+    legacy: process.env['TETHER_STATE_DIR'],
   };
-  process.env['XDG_STATE_HOME'] = dirname(path);
+  const root = dirname(path);
+  process.env['XDG_STATE_HOME'] = root;
+  delete process.env['RCAGENT_STATE_DIR'];
   delete process.env['TETHER_STATE_DIR'];
   t.after(() => {
     for (const [key, value] of [
       ['XDG_STATE_HOME', previous.xdg],
-      ['TETHER_STATE_DIR', previous.override],
+      ['RCAGENT_STATE_DIR', previous.current],
+      ['TETHER_STATE_DIR', previous.legacy],
     ] as const) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
   });
-  assert.equal(stateDir(), join(dirname(path), 'tether'));
+
+  assert.equal(stateDir(), join(root, 'remote-control-agent'));
+  await mkdir(join(root, 'tether'));
+  assert.equal(stateDir(), join(root, 'tether'));
+  await mkdir(join(root, 'remote-control-agent'));
+  assert.equal(stateDir(), join(root, 'remote-control-agent'));
+  process.env['RCAGENT_STATE_DIR'] = join(root, 'chosen');
+  assert.equal(stateDir(), join(root, 'chosen'));
 });
 
 test('the schema is idempotent on reopen and rows survive', async (t) => {

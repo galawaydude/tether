@@ -5,7 +5,7 @@ import type { ServerFrame } from '@tether/shared';
  * lives in `web/`, and the tmux driver in `machine/` — see report section 9.
  * This exists so the build, the test harness and CI are proven end to end.
  */
-export const SERVER_NAME = 'tether-server';
+export const SERVER_NAME = 'rcagent-server';
 
 /** Frames are JSON on the wire; this is the only encoding step both sides share. */
 export function encodeFrame(frame: ServerFrame): string {

@@ -16,7 +16,7 @@
  */
 export const MAX_OUTPUT = 16_000;
 
-const TRUNCATED = '\n…[truncated by tether]';
+const TRUNCATED = '\n…[truncated by Remote Control Agent]';
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;

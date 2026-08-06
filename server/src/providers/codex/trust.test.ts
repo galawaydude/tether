@@ -161,7 +161,7 @@ test('accepting appends one table and leaves every other byte alone', async () =
   // Exactly one table for the new key: a second would be a TOML duplicate.
   assert.equal(text.match(/\[projects\."\/w\/new"\]/g)?.length, 1);
   // Marked, so a user can find this entry and take it out again.
-  assert.ok(/# Trusted from tether/.test(text));
+  assert.ok(/# Trusted from Remote Control Agent/.test(text));
 
   assert.equal(result.backupPath, configBackupPath(state, '2026-07-30T12-00-00-000Z'));
   assert.equal(await readFile(result.backupPath as string, 'utf8'), REAL);
@@ -191,7 +191,7 @@ test('an absent config.toml is created with just the one table', async () => {
   const text = await readFile(configPath(dir), 'utf8');
   assert.match(
     text,
-    /^# Trusted from tether[^\n]*\n\[projects\."\/w\/a"\]\ntrust_level = "trusted"\n$/,
+    /^# Trusted from Remote Control Agent[^\n]*\n\[projects\."\/w\/a"\]\ntrust_level = "trusted"\n$/,
   );
 });
 

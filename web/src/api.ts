@@ -81,7 +81,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   try {
     response = await fetch(path, { credentials: 'same-origin', ...init });
   } catch {
-    throw new ApiError(0, 'offline', 'Cannot reach tether — check the connection.');
+    throw new ApiError(0, 'offline', 'Cannot reach Remote Control Agent — check the connection.');
   }
 
   const body: unknown = response.status === 204 ? null : await response.json().catch(() => null);

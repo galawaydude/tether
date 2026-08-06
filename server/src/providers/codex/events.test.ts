@@ -259,7 +259,7 @@ test('a huge tool result is capped rather than replayed in full', () => {
   const result = events[0];
   assert.ok(result?.kind === 'tool_result');
   assert.ok(result.output.length < MAX_OUTPUT * 1.1);
-  assert.ok(result.output.endsWith('[truncated by tether]'));
+  assert.ok(result.output.endsWith('[truncated by Remote Control Agent]'));
 });
 
 // ── the hook that is answered, not just read ─────────────────────────────────

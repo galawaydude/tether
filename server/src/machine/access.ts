@@ -133,13 +133,13 @@ function result(status: number | undefined): string {
   return status === undefined ? 'not reachable' : `HTTP ${status}`;
 }
 
-/** The stable, copyable diagnosis `tether access status` prints. */
+/** The stable, copyable diagnosis `rcagent access status` prints. */
 export function formatAccessReport(report: AccessReport): string {
   return [
     `public URL:  ${report.publicUrl}`,
     'viewer:      browser only — no Tailscale account or app needed',
     `Funnel:      ${report.proxyTarget === undefined ? 'not armed for this host' : `on → ${report.proxyTarget}`}`,
-    `tether:      ${result(report.localStatus)}`,
+    `rcagent:     ${result(report.localStatus)}`,
     `public HTTPS: ${result(report.publicStatus)}`,
   ].join('\n');
 }

@@ -406,7 +406,9 @@ test('a decision tether sends comes back on stdout in Claude Code’s own shape'
         hookEventName: 'PreToolUse',
         permissionDecision: decision,
         permissionDecisionReason:
-          decision === 'allow' ? 'Approved in tether.' : 'Denied in tether.',
+          decision === 'allow'
+            ? 'Approved in Remote Control Agent.'
+            : 'Denied in Remote Control Agent.',
       },
     });
     assert.deepEqual(JSON.parse(tether.seen[0]!), PRE_TOOL_USE, 'the payload reached tether whole');
@@ -475,7 +477,7 @@ test('a tether that answers with a refusal says so, once, without deciding', asy
   // A note, not a decision. This is the case where somebody may be looking at a
   // card whose buttons are dead, so it must not be silent — and it must still
   // not touch the permission decision.
-  assert.match(String(said['systemMessage']), /tether could not answer/);
+  assert.match(String(said['systemMessage']), /Remote Control Agent could not answer/);
   assert.equal(said['hookSpecificOutput'], undefined);
   assert.equal(code, 0);
 });
@@ -493,7 +495,10 @@ test('a tether that never replies is bounded by the shim’s own abort', async (
   const { stdout, code } = await runShim(stateDir, PRE_TOOL_USE);
   await tether.close();
   assert.equal(code, 0);
-  assert.match(String((JSON.parse(stdout) as Record<string, unknown>)['systemMessage']), /tether/);
+  assert.match(
+    String((JSON.parse(stdout) as Record<string, unknown>)['systemMessage']),
+    /Remote Control Agent/,
+  );
 });
 
 test('the three timeouts stay ordered: hold < the shim’s abort < Claude Code’s kill', async () => {
@@ -525,6 +530,14 @@ test('the hold is configured in seconds, and a value that makes no sense is none
     DEFAULT_PERMISSION_TIMEOUT_MS,
   );
   assert.equal(permissionTimeoutMs({ TETHER_PERMISSION_TIMEOUT: '5' }), 5000);
+  assert.equal(permissionTimeoutMs({ RCAGENT_PERMISSION_TIMEOUT: '6' }), 6000);
+  assert.equal(
+    permissionTimeoutMs({
+      RCAGENT_PERMISSION_TIMEOUT: '7',
+      TETHER_PERMISSION_TIMEOUT: '5',
+    }),
+    7000,
+  );
   assert.equal(permissionTimeoutMs({ TETHER_PERMISSION_TIMEOUT: '0.5' }), 500);
   // Zero is a real setting: tether goes back to being the observer it was, which
   // is supported rather than degraded.

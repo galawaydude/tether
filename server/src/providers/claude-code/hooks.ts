@@ -115,11 +115,10 @@ export function settingsPath(cwd: string): string {
  */
 function shimSource(abortMs: number): string {
   return `#!/usr/bin/env node
-// tether's Claude Code hook. Installed into a project's .claude/settings.local.json
-// by tether when it starts a session there. It POSTs one hook payload to tether
-// over loopback and writes back whatever tether decided — nothing else. On
-// PreToolUse, stdout IS the permission decision, so every path that is not a
-// decision tether actually made writes nothing, and every path exits 0.
+// Remote Control Agent's Claude Code hook. Installed into a project's
+// .claude/settings.local.json when a session starts. It POSTs one payload over
+// loopback and writes back Remote Control Agent's decision — nothing else. On
+// PreToolUse, stdout IS the decision, so every other path writes nothing and exits 0.
 import { readFileSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -145,7 +144,7 @@ try {
     body: payload,
     signal: AbortSignal.timeout(${abortMs}),
   });
-  if (!response.ok) throw new Error('tether refused the hook (' + response.status + ')');
+  if (!response.ok) throw new Error('Remote Control Agent refused the hook (' + response.status + ')');
   // 204 is the ordinary answer and the body is empty. A decision is the only
   // thing that ever comes back with one, and it is re-built here rather than
   // echoed: this process owns the shape of what lands on the decision channel,
@@ -158,7 +157,9 @@ try {
         hookEventName: 'PreToolUse',
         permissionDecision: decision,
         permissionDecisionReason:
-          decision === 'allow' ? 'Approved in tether.' : 'Denied in tether.',
+          decision === 'allow'
+            ? 'Approved in Remote Control Agent.'
+            : 'Denied in Remote Control Agent.',
       },
     });
   }
@@ -170,7 +171,7 @@ try {
   if (!quiet(error)) {
     say({
       systemMessage:
-        'tether could not answer this permission request (' +
+        'Remote Control Agent could not answer this permission request (' +
         (error?.message ?? error) +
         '). Claude Code’s own permission rules apply.',
     });
@@ -184,7 +185,7 @@ export class SettingsFileError extends Error {
   readonly path: string;
 
   constructor(path: string, reason: string) {
-    super(`refusing to change ${path}: ${reason}. tether has changed nothing.`);
+    super(`refusing to change ${path}: ${reason}. Remote Control Agent changed nothing.`);
     this.name = 'SettingsFileError';
     this.path = path;
   }

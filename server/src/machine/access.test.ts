@@ -53,7 +53,7 @@ test('a private Serve mapping is never presented as a clientless public link', a
   assert.equal(probes, 0);
   assert.equal(accessHealthy(report), false);
   assert.match(formatAccessReport(report), /Funnel:\s+not armed/);
-  assert.match(formatAccessReport(report), /tether:\s+not reachable/);
+  assert.match(formatAccessReport(report), /rcagent:\s+not reachable/);
 });
 
 test('access status will not follow a non-loopback proxy target', async () => {
@@ -89,7 +89,7 @@ test('a failed public check is named independently of a healthy backend', async 
   assert.equal(report.localStatus, 401);
   assert.equal(report.publicStatus, undefined);
   assert.equal(accessHealthy(report), false);
-  assert.match(formatAccessReport(report), /tether:\s+HTTP 401/);
+  assert.match(formatAccessReport(report), /rcagent:\s+HTTP 401/);
   assert.match(formatAccessReport(report), /public HTTPS: not reachable/);
 });
 

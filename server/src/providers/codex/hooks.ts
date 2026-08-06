@@ -195,11 +195,10 @@ export function hooksJsonPath(codexHome: string): string {
  * setup — which the captain's decision forbids by name.
  */
 const SHIM_SOURCE = `#!/usr/bin/env node
-// tether's Codex hook. Installed by \`tether codex-hook install\`, removed by
-// \`tether codex-hook remove\`. It appends one JSON line per hook event, and on
-// PermissionRequest — where stdout IS the permission decision — it also asks
-// tether and writes back whatever tether decided. Nothing else. Every path that
-// is not a decision tether actually made writes nothing, and every path exits 0.
+// Remote Control Agent's Codex hook. Installed by \`rcagent codex-hook install\`,
+// removed by \`rcagent codex-hook remove\`. It appends one JSON line per event.
+// On PermissionRequest — where stdout IS the decision — it asks Remote Control
+// Agent and writes back its answer. Every other path writes nothing and exits 0.
 import { appendFileSync, mkdirSync, readFileSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -240,7 +239,7 @@ if (payload?.hook_event_name === 'PermissionRequest') {
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(${SHIM_ABORT_MS}),
     });
-    if (!response.ok) throw new Error('tether refused the hook (' + response.status + ')');
+    if (!response.ok) throw new Error('Remote Control Agent refused the hook (' + response.status + ')');
     // 204 is the ordinary answer and the body is empty. A decision is the only
     // thing that ever comes back with one, and it is re-built here rather than
     // echoed: this process owns the shape of what lands on the decision channel,
@@ -253,7 +252,10 @@ if (payload?.hook_event_name === 'PermissionRequest') {
           hookEventName: 'PermissionRequest',
           decision: {
             behavior: decision,
-            message: decision === 'allow' ? 'Approved in tether.' : 'Denied in tether.',
+            message:
+              decision === 'allow'
+                ? 'Approved in Remote Control Agent.'
+                : 'Denied in Remote Control Agent.',
           },
         },
       });
@@ -266,7 +268,7 @@ if (payload?.hook_event_name === 'PermissionRequest') {
     if (!quiet(error)) {
       say({
         systemMessage:
-          'tether could not answer this permission request (' +
+          'Remote Control Agent could not answer this permission request (' +
           (error?.message ?? error) +
           '). Codex’s own approval prompt applies.',
       });
@@ -280,7 +282,7 @@ export class HooksFileError extends Error {
   readonly path: string;
 
   constructor(path: string, reason: string) {
-    super(`refusing to change ${path}: ${reason}. tether has changed nothing.`);
+    super(`refusing to change ${path}: ${reason}. Remote Control Agent changed nothing.`);
     this.name = 'HooksFileError';
     this.path = path;
   }

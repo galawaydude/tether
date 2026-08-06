@@ -288,19 +288,31 @@ test('cwd is confined to the allowed roots', async (t) => {
   await assert.rejects(() => resolveCwd(inside, [join(base, 'gone')]), InvalidCwdError);
 });
 
-test('the allowed roots default to home and are widened by one setting', (t) => {
-  const previous = process.env['TETHER_ALLOWED_ROOTS'];
+test('the allowed roots default to home, with a legacy setting alias', (t) => {
+  const previous = {
+    current: process.env['RCAGENT_ALLOWED_ROOTS'],
+    legacy: process.env['TETHER_ALLOWED_ROOTS'],
+  };
   t.after(() => {
-    process.env['TETHER_ALLOWED_ROOTS'] = previous;
+    for (const [key, value] of [
+      ['RCAGENT_ALLOWED_ROOTS', previous.current],
+      ['TETHER_ALLOWED_ROOTS', previous.legacy],
+    ] as const) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   });
 
+  delete process.env['RCAGENT_ALLOWED_ROOTS'];
   for (const unset of [undefined, '', '   ']) {
     if (unset === undefined) delete process.env['TETHER_ALLOWED_ROOTS'];
     else process.env['TETHER_ALLOWED_ROOTS'] = unset;
     assert.deepEqual(allowedRoots(), [homedir()], JSON.stringify(unset));
   }
 
-  process.env['TETHER_ALLOWED_ROOTS'] = ['/srv/code', '', '/mnt/work'].join(delimiter);
+  process.env['TETHER_ALLOWED_ROOTS'] = ['/legacy', '/mnt/work'].join(delimiter);
+  assert.deepEqual(allowedRoots(), ['/legacy', '/mnt/work']);
+  process.env['RCAGENT_ALLOWED_ROOTS'] = ['/srv/code', '', '/mnt/work'].join(delimiter);
   assert.deepEqual(allowedRoots(), ['/srv/code', '/mnt/work']);
 });
 

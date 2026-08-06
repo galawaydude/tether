@@ -32,7 +32,11 @@ const NO_TERMINALS: Terminals = {
 async function harness(t: TestContext) {
   const webRoot = await mkdtemp(join(tmpdir(), 'tether-web-'));
   t.after(() => rm(webRoot, { recursive: true, force: true }));
-  await writeFile(join(webRoot, 'index.html'), '<!doctype html><title>tether</title>', 'utf8');
+  await writeFile(
+    join(webRoot, 'index.html'),
+    '<!doctype html><title>Remote Control Agent</title>',
+    'utf8',
+  );
   await mkdir(join(webRoot, 'assets'));
   await writeFile(
     join(webRoot, 'assets', 'index-abc123.js'),
@@ -64,7 +68,7 @@ test('the app shell is served without a session — the login screen asks for on
   const page = await app.inject({ method: 'GET', url: '/', headers: { host: HOST } });
   assert.equal(page.statusCode, 200);
   assert.match(page.headers['content-type'] as string, /text\/html/);
-  assert.match(page.body, /<title>tether<\/title>/);
+  assert.match(page.body, /<title>Remote Control Agent<\/title>/);
 
   const asset = await app.inject({
     method: 'GET',

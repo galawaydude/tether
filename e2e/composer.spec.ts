@@ -259,7 +259,7 @@ test('a slash command goes to the agent as a command, not as a prompt', async ({
   await expect(conversation.getByText('/resume', { exact: true })).toHaveCount(0);
   // What it says instead: where the answer is, and the way there.
   const note = page.locator('.composer-note');
-  await expect(note).toContainText('chooser tether cannot show');
+  await expect(note).toContainText('chooser Remote Control Agent cannot show');
   await shoot(page, '6-command-sent');
 
   // And it really reached the agent — which for this one is only provable in the

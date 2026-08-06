@@ -26,6 +26,16 @@ Everything CONTRIBUTING lists is runnable locally.
 
 ## Sharp edges
 
+- **The product is Remote Control Agent; `rcagent` is the command.** It was formerly
+  tether, and the old identifiers are compatibility contracts rather than unfinished cleanup:
+  the `tether` command alias, `TETHER_*` environment aliases, `@tether/*` private workspace
+  scope, `tether` tmux socket/session prefix, `tether.conf`, `tether.sqlite`, hook header and
+  filenames, browser storage/cookie keys, and `dev.tether.server` service label all remain.
+  Existing installs keep `~/.local/share/tether` and `~/.local/state/tether`; new ones use
+  `remote-control-agent`, selected only when the old directory is absent. Moving a hook path,
+  state directory, tmux socket or service label loses live or durable work, so none is renamed
+  without a separate migration. User-facing copy says Remote Control Agent and new settings use
+  `RCAGENT_*`, with the old spelling as fallback.
 - **`shared/` is types only.** It emits `.d.ts` and no JavaScript, and its `prepare` script
   builds it on `npm ci` so `tsc --noEmit` works on a fresh clone. Import from it with
   `import type`; `verbatimModuleSyntax` enforces that.

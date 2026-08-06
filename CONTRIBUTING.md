@@ -6,7 +6,7 @@ Requires the Node version in [`.nvmrc`](.nvmrc) (`nvm use`), **tmux 3.7 or
 newer**, and a **C++ toolchain** (`build-essential` and `python3` on Debian or
 Ubuntu). tmux, because the driver's tests drive a real server on a private
 socket, not a mock, and older tmux crashes on the `window-size manual` that
-`tether.conf` sets (so does tether itself; 3.7 is a hard floor, not just a test
+`tether.conf` sets (so does Remote Control Agent; 3.7 is a hard floor, not just a test
 one). A toolchain, because `node-pty` ships no Linux prebuild and is compiled
 during install. [`install.sh`](install.sh) sets up tmux and the toolchain and
 checks Node — it does not install Node — and `./install.sh` inside a checkout
@@ -18,12 +18,12 @@ npm test      # node:test across every package
 npm run build # server (tsc) and web (vite) — rerun after editing either
 ```
 
-`npm run tether -- <args>` runs the CLI from the working tree without installing
+`npm run rcagent -- <args>` runs the CLI from the working tree without installing
 it.
 
-`tether serve` serves the built app out of `web/dist`, so after editing `web/`
+`rcagent serve` serves the built app out of `web/dist`, so after editing `web/`
 either rebuild it or run Vite's dev server alongside, which proxies `/api` — the
-terminal and conversation WebSockets included — to a `tether serve` on the
+terminal and conversation WebSockets included — to an `rcagent serve` on the
 default port:
 
 ```sh
@@ -32,7 +32,7 @@ npm run dev -w @tether/web   # http://localhost:5173, hot reload, real server be
 
 `node-pty`'s install script is approved in the root `package.json` under
 `allowScripts`, because npm 12 blocks dependency install scripts by default. If
-`tether serve` reports that the native module is missing, install the toolchain
+`rcagent serve` reports that the native module is missing, install the toolchain
 and re-run `npm ci`; the message says so too. The root `postinstall` then makes
 `node-pty`'s `spawn-helper` executable, which its macOS prebuild ships without —
 macOS starts every process through that helper, so without the bit every
@@ -45,6 +45,7 @@ npm run typecheck    # tsc --noEmit, per package
 npm run lint         # eslint
 npm run format:check # prettier --check   (npm run format to fix)
 npm run check:pty    # a terminal really starts here: the helper bit, and a live PTY
+npm audit --omit=dev --audit-level=high
 
 shellcheck install.sh        # the installer is the only shell in the repo
 bash install.sh --self-test  # versions, PATH, package plans, services, Funnel probes, checkout moves
@@ -72,13 +73,14 @@ unvalidated release.
 
 `install.sh` picks the highest `vX.Y.Z` tag out of `git ls-remote --tags`, so the
 **tag** decides what gets installed. Prerelease tags and branches are ignored by
-that query and reachable only as `TETHER_VERSION`. This also works for an
+that query and reachable only as `RCAGENT_VERSION` (`TETHER_VERSION` remains an
+alias). This also works for an
 existing installation:
 
 ```sh
-url=https://raw.githubusercontent.com/galawaydude/tether/main/install.sh
-curl -fsSL $url | TETHER_VERSION=v0.1.0 bash   # an older release
-curl -fsSL $url | TETHER_VERSION=main   bash   # an unreleased change, to test it
+url=https://raw.githubusercontent.com/galawaydude/remote-control-agent/main/install.sh
+curl -fsSL $url | RCAGENT_VERSION=v0.3.0 bash   # an older release
+curl -fsSL $url | RCAGENT_VERSION=main   bash   # an unreleased change, to test it
 ```
 
 The checkout stays shallow either way, so moving between refs stays as fast as
@@ -106,7 +108,7 @@ POST   /api/machines/local/sessions            {"cwd": "…", "title"?: "…", "
                                                 thing that ever records a folder as trusted
 GET    /api/machines/local/sessions/:id
 POST   /api/machines/local/sessions/:id/resume restarts a dead session's conversation
-POST   /api/machines/local/sessions/:id/forget removes a dead row from tether's list; transcript untouched
+POST   /api/machines/local/sessions/:id/forget removes a dead row from the app; transcript untouched
 DELETE /api/machines/local/sessions/:id        kills the tmux session and marks the row dead
 POST   /api/machines/local/sessions/:id/permission-mode
                                                {"mode": "default"|"acceptEdits"|"plan"|"auto"} — Claude
@@ -135,8 +137,8 @@ call the agent has named as the one it is asking about; the transcript's own
 record for the same call carries the same `callId` and replaces that card rather
 than adding a second one — in either order, which matters because Claude Code
 writes its record _after_ the prompt and Codex writes it _before_. A `pending`
-with a `deadline` is one tether is holding the agent on until then, so that card
-is the one that gets Approve and Deny; without it tether is only reporting the
+with a `deadline` is one Remote Control Agent is holding until then, so that card
+gets Approve and Deny; without it the app is only reporting the
 proposal. `{"c":"answer","callId":…,"outcome":"allow"|"deny"|"timeout"}` says a
 hold is over — sent to every subscriber, so a second phone stops offering buttons
 on a question that has already been answered.
@@ -147,7 +149,7 @@ which means "fetch the history route again"; it never sends a partial history.
 ### The end-to-end specs
 
 `e2e/` is eight Playwright specs, and they are the only tests here that are not
-unit tests. Seven run at a phone viewport, which is the client tether is designed
+unit tests. Seven run at a phone viewport, which is the client the app is designed
 for.
 
 - **`session.spec.ts`** logs in, starts a session, watches it, types at it,
@@ -158,7 +160,7 @@ for.
   keys fit without sideways scrolling and that the terminal is not re-attached.
   It kills another session, reviews its saved conversation and resumes it from
   that screen, then sends a new prompt without ever opening the terminal. It
-  measures at 360×640 that nothing tether draws — the waiting banner included —
+  measures at 360×640 that nothing Remote Control Agent draws — the waiting banner included —
   changes the terminal's box or its row count, since a
   change there resizes the tmux pane for every other viewer; and it opens the New
   session sheet at the shortest full-height phones **and at a phone with its
@@ -209,7 +211,7 @@ for.
 - **`options.spec.ts`** drives the composer's option controls under both agents:
   that each provider is offered its own and only its own, that a keystroke axis
   really reaches the pane, that a bar-lowering choice does nothing until its
-  sentence is confirmed and that a mode change tether could not confirm never
+  sentence is confirmed and that a mode change Remote Control Agent could not confirm never
   claims one — and that at 360×340, with the warning up, Cancel, the confirm and
   Send are all still on screen.
 - **`desktop.spec.ts`** is the only one that runs at a laptop viewport

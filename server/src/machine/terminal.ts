@@ -66,7 +66,7 @@ export type Viewer = (bytes: Uint8Array) => void;
 export class PtyUnavailableError extends Error {
   constructor(cause: unknown) {
     super(
-      "node-pty's native module is not built, so tether cannot attach to a terminal.\n" +
+      "node-pty's native module is not built, so Remote Control Agent cannot attach to a terminal.\n" +
         '  Install a C++ toolchain (build-essential, python3) and re-run `npm ci`.\n' +
         '  npm 12 blocks install scripts by default; the approval lives in the root\n' +
         '  package.json as `allowScripts`, or run `npm install-scripts approve node-pty`.\n' +

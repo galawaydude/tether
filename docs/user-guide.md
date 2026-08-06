@@ -10,7 +10,7 @@ it that filters on title and directory. A live session shows what its agent is
 doing — _Working_, _Idle_ or _Waiting for you_ — and just **live** where the
 provider is not saying, rather than a badge that would be a guess. A live row
 must be **Kill**ed before it can be removed. Dead rows carry **Remove**: after a
-confirmation they disappear from tether's list and can no longer be resumed,
+confirmation they disappear from Remote Control Agent's list and can no longer be resumed,
 while the provider-owned Claude Code or Codex transcript stays untouched.
 
 ### The conversation
@@ -30,7 +30,7 @@ onto the change itself: added and removed lines with a `+`/`−` gutter, not a
 paragraph describing one. A call that failed says whether it is _retrying_ itself
 or _needs you_, so a glance is enough to know whether to pick the phone up. A
 whole **turn** the agent's own CLI reported as failed gets a row of its own, in
-that CLI's words rather than tether's — and where the CLI itself typed the
+that CLI's words rather than Remote Control Agent's — and where the CLI itself typed the
 failure as an authentication one, the row says nothing will retry it and offers
 the way to the terminal, so an expired login reads as an expired login rather
 than as a session that quietly stopped working. Any other failure is shown and
@@ -64,7 +64,7 @@ to **Copied** so the tap is not silent.
 Paste an image directly into that box, or choose **Image**. A local thumbnail
 appears before anything is sent, can be opened full-size or removed, and up to
 four PNG, JPEG, WebP or GIF images (8 MB each) may accompany one prompt. On Send,
-tether stores the bytes privately under its state directory, passes the agent an
+rcagent stores the bytes privately under its state directory, passes the agent an
 absolute readable path, and renders the image from an authenticated URL in the
 conversation; it remains viewable after reload without writing into the project.
 
@@ -82,11 +82,11 @@ only where changing it was verified to move
 a running session, so Claude Code gets **Permission mode**, **Model** and
 **Effort**, Codex gets its fixed three-preset **Permissions** — and an axis an
 agent cannot be moved along mid-session, or can only be moved along by guessing
-at a menu tether cannot see, is **absent** rather than a control that fails
+at a menu Remote Control Agent cannot see, is **absent** rather than a control that fails
 quietly. They are menus, not readouts: each resets to the name of its axis once
-applied, because tether cannot keep a value true against you typing in the
+applied, because Remote Control Agent cannot keep a value true against you typing in the
 terminal, and the agent's own answer above the composer is the confirmation.
-Permission mode is the one exception — tether reads it off the pane's own status
+Permission mode is the one exception — Remote Control Agent reads it off the pane's own status
 footer, so what it reports is the mode it **observed**, and it says so plainly
 when it could not confirm one. A choice that lets the agent act with less asking
 — Claude Code's _Accept edits_ and _Decide for me_, Codex's _Approve for me_ and
@@ -94,7 +94,7 @@ _Full access_ — states what it means and takes effect only once you have
 confirmed it.
 
 Anything no control covers is reachable by typing the agent's own **slash
-command** into the same box. Type `/` and the ones tether knows for that agent
+command** into the same box. Type `/` and the ones Remote Control Agent knows for that agent
 appear above it, one line each; a command is text addressed to the CLI rather
 than a prompt, so it gets no message bubble, and it is refused for the same
 reasons a message is — while the agent is waiting on a permission prompt above
@@ -102,8 +102,8 @@ all. What the composer adds is the one thing sending text cannot tell you:
 **where the answer will turn up**. `/model sonnet`, `/effort high` and `/compact`
 are recorded by Claude Code, so they land in the conversation as their own line.
 `/cost` and `/status` answer in the terminal only. A chooser like `/resume`
-leaves the agent waiting for a selection tether cannot draw, so the note that
-says so carries **Show the terminal** beside it. A command tether has not heard
+leaves the agent waiting for a selection Remote Control Agent cannot draw, so the note that
+says so carries **Show the terminal** beside it. A command Remote Control Agent has not heard
 of is still sent, since refusing one would refuse every custom command you have —
 it just says it cannot vouch for what happened. The single outright refusal is a
 Codex command given an argument, because Codex sends that to the model as a paid
@@ -116,7 +116,7 @@ the session you opened. A laptop gets a different shape rather than a stretched
 one: past 900px the session list stays on screen as a rail beside the open
 session, so switching sessions costs no trip back, and the conversation is capped
 to a readable column instead of running the full width of the window. The panel
-button beside **tether** collapses that rail when the conversation needs the full
+button beside **Remote Control Agent** collapses that rail when the conversation needs the full
 window; the matching button beside the session title restores it, and the choice
 survives reload.
 
@@ -133,25 +133,25 @@ hook installed once ([below](#codex-and-its-optional-hook)), and then behaves
 identically.
 
 Three things worth knowing, because each is a moment where you need to know what
-tether will do:
+rcagent will do:
 
 - **It only holds calls worth stopping for, and only while you are watching.**
-  Claude Code runs its hook for _every_ tool call, so tether skips the read-only
+  Claude Code runs its hook for _every_ tool call, so Remote Control Agent skips the read-only
   ones (`Read`, `Grep`, `Glob`, …); Codex needs no such list. Neither holds
   anything at all for a session no browser has open, so an agent reading twenty
   files does not slow down because your phone is unlocked.
-- **Nobody answering is not a denial.** After 20 seconds tether stops holding,
+- **Nobody answering is not a denial.** After 20 seconds Remote Control Agent stops holding,
   says so on the card, and the agent asks you in the terminal exactly as it would
-  have. `TETHER_PERMISSION_TIMEOUT` is that number in seconds; `0` turns holding
-  off entirely and leaves tether reporting prompts without answering them, which
+  have. `RCAGENT_PERMISSION_TIMEOUT` is that number in seconds; `0` turns holding
+  off entirely and leaves Remote Control Agent reporting prompts without answering them, which
   is a supported way to run it. A Codex hold is capped just under five minutes
   however high you set it, because the timeout in its hooks file is a fixed one —
   changing that value would put its trust prompt in front of you again.
-- **If tether cannot be reached, nothing is decided for you.** The hook says
+- **If Remote Control Agent cannot be reached, nothing is decided for you.** The hook says
   nothing and the agent's own permission rules apply — never an automatic
   _allow_, because a server that is down must not be able to approve anything,
-  and never an automatic _deny_, because a tether outage must not break every
-  session on the machine. If tether was reachable and then failed, it says so in
+  and never an automatic _deny_, because a Remote Control Agent outage must not break every
+  session on the machine. If Remote Control Agent was reachable and then failed, it says so in
   your session rather than falling back silently.
 
 Whichever surface answers first wins. Approving on your phone means the agent
@@ -163,7 +163,7 @@ expired updates the card. There is no second answer either way.
 `rm -rf ./buіld` — a Cyrillic `і` in place of the Latin one — reads as
 `rm -rf ./build` at any width, and an invisible character reads as nothing at
 all; a phone shows less of the surrounding context than a desktop editor and gets
-tapped faster, so this is where it matters most. When tether finds one on an
+tapped faster, so this is where it matters most. When Remote Control Agent finds one on an
 answerable card, it names the character, its code point and its script, and
 **Approve** waits behind a one-tap acknowledgement while **Deny** stays live
 throughout, because someone reading that warning most likely wants to refuse.
@@ -177,56 +177,56 @@ logged-in session, and the hook's own secret buys no say in the decision.
 Claude Code does not write a tool call to its transcript until the turn is
 finished. Without help, the conversation view would go blank for exactly as long
 as a permission prompt is on screen — the one moment you are most likely to be
-looking at your phone. So when tether starts a Claude Code session it registers a
+looking at your phone. So when Remote Control Agent starts a Claude Code session it registers a
 hook, and the view shows the tool call it is asking about while it is asking.
 
 It writes one thing into your project: two entries in
 `.claude/settings.local.json`, appended after anything already there. Your file
-is backed up first — under `~/.local/state/tether/`, not beside the original, so
-nothing tether writes can end up in a commit. If that file is not a shape tether
+is backed up first under Remote Control Agent’s private state directory, not
+beside the original, so nothing it writes can end up in a commit. If that file is not a shape Remote Control Agent
 recognises, it changes nothing at all and says so — you get the session without
 the accelerator. `.claude/settings.local.json` is git-ignored by convention, and
-tether keeps it worth ignoring:
+rcagent keeps it worth ignoring:
 
 **No secret is ever written into your repository.** The entries contain only a
-path to a script under `~/.local/state/tether/`. The shared secret and the URL to
+path to a script under the private state directory. The shared secret and URL to
 post to are `0600` files beside that script, read when the hook runs. The
 endpoint only listens on loopback, only accepts that secret, and only accepts a
-payload naming a session tether is actually running.
+payload naming a session Remote Control Agent is actually running.
 
 ### Codex, and its optional hook
 
-`tether new ~/src/project --provider codex` starts Codex instead, and so does
+`rcagent new ~/src/project --provider codex` starts Codex instead, and so does
 picking **Codex** in the browser's New session sheet. Everything works: the
 conversation view, the terminal, session state while it is working and when it is
 done, and resume after a reboot.
 
-Two things need your permission, and they are the same thing. tether cannot tell
+Two things need your permission, and they are the same thing. Remote Control Agent cannot tell
 that a Codex session is **waiting for you** to answer a permission prompt, and
 cannot offer you **Approve** and **Deny** for it, because Codex does not write
 that anywhere — the only way to reach it is a hook, and Codex trust-gates hooks.
 So:
 
 ```sh
-tether codex-hook            # what is registered right now; changes nothing
-tether codex-hook install    # explains what it adds, then adds it
-tether codex-hook remove     # takes it back out
+rcagent codex-hook            # what is registered right now; changes nothing
+rcagent codex-hook install    # explains what it adds, then adds it
+rcagent codex-hook remove     # takes it back out
 ```
 
 `install` prints exactly what it is about to write, and why, **before** it writes
 anything — so that when Codex asks you to trust the hook, you are answering a
 question you already understand. It adds one entry, appended after your existing
 ones, backs up your `hooks.json` first, and never changes anything else in it.
-The hook it registers is a script under `~/.local/state/tether/`. It appends one
+The hook it registers is a script under the private state directory. It appends one
 JSON line per event to a log under that same directory, and on the one event that
-has an answer to return it asks tether over loopback whether you have answered
+has an answer to return it asks Remote Control Agent over loopback whether you have answered
 yet — the same secret-in-a-`0600`-file arrangement described above, and the same
-fallback if tether is not running. It talks to nothing else.
+fallback if Remote Control Agent is not running. It talks to nothing else.
 
-Run `install` again after upgrading tether: it corrects its own entry if an older
-tether wrote a different one, and Codex then asks you to review that entry once
-more — a one-off, because the values tether writes are fixed rather than
-following a setting. `tether codex-hook` is what tells you an installation has
+Run `install` again after upgrading Remote Control Agent: it corrects its own entry if an older
+rcagent wrote a different one, and Codex then asks you to review that entry once
+more — a one-off, because the values Remote Control Agent writes are fixed rather than
+following a setting. `rcagent codex-hook` is what tells you an installation has
 gone stale; a stale one still reports _waiting for you_, but gets no Approve and
 Deny, and its prompts are answered in the terminal as before.
 
@@ -238,9 +238,9 @@ beside a Codex session running happily without the hook.
 **Declining is a supported answer, not a broken setup.** You lose the live
 _waiting for you_ badge and the Approve/Deny buttons for Codex sessions — the
 prompt is still there in the terminal, where it has always been — and nothing
-else changes. tether will neither nag you nor retry. Codex also needs
+else changes. Remote Control Agent will neither nag you nor retry. Codex also needs
 `hooks = true` under `[features]` in `~/.codex/config.toml` before it runs any
-hook at all; tether tells you so and changes no setting in that file, since it is
+hook at all; Remote Control Agent tells you so and changes no setting in that file, since it is
 also where Codex records which hooks you have trusted. The one thing it ever
 writes there is a folder you chose to trust — see
 [Trusting a folder](#trusting-a-folder-before-the-agent-asks).
@@ -250,16 +250,16 @@ writes there is a folder you chose to trust — see
 Both agents ask whether you trust a directory the first time they run in one. Met
 in the terminal, that question is a cramped dialog behind an overlay you have to
 summon. So the **New session sheet asks it first**: fill in a directory, and if
-the agent you picked does not already trust it, tether says so — what trusting
+the agent you picked does not already trust it, Remote Control Agent says so — what trusting
 means, that the agent will be able to read, change and run files there, and that
 the answer is remembered — with a box to tick.
 
-- **Tick it and the session starts with no prompt.** tether records your answer
+- **Tick it and the session starts with no prompt.** Remote Control Agent records your answer
   where that agent reads it: `hasTrustDialogAccepted` in `~/.claude.json` for
   Claude Code, `trust_level = "trusted"` under `[projects."…"]` in
-  `~/.codex/config.toml` for Codex. Both files are the agent's, not tether's, so
-  each is backed up first (under tether's state directory, never beside the
-  original), merged rather than rewritten, and left alone entirely if tether
+  `~/.codex/config.toml` for Codex. Both files are the agent's, not Remote Control Agent's, so
+  each is backed up first (under Remote Control Agent's state directory, never beside the
+  original), merged rather than rewritten, and left alone entirely if Remote Control Agent
   cannot make sense of it. The Codex entry is marked with a comment so you can
   find it and take it out again.
 - **Leave it unticked and the session still starts** — the agent asks you in the
@@ -269,6 +269,6 @@ the answer is remembered — with a box to tick.
 - **Codex trusts a repository, not a directory**, so a session in `repo/sub` is a
   question about `repo` — the sheet names that path rather than saying "this
   folder". Claude Code accepts a directory and everything under it.
-- **If tether cannot read the agent's configuration, it says so and offers
+- **If Remote Control Agent cannot read the agent's configuration, it says so and offers
   nothing.** A guess here would either hide a question you should answer or offer
-  to write into a file tether has just failed to understand.
+  to write into a file Remote Control Agent has just failed to understand.

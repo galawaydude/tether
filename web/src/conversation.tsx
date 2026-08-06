@@ -923,7 +923,7 @@ function Composer({
             <span>Image</span>
           </button>
           {/* Each control is a menu of values, never a display of the agent's
-            current one — tether cannot read most of those from a running pane,
+            current one — Remote Control Agent cannot read most of those from a running pane,
             and a stale value beside a live agent is worse than no value. So it
             shows the axis, resets to it after applying, and the pane's own
             answer in the conversation above is the confirmation.
@@ -1251,7 +1251,7 @@ const RowView = memo(function RowView({
       return <p class="divider">context compacted</p>;
     case 'error':
       // The provider's own sentence, in a box, because a box means an artefact
-      // and this is one: its CLI wrote it, the model did not. Tether's own line
+      // and this is one: its CLI wrote it, the model did not. The app's own line
       // goes underneath and only for the case it can stand behind.
       return (
         // A plain `<div>`, not an `<aside>`: this row is part of the

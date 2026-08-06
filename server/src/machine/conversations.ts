@@ -171,11 +171,11 @@ export function stderrWarn(): (message: string) => void {
     if (seen.size >= MAX_WARNINGS) {
       if (announcedSilence) return;
       announcedSilence = true;
-      process.stderr.write('tether: further transcript warnings suppressed\n');
+      process.stderr.write('rcagent: further transcript warnings suppressed\n');
       return;
     }
     seen.add(key);
-    process.stderr.write(`tether: ${message}\n`);
+    process.stderr.write(`rcagent: ${message}\n`);
   };
 }
 

@@ -330,7 +330,7 @@ test('the terminal is summoned over the conversation and dismissed, and neither 
  * is deliberately behind the conversation for half of this test — which is the
  * state the assertion is *about*.
  */
-test('tether’s own chrome never resizes the terminal pane', async ({ page }) => {
+test('Remote Control Agent’s chrome never resizes the terminal pane', async ({ page }) => {
   mkdirSync(chrome, { recursive: true });
   // 360×640, the smallest phone the product targets, and set before the
   // baseline so the viewport never changes inside the test. It is also the

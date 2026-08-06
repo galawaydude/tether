@@ -2,8 +2,8 @@
  * The server Playwright's `webServer` starts, and the sandbox it runs in.
  *
  * Everything tether would otherwise touch on the real machine is redirected here
- * by `playwright.config.ts`: `HOME`, `TETHER_STATE_DIR`, `TETHER_ALLOWED_ROOTS`
- * and a private `TETHER_TMUX_SOCKET`. This file only creates the directories,
+ * by `playwright.config.ts`: `HOME`, `RCAGENT_STATE_DIR`, `RCAGENT_ALLOWED_ROOTS`
+ * and a private `RCAGENT_TMUX_SOCKET`. This file only creates the directories,
  * puts the stub agent on `PATH` as `claude`, sets the password, and then calls
  * the CLI's own `serve` — the same code path `npx tether serve` runs, so what the
  * spec drives is the product and not a test harness wearing its clothes.
@@ -24,7 +24,7 @@ function required(name: string): string {
 }
 
 const dir = required('TETHER_E2E_DIR');
-const socket = required('TETHER_TMUX_SOCKET');
+const socket = required('RCAGENT_TMUX_SOCKET');
 
 // From scratch every run, both halves. A registry row or a pane left behind by a
 // previous run would put a second session in the list, and the spec asserts on

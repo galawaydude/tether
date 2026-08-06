@@ -290,7 +290,7 @@ export function modeFailure(code: string, wanted: string, body: unknown = null):
     const landed = landedMode(body);
     const where =
       landed === null
-        ? 'Check the terminal — it shows the mode tether could not.'
+        ? 'Check the terminal — it shows the mode Remote Control Agent could not.'
         : `The pane was last seen in ${modeLabel(landed)}. Check the terminal.`;
     return `Could not confirm the mode reached ${wanted}. ${where}`;
   }

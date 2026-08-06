@@ -41,7 +41,7 @@ const SPAWN_TIMEOUT_MS = 20_000;
 
 function fail(lines: readonly string[]): never {
   process.stderr.write(
-    `tether cannot open a terminal on this machine.\n${lines.map((l) => `  ${l}\n`).join('')}`,
+    `Remote Control Agent cannot open a terminal on this machine.\n${lines.map((l) => `  ${l}\n`).join('')}`,
   );
   process.exit(1);
 }
@@ -61,7 +61,7 @@ function checkHelperBit(): void {
   if (found.length === 0) {
     fail([
       'node-pty ships no `spawn-helper` in any of its native-module directories,',
-      `which is not a layout tether has seen (looked in ${HELPER_DIRS}).`,
+      `which is not a layout Remote Control Agent has seen (looked in ${HELPER_DIRS}).`,
       'On macOS every process starts through that helper. Re-check node-pty.',
     ]);
   }
@@ -71,7 +71,7 @@ function checkHelperBit(): void {
     } catch {
       fail([
         `node-pty's spawn-helper is not executable: ${helper}`,
-        'On macOS every process tether starts goes through it, so every terminal',
+        'On macOS every process Remote Control Agent starts goes through it, so every terminal',
         'attach fails with `posix_spawnp failed`. Fix it with:',
         '',
         `  chmod +x ${helper}`,

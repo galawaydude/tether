@@ -2,12 +2,12 @@
 
 ## Access and security
 
-**Treat tether access as shell access.** One shared password authorizes every
+**Treat Remote Control Agent access as shell access.** One shared password authorizes every
 session and file under the allowed roots. Set it locally before serving:
 
 ```sh
-tether set-password
-tether serve
+rcagent set-password
+rcagent serve
 ```
 
 Security defaults:
@@ -20,41 +20,42 @@ Security defaults:
   colon-separated list:
 
   ```sh
-  TETHER_ALLOWED_ROOTS=/srv/code:/mnt/work tether serve
+  RCAGENT_ALLOWED_ROOTS=/srv/code:/mnt/work rcagent serve
   ```
 
-Tether does not terminate TLS. Use Funnel, SSH, a private tailnet or a reverse
-proxy. State lives under `~/.local/state/tether` with private permissions; use
-`$XDG_STATE_HOME` or `$TETHER_STATE_DIR` to move it. Runtime state is never
-written into your repository.
+Remote Control Agent does not terminate TLS. Use Funnel, SSH, a private tailnet
+or a reverse proxy. New installations store private state under
+`~/.local/state/remote-control-agent`; upgrades keep using the former
+`~/.local/state/tether` directory so sessions and provider hooks survive. Use
+`$XDG_STATE_HOME` or `$RCAGENT_STATE_DIR` to choose another location.
 
-Logs go to stderr at `warn`. Use `TETHER_LOG_LEVEL=info tether serve` for request
-logs.
+Logs go to stderr at `warn`. Use `RCAGENT_LOG_LEVEL=info rcagent serve` for
+request logs.
 
 ## Reaching it from your phone
 
 ### Tailscale Funnel
 
 Funnel is the default because the **host alone** installs Tailscale. Every viewer
-uses a normal browser and the tether password—no Tailscale app, account, VPN or
+uses a normal browser and the Remote Control Agent password—no Tailscale app, account, VPN or
 extension.
 
-**Funnel makes tether's login page public.** The URL is not a secret; anyone with
+**Funnel makes Remote Control Agent's login page public.** The URL is not a secret; anyone with
 the password has shell-level access. The installer checks the password and port,
 shows the exact Funnel command, and asks before publishing.
 
 The installer configures Funnel. Once it is enabled, the server command is:
 
 ```sh
-tether serve --funnel
+rcagent serve --funnel
 ```
 
-`--funnel` derives the Tailscale hostname, keeps tether on loopback, allows that
+`--funnel` derives the Tailscale hostname, keeps Remote Control Agent on loopback, allows that
 hostname, and trusts only the loopback Funnel proxy. Disable and diagnose it with:
 
 ```sh
 sudo tailscale funnel --bg off
-tether access status
+rcagent access status
 ```
 
 The installer can also add a launchd/systemd user service. Funnel itself remains
@@ -80,7 +81,7 @@ join Tailscale:
 ```sh
 tailscale ip -4
 tailscale status --json | grep '"DNSName"'
-tether serve --host <tailscale-ip> --allowed-host <tailscale-name>
+rcagent serve --host <tailscale-ip> --allowed-host <tailscale-name>
 ```
 
 Open `http://<tailscale-name>:8787` from a device in the tailnet. Bind the
@@ -92,31 +93,31 @@ Tailscale IP, not `0.0.0.0`.
 ssh -N -L 8787:127.0.0.1:8787 you@box
 ```
 
-Open `http://localhost:8787`. Tether stays on loopback.
+Open `http://localhost:8787`. Remote Control Agent stays on loopback.
 
 ### Reverse proxy
 
 Example Caddy configuration:
 
 ```
-tether.example.com {
+rcagent.example.com {
     reverse_proxy 127.0.0.1:8787
 }
 ```
 
 ```sh
-tether serve --allowed-host tether.example.com --trusted-proxy 127.0.0.1
+rcagent serve --allowed-host rcagent.example.com --trusted-proxy 127.0.0.1
 ```
 
-Keep tether on loopback and add authentication at the proxy when possible.
+Keep Remote Control Agent on loopback and add authentication at the proxy when possible.
 
 ## Known risks
 
 **The conversation view is built on file formats that are not public APIs.**
 Claude Code writes its transcript to `~/.claude/projects/` and Codex writes its
-rollout to `~/.codex/sessions/`. Both ship frequently and owe tether nothing. A
+rollout to `~/.codex/sessions/`. Both ship frequently and owe Remote Control Agent nothing. A
 release can change the record shapes, and when it does the conversation view
-loses detail — a tool card, a message, at worst the whole view. tether parses
+loses detail — a tool card, a message, at worst the whole view. Remote Control Agent parses
 them tolerantly for that reason: an unrecognised record is logged to stderr and
 ignored, never thrown.
 
@@ -135,14 +136,14 @@ promise**: an agent is free to stop and ask something the table could not forese
 conversation — which is why no note ever claims nothing else will happen, and why
 the waiting banner is the correction.
 
-**Folder trust is the same bet, and the one place tether takes it while
+**Folder trust is the same bet, and the one place Remote Control Agent takes it while
 _writing_.** Where each agent records a trusted directory is its own business, and
 `~/.claude.json` and `~/.codex/config.toml` can change shape in any release. Both
 were established against Claude Code 2.1.220 and codex-cli 0.145.0. The
-consequences are bounded on purpose: a file tether cannot make sense of gets no
+consequences are bounded on purpose: a file Remote Control Agent cannot make sense of gets no
 checkbox and no write, a write it will not make refuses the session outright
 rather than starting one on a promise it did not keep, and an existing file is
-copied into tether's state directory before it is touched. What a stale reader
+copied into Remote Control Agent's state directory before it is touched. What a stale reader
 costs you is the question moving back into the terminal, where it has always been
 answerable.
 

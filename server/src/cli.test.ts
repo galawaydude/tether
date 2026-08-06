@@ -33,6 +33,13 @@ function tempState(t: { after(fn: () => void): void }): string {
 
 type CliResult = { code: number; stdout: string; stderr: string };
 
+test('the package exposes rcagent and keeps tether as a command alias', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+    bin: Record<string, string>;
+  };
+  assert.deepEqual(pkg.bin, { rcagent: './dist/cli.js', tether: './dist/cli.js' });
+});
+
 /** `node server/src/cli.ts …` with an isolated state directory. */
 async function cli(
   args: string[],
@@ -44,8 +51,8 @@ async function cli(
     // These sessions start in temporary directories, not under the default root.
     env: {
       ...process.env,
-      TETHER_STATE_DIR: stateDir,
-      TETHER_ALLOWED_ROOTS: tmpdir(),
+      RCAGENT_STATE_DIR: stateDir,
+      RCAGENT_ALLOWED_ROOTS: tmpdir(),
       ...extraEnv,
     },
   });
@@ -220,7 +227,7 @@ test('`tether serve --host 0.0.0.0` exits rather than exposing a passwordless sh
   const result = await cli(['serve', '--host', '0.0.0.0'], stateDir);
   assert.equal(result.code, 1);
   assert.match(result.stderr, /refusing to bind 0\.0\.0\.0/);
-  assert.match(result.stderr, /tether set-password/);
+  assert.match(result.stderr, /rcagent set-password/);
 });
 
 test('run through a symlink, the way npm’s bin link is, the CLI still runs', async (t) => {
@@ -246,7 +253,7 @@ test('access is read-only and accepts only its status action', async (t) => {
   const stateDir = tempState(t);
   const result = await cli(['access', 'publish'], stateDir);
   assert.equal(result.code, 1);
-  assert.match(result.stderr, /tether access status/);
+  assert.match(result.stderr, /rcagent access status/);
   assert.equal(statSync(stateDir).isDirectory(), true, 'the temporary harness made the directory');
   assert.throws(
     () => statSync(join(stateDir, 'tether.sqlite')),
@@ -442,7 +449,7 @@ test('codex-hook explains before it touches anything, and undoes cleanly', async
 
   const remove = await cli(['codex-hook', 'remove'], stateDir, '', env);
   assert.equal(remove.code, 0);
-  assert.match(remove.stdout, /Removed tether’s hook/);
+  assert.match(remove.stdout, /Removed Remote Control Agent’s hook/);
   const after = JSON.parse(readFileSync(hooksJson, 'utf8')) as typeof file;
   assert.deepEqual(after.hooks['SessionStart'], [
     { matcher: '', hooks: [{ type: 'command', command: 'gh-axi' }] },

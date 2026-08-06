@@ -268,7 +268,7 @@ export function planSend(provider: string, message: string): Plan {
     return {
       plan: 'command',
       send: message,
-      note: `Sent ${message}. tether does not know this command, so it cannot say what it did — the terminal shows that, and shows the line still sitting in the box if the command was not recognised.`,
+      note: `Sent ${message}. Remote Control Agent does not know this command, so it cannot say what it did — the terminal shows that, and shows the line still sitting in the box if the command was not recognised.`,
       hatch: true,
     };
   }
@@ -286,7 +286,7 @@ export function planSend(provider: string, message: string): Plan {
     return {
       plan: 'command',
       send: message,
-      note: `Sent ${message}. It opens a chooser tether cannot show, so ${agent} is now waiting for a selection.`,
+      note: `Sent ${message}. It opens a chooser Remote Control Agent cannot show, so ${agent} is now waiting for a selection.`,
       hatch: true,
     };
   }
