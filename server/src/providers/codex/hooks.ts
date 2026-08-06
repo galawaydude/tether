@@ -55,7 +55,7 @@
  * and Claude Code keeps it by *reconciling* the outermost value in the settings
  * file whenever the hold moves. That is exactly what must not happen here.
  * Codex's trust hash covers the entry, so a `timeout` that followed
- * `TETHER_PERMISSION_TIMEOUT` would put a security prompt in front of a user
+ * `RCAGENT_PERMISSION_TIMEOUT` would put a security prompt in front of a user
  * every time an operator changed an environment variable — for a hook they had
  * already reviewed and trusted. So the outermost net and the shim's abort are
  * both fixed and generous, and the *hold* is clamped beneath them instead

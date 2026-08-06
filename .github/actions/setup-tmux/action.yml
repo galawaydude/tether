@@ -1,5 +1,5 @@
 name: Set up tmux
-description: Build the pinned tmux release required by tether's integration tests
+description: Build the pinned tmux release required by Remote Control Agent's integration tests
 
 inputs:
   version:

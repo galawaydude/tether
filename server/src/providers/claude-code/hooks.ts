@@ -259,7 +259,7 @@ async function writeAtomically(path: string, text: string, mode: number): Promis
 /**
  * What goes in the settings file's `command`. Claude Code runs it through a
  * shell, so the path is quoted: a state directory under a home with a space in
- * it — `/Users/First Last/...`, or any `TETHER_STATE_DIR` — would otherwise be
+ * it — `/Users/First Last/...`, or any `RCAGENT_STATE_DIR` — would otherwise be
  * word-split, and the hook would silently never run.
  */
 function shimCommand(shim: string): string {
@@ -336,7 +336,7 @@ export async function installHook(options: {
   cwd: string;
   stateDir: string;
   now?: Date;
-  /** Overrides `TETHER_PERMISSION_TIMEOUT`. Tests, and nothing else. */
+  /** Overrides `RCAGENT_PERMISSION_TIMEOUT`. Tests, and nothing else. */
   holdMs?: number;
   /**
    * Update tether's own entry if it is already there, and otherwise **do
