@@ -5,6 +5,7 @@
   "type": "module",
   "main": "./dist/index.js",
   "bin": {
+    "rcagent": "./dist/cli.js",
     "tether": "./dist/cli.js"
   },
   "scripts": {

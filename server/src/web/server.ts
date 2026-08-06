@@ -87,18 +87,19 @@ const LOG_LEVELS = ['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'
  * noise that gets switched off again, taking the failures with it. `warn` is the
  * level at which nothing routine is said and every failure is.
  *
- * `TETHER_LOG_LEVEL` is there for the debugging session that wants the request
- * log, and is validated rather than passed through: pino throws on a level it
+ * `RCAGENT_LOG_LEVEL` is there for the debugging session that wants the request
+ * log; `TETHER_LOG_LEVEL` remains a compatibility alias. It is validated rather
+ * than passed through: pino throws on a level it
  * does not know, and a typo in an env var must not be a server that will not
  * start. A rejected value is *said out loud* for the same reason this logger is
  * on at all — a fallback nobody is told about reads as the knob doing nothing,
  * and a change made to end a silence must not ship its own.
  */
 function logLevel(): string {
-  const wanted = process.env['TETHER_LOG_LEVEL'];
+  const wanted = process.env['RCAGENT_LOG_LEVEL'] ?? process.env['TETHER_LOG_LEVEL'];
   if (wanted === undefined || LOG_LEVELS.includes(wanted)) return wanted ?? 'warn';
   process.stderr.write(
-    `tether: TETHER_LOG_LEVEL=${wanted} is not a level; using warn. ` +
+    `rcagent: RCAGENT_LOG_LEVEL=${wanted} is not a level; using warn. ` +
       `Levels: ${LOG_LEVELS.join(', ')}.\n`,
   );
   return 'warn';

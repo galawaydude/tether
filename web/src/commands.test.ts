@@ -88,7 +88,10 @@ test('an unverifiable send reports rather than claiming success', () => {
   // done. Each says where the answer actually is and offers the way there.
   const picker = planSend(DEFAULT_PROVIDER, '/resume');
   assert.ok(picker.plan === 'command' && picker.hatch);
-  assert.match(picker.plan === 'command' ? picker.note : '', /chooser tether cannot show/);
+  assert.match(
+    picker.plan === 'command' ? picker.note : '',
+    /chooser Remote Control Agent cannot show/,
+  );
 
   const pane = planSend(DEFAULT_PROVIDER, '/cost');
   assert.ok(pane.plan === 'command' && pane.hatch);

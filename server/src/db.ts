@@ -1,18 +1,22 @@
-import { chmodSync, mkdirSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 /**
  * Runtime state lives outside the repo (report §7): a path that is not in the
- * repository cannot be committed by accident, which is stronger than an ignore
- * rule. `TETHER_STATE_DIR` exists so tests never touch the real one.
+ * repository cannot be committed accidentally, which is stronger than an
+ * ignore rule. `TETHER_STATE_DIR` remains an alias so existing installations
+ * and their provider hooks continue to use the directory they already know.
  */
 export function stateDir(): string {
-  const override = process.env['TETHER_STATE_DIR'];
+  const override = process.env['RCAGENT_STATE_DIR'] ?? process.env['TETHER_STATE_DIR'];
   if (override) return override;
   const xdg = process.env['XDG_STATE_HOME'];
-  return join(xdg && xdg.length > 0 ? xdg : join(homedir(), '.local', 'state'), 'tether');
+  const root = xdg && xdg.length > 0 ? xdg : join(homedir(), '.local', 'state');
+  const current = join(root, 'remote-control-agent');
+  const legacy = join(root, 'tether');
+  return existsSync(legacy) ? legacy : current;
 }
 
 export function databasePath(): string {

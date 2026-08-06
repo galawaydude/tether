@@ -512,7 +512,10 @@ test('a decision tether sends comes back on stdout in Codex’s own shape', asyn
         hookEventName: 'PermissionRequest',
         decision: {
           behavior: decision,
-          message: decision === 'allow' ? 'Approved in tether.' : 'Denied in tether.',
+          message:
+            decision === 'allow'
+              ? 'Approved in Remote Control Agent.'
+              : 'Denied in Remote Control Agent.',
         },
       },
     });
@@ -618,7 +621,7 @@ test('a tether that answers with a refusal says so, without deciding', async (t)
     string,
     unknown
   >;
-  assert.match(String(said['systemMessage']), /tether could not answer/);
+  assert.match(String(said['systemMessage']), /Remote Control Agent could not answer/);
   assert.equal(said['hookSpecificOutput'], undefined);
 });
 

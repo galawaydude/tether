@@ -216,7 +216,7 @@ export async function writeTrust(
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
       throw new FolderTrustError(
-        `tether will not rewrite ${path}: it could not be read (${(error as Error).message})`,
+        `Remote Control Agent will not rewrite ${path}: it could not be read (${(error as Error).message})`,
       );
     }
   }
@@ -225,7 +225,7 @@ export async function writeTrust(
   const found = scan(text ?? '', dir, lines);
   if (found.beyond) {
     throw new FolderTrustError(
-      `tether will not rewrite ${path}: it uses TOML that tether cannot edit safely. ` +
+      `Remote Control Agent will not rewrite ${path}: it uses TOML that Remote Control Agent cannot edit safely. ` +
         `Add \`trust_level = "trusted"\` under \`${header(dir)}\` by hand, or let Codex ask you ` +
         `in the terminal.`,
     );
@@ -245,7 +245,7 @@ export async function writeTrust(
     const spacer = next.length === 0 || next.at(-1)?.trim() === '' ? [] : [''];
     next.push(
       ...spacer,
-      '# Trusted from tether’s New session sheet.',
+      '# Trusted from Remote Control Agent’s New session sheet.',
       header(dir),
       'trust_level = "trusted"',
       '',

@@ -111,7 +111,7 @@ export function funnelHostname(status: unknown): string {
   if (typeof dnsName !== 'string' || dnsName.replace(/\.$/, '') === '') {
     throw new TailscaleError(
       'Tailscale is running, but reports no MagicDNS name for this machine, so\n' +
-        'tether cannot work out its public address. Enable MagicDNS at\n' +
+        'Remote Control Agent cannot work out its public address. Enable MagicDNS at\n' +
         'https://login.tailscale.com/admin/dns and try again.',
     );
   }
@@ -137,7 +137,7 @@ export async function tailscaleStatus(): Promise<unknown> {
     if (err.code === 'ENOENT') {
       throw new TailscaleError(
         'Tailscale is not installed, and --funnel needs it.\n' +
-          'Install it from https://tailscale.com/download — or re-run tether’s\n' +
+          'Install it from https://tailscale.com/download — or re-run Remote Control Agent’s\n' +
           'installer, which offers to do it for you.',
       );
     }
@@ -145,7 +145,7 @@ export async function tailscaleStatus(): Promise<unknown> {
     // JSON would be reported as tailscale printing something unreadable.
     if (err.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
       throw new TailscaleError(
-        `\`tailscale status --json --peers=false\` printed more than ${STATUS_MAX_BUFFER} bytes, so tether\n` +
+        `\`tailscale status --json --peers=false\` printed more than ${STATUS_MAX_BUFFER} bytes, so Remote Control Agent\n` +
           'stopped reading it. Run it yourself to see what this node reports.',
       );
     }
@@ -160,7 +160,7 @@ export async function tailscaleStatus(): Promise<unknown> {
     return JSON.parse(stdout);
   } catch {
     throw new TailscaleError(
-      '`tailscale status --json --peers=false` did not print JSON tether could read.',
+      '`tailscale status --json --peers=false` did not print JSON Remote Control Agent could read.',
     );
   }
 }
@@ -198,7 +198,7 @@ export async function tailscaleServeStatus(): Promise<unknown> {
     if (err.code === 'ENOENT') {
       throw new TailscaleError(
         'Tailscale is not installed. Install it from https://tailscale.com/download — or\n' +
-          're-run tether’s installer, which offers to do it for you.',
+          're-run Remote Control Agent’s installer, which offers to do it for you.',
       );
     }
     if (typeof err.stdout !== 'string' || err.stdout.trim() === '') {
@@ -210,7 +210,7 @@ export async function tailscaleServeStatus(): Promise<unknown> {
     return JSON.parse(stdout);
   } catch {
     throw new TailscaleError(
-      '`tailscale serve status --json` did not print JSON tether could read.',
+      '`tailscale serve status --json` did not print JSON Remote Control Agent could read.',
     );
   }
 }

@@ -132,8 +132,8 @@ export function trustAsk(
   if (trust === 'unknown') {
     return {
       lines: [
-        `tether cannot tell whether ${agent} already trusts ${path} — its configuration could not ` +
-          `be read, so tether will not guess and will not write to it.`,
+        `Remote Control Agent cannot tell whether ${agent} already trusts ${path} — its configuration ` +
+          `could not be read, so it will not guess or write to it.`,
         `The session starts either way. If ${agent} does not trust this folder yet, it will ask in ` +
           `the terminal, and you can answer it there.`,
       ],

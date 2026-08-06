@@ -134,14 +134,14 @@ export async function writeTrust(
   const path = where.claudeConfigPath ?? claudeConfigPath();
   const { file, text, why } = await readConfig(path);
   if (why !== undefined) {
-    throw new FolderTrustError(`tether will not rewrite ${path}: ${why}`);
+    throw new FolderTrustError(`Remote Control Agent will not rewrite ${path}: ${why}`);
   }
 
   const projects = { ...((file['projects'] ?? {}) as Record<string, unknown>) };
   const entry = projects[cwd];
   if (entry !== undefined && !isObject(entry)) {
     throw new FolderTrustError(
-      `tether will not rewrite ${path}: its entry for ${cwd} is not an object`,
+      `Remote Control Agent will not rewrite ${path}: its entry for ${cwd} is not an object`,
     );
   }
   if (isObject(entry) && entry['hasTrustDialogAccepted'] === true) {

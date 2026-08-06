@@ -180,12 +180,13 @@ export function isSessionGone(error: unknown): boolean {
  * Where a session may be started. `cwd` is attacker-controlled input that becomes a
  * process working directory on a machine where reaching tether is a shell (report
  * §7), so it is confined to these roots. The default is the user's home;
- * `TETHER_ALLOWED_ROOTS` — a `:`-separated list, like `PATH` — widens it. One
+ * `RCAGENT_ALLOWED_ROOTS` — a `:`-separated list, like `PATH` — widens it. The
+ * former `TETHER_ALLOWED_ROOTS` name remains an alias. One
  * setting, read at use, and that is deliberately all of it: there is no per-root
  * permission model to build, because there is one account with full access.
  */
 export function allowedRoots(): readonly string[] {
-  const configured = process.env['TETHER_ALLOWED_ROOTS'];
+  const configured = process.env['RCAGENT_ALLOWED_ROOTS'] ?? process.env['TETHER_ALLOWED_ROOTS'];
   if (configured === undefined || configured.trim() === '') return [homedir()];
   return configured.split(delimiter).filter((root) => root.trim() !== '');
 }

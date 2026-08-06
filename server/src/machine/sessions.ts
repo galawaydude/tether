@@ -141,7 +141,7 @@ export async function folderTrust(
 async function installProviderHook(provider: string, cwd: string): Promise<void> {
   if (provider !== DEFAULT_PROVIDER) return;
   await installHook({ cwd, stateDir: stateDir() }).catch((error: unknown) => {
-    process.stderr.write(`tether: hook not installed — ${(error as Error).message}\n`);
+    process.stderr.write(`rcagent: hook not installed — ${(error as Error).message}\n`);
   });
 }
 
@@ -161,7 +161,7 @@ async function installProviderHook(provider: string, cwd: string): Promise<void>
  * and a file on disk. It is reconciled at *every* point where they can, which is
  * exactly two: at spawn (`startSession`, `resumeSession`) and here, at `listen`.
  * This one covers the panes that were already running when the server came back
- * up under a different `TETHER_PERMISSION_TIMEOUT` — surviving a restart is the
+ * up under a different `RCAGENT_PERMISSION_TIMEOUT` — surviving a restart is the
  * product's whole point, so that is the ordinary path and not an edge. If you
  * find a third way the two can diverge, reconcile it here rather than adding a
  * patch where the symptom showed up.
@@ -192,7 +192,7 @@ export async function reconcileProviderHooks(db: DatabaseSync, socket: string): 
     if (session.provider !== DEFAULT_PROVIDER) continue;
     await installHook({ cwd: session.cwd, stateDir: stateDir(), updateOnly: true }).catch(
       (error: unknown) => {
-        process.stderr.write(`tether: hook not reconciled — ${(error as Error).message}\n`);
+        process.stderr.write(`rcagent: hook not reconciled — ${(error as Error).message}\n`);
       },
     );
   }
@@ -249,7 +249,7 @@ export async function startSession(
     const how = PROVIDER_TRUST.get(provider);
     if (how === undefined) {
       throw new FolderTrustError(
-        `tether does not know where ${provider} records folder trust, so it cannot record it`,
+        `Remote Control Agent does not know where ${provider} records folder trust, so it cannot record it`,
       );
     }
     await how.write(how.key(cwd, await repoRoot(cwd)), opts.trustIn ?? {});

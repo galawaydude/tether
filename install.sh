@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# tether installer.
+# Remote Control Agent installer.
 #
-#   curl -fsSL https://raw.githubusercontent.com/galawaydude/tether/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/galawaydude/remote-control-agent/main/install.sh | bash
 #
 # Clones the repo, checks the prerequisites that actually bite, builds, and puts
-# `tether` on PATH. It installs no system package, writes no user service and
+# `rcagent` on PATH. The former `tether` command remains an alias. It installs no system package, writes no user service and
 # runs no `sudo` without printing the exact bytes/commands and asking first;
 # declining is a supported answer, and leaves the narrower setup working.
 
@@ -19,8 +19,20 @@ fi
 
 set -euo pipefail
 
-REPO_URL="${TETHER_REPO_URL:-https://github.com/galawaydude/tether.git}"
-DEFAULT_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/tether"
+REPO_URL="${RCAGENT_REPO_URL:-${TETHER_REPO_URL:-https://github.com/galawaydude/remote-control-agent.git}}"
+DATA_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}"
+
+# Upgrade the checkout an existing installation already uses; new installations
+# take the new name. Moving it would break the command symlink before replacement.
+default_install_dir() {
+	local root=$1 current="$1/remote-control-agent" legacy="$1/tether"
+	if [ -d "$legacy/.git" ]; then
+		printf '%s\n' "$legacy"
+	else
+		printf '%s\n' "$current"
+	fi
+}
+DEFAULT_DIR=$(default_install_dir "$DATA_ROOT")
 # uv, mise and the rest of the modern consensus land the command here, and on
 # Debian and Ubuntu ~/.profile already puts it on PATH when it exists. It also
 # never needs sudo, unlike npm's global prefix, which is a property of how Node
@@ -42,13 +54,14 @@ TARGET_DIR=""
 VERSION=""
 # The viewer-side contract. `public` is Tailscale Funnel: Tailscale runs only on
 # this host and everyone else uses an ordinary HTTPS browser. `local` skips all
-# remote setup without making the successful tether install an error.
+# remote setup without making the successful installation an error.
 ACCESS=public
 
 # Tailscale recommends its signed Standalone system-extension package on macOS.
 # The stable alias redirects to the current version and `/usr/sbin/installer`
 # verifies the package signature before changing the machine.
 TAILSCALE_MACOS_PKG=https://pkgs.tailscale.com/stable/Tailscale-latest-macos.pkg
+# Kept so an upgrade replaces the existing service instead of starting a second one.
 SERVICE_LABEL=dev.tether.server
 
 die() {
@@ -64,7 +77,7 @@ as_root() {
 
 usage() {
 	cat <<EOF
-tether installer
+Remote Control Agent installer
 
 Usage: install.sh [options]
 
@@ -76,8 +89,8 @@ Usage: install.sh [options]
 
 Environment:
 
-  TETHER_VERSION   Release tag, or a branch to test, to install
-                   (default: the latest release tag)
+  RCAGENT_VERSION  Release tag, or branch to install (default: latest release)
+  TETHER_VERSION   Compatibility alias
 EOF
 }
 
@@ -154,8 +167,21 @@ PORT=8787
 # server/src/db.ts, including that `TETHER_STATE_DIR` is the directory itself
 # and only the XDG branch appends `tether`; the two must agree or the log lands
 # beside the state rather than in it.
+default_state_dir() {
+	local root=$1 current="$1/remote-control-agent" legacy="$1/tether"
+	if [ -d "$legacy" ]; then current=$legacy; fi
+	printf '%s\n' "$current"
+}
+
 serve_log() {
-	printf '%s/serve.log\n' "${TETHER_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/tether}"
+	local explicit root
+	explicit="${RCAGENT_STATE_DIR:-${TETHER_STATE_DIR:-}}"
+	if [ -n "$explicit" ]; then
+		printf '%s/serve.log\n' "$explicit"
+		return
+	fi
+	root="${XDG_STATE_HOME:-$HOME/.local/state}"
+	printf '%s/serve.log\n' "$(default_state_dir "$root")"
 }
 
 # Whether something on tether's port answers *for this Host*. `-f` makes the
@@ -194,19 +220,19 @@ publication_target_safe() {
 }
 
 set_tether_password() {
-	step "Set tether password"
+	step "Set Remote Control Agent password"
 	note "This password protects shell access. Use a strong one."
 	[ -e /dev/tty ] || {
-		note "Run \`tether set-password\` in a terminal, then re-run this installer."
+		note "Run \`rcagent set-password\` in a terminal, then re-run this installer."
 		return 1
 	}
-	"$BIN_DIR/tether" set-password --if-unset </dev/tty
+	"$BIN_DIR/rcagent" set-password --if-unset </dev/tty
 }
 
 prepare_publication() {
 	publication_target_safe "$1" || {
 		step "Port 127.0.0.1:$PORT is already in use"
-		note "The listener is not tether. Stop it and re-run; Funnel remains off."
+		note "The listener is not Remote Control Agent. Stop it and re-run; Funnel remains off."
 		return 1
 	}
 	set_tether_password
@@ -351,7 +377,7 @@ path_message_state() {
 	local bin_dir=$1 resolved=$2 path=$3
 	if [ -z "$resolved" ]; then
 		printf 'absent\n'
-	elif [ "$resolved" = "$bin_dir/tether" ]; then
+	elif [ "$resolved" = "$bin_dir/rcagent" ]; then
 		printf 'first\n'
 	else
 		case ":$path:" in
@@ -509,7 +535,7 @@ render_service() {
 	if [ "$kind" = launchd ]; then
 		path=$(xml_escape "$PATH")
 		home=$(xml_escape "$HOME")
-		bin=$(xml_escape "$BIN_DIR/tether")
+		bin=$(xml_escape "$BIN_DIR/rcagent")
 		log=$(xml_escape "$log")
 		state=$(xml_escape "$state")
 		cat >"$output" <<EOF
@@ -527,6 +553,7 @@ render_service() {
   <dict>
     <key>HOME</key><string>$home</string>
     <key>PATH</key><string>$path</string>
+    <key>RCAGENT_STATE_DIR</key><string>$state</string>
     <key>TETHER_STATE_DIR</key><string>$state</string>
   </dict>
   <key>WorkingDirectory</key><string>$home</string>
@@ -541,12 +568,12 @@ EOF
 	else
 		path=$(systemd_escape "$PATH")
 		home=$(systemd_escape "$HOME")
-		bin=$(systemd_escape "$BIN_DIR/tether")
+		bin=$(systemd_escape "$BIN_DIR/rcagent")
 		state=$(systemd_escape "$state")
 		log=$(systemd_escape "$log")
 		cat >"$output" <<EOF
 [Unit]
-Description=tether remote coding-agent control plane
+Description=Remote Control Agent
 After=network-online.target
 Wants=network-online.target
 
@@ -554,6 +581,7 @@ Wants=network-online.target
 Type=simple
 Environment="HOME=$home"
 Environment="PATH=$path"
+Environment="RCAGENT_STATE_DIR=$state"
 Environment="TETHER_STATE_DIR=$state"
 WorkingDirectory="$home"
 ExecStart="$bin" serve --funnel --port $PORT
@@ -724,13 +752,29 @@ self_test() {
 	check_out '|apk add|build-base python3 bison libevent-dev ncurses-dev pkgconf' package_plan_shape apk 1 old
 	check 1 configure_linux_packages unknown 1 old
 
-	check_out first path_message_state "$bin" "$bin/tether" "$bin:/usr/bin"
-	check_out later path_message_state "$bin" /home/u/.nvm/bin/tether "/home/u/.nvm/bin:$bin:/usr/bin"
-	check_out absent path_message_state "$bin" /home/u/.nvm/bin/tether /home/u/.nvm/bin:/usr/bin
+	check_out first path_message_state "$bin" "$bin/rcagent" "$bin:/usr/bin"
+	check_out later path_message_state "$bin" /home/u/.nvm/bin/rcagent "/home/u/.nvm/bin:$bin:/usr/bin"
+	check_out absent path_message_state "$bin" /home/u/.nvm/bin/rcagent /home/u/.nvm/bin:/usr/bin
 	check_out absent path_message_state "$bin" '' /usr/bin
-	check_out absent path_message_state "$bin" /usr/bin/tether /home/u/.local/binx:/usr/bin
-	check_out later path_message_state "$bin" /usr/bin/tether "/usr/bin:$bin"
-	check_out later path_message_state "$bin" /usr/bin/tether "$bin"
+	check_out absent path_message_state "$bin" /usr/bin/rcagent /home/u/.local/binx:/usr/bin
+	check_out later path_message_state "$bin" /usr/bin/rcagent "/usr/bin:$bin"
+	check_out later path_message_state "$bin" /usr/bin/rcagent "$bin"
+
+	# A rename may not strand the checkout or state that an existing installation
+	# and its running provider hooks already use.
+	local migration_tmp
+	migration_tmp=$(mktemp -d)
+	check_out "$migration_tmp/data/remote-control-agent" default_install_dir "$migration_tmp/data"
+	mkdir -p "$migration_tmp/data/tether/.git"
+	check_out "$migration_tmp/data/tether" default_install_dir "$migration_tmp/data"
+	mkdir -p "$migration_tmp/data/remote-control-agent"
+	check_out "$migration_tmp/data/tether" default_install_dir "$migration_tmp/data"
+	check_out "$migration_tmp/state/remote-control-agent" default_state_dir "$migration_tmp/state"
+	mkdir -p "$migration_tmp/state/tether"
+	check_out "$migration_tmp/state/tether" default_state_dir "$migration_tmp/state"
+	mkdir -p "$migration_tmp/state/remote-control-agent"
+	check_out "$migration_tmp/state/tether" default_state_dir "$migration_tmp/state"
+	rm -rf "$migration_tmp"
 
 	# Service files are security-relevant setup outside tether's own directory.
 	# Prove both formats escape paths instead of turning one into plist XML or
@@ -749,10 +793,11 @@ self_test() {
 	PATH=$saved_path
 	BIN_DIR=$saved_bin
 	if ((had_state)); then TETHER_STATE_DIR=$saved_state; else unset TETHER_STATE_DIR; fi
-	check 0 grep -Fq '<string>/home/test &amp; user/.local/bin/tether</string>' "$service_tmp/tether.plist"
+	check 0 grep -Fq '<string>/home/test &amp; user/.local/bin/rcagent</string>' "$service_tmp/tether.plist"
 	check 0 grep -Fq '<string>--funnel</string>' "$service_tmp/tether.plist"
-	check 0 grep -Fq 'ExecStart="/home/test & user/.local/bin/tether" serve --funnel --port 8787' "$service_tmp/tether.service"
+	check 0 grep -Fq 'ExecStart="/home/test & user/.local/bin/rcagent" serve --funnel --port 8787' "$service_tmp/tether.service"
 	check 0 grep -Fq 'Environment="PATH=/usr/bin:/bin:/opt/node:%%bin"' "$service_tmp/tether.service"
+	check 0 grep -Fq 'Environment="RCAGENT_STATE_DIR=/state/test"' "$service_tmp/tether.service"
 	check 0 grep -Fq 'Environment="TETHER_STATE_DIR=/state/test"' "$service_tmp/tether.service"
 	if command -v plutil >/dev/null 2>&1; then
 		check 0 plutil -lint "$service_tmp/tether.plist"
@@ -898,7 +943,7 @@ reachability() {
 
 	step "Set up public browser access"
 	note "Tailscale runs on this host only; viewers use any browser."
-	note "WARNING: this publishes tether's login page. The password grants shell access."
+	note "WARNING: this publishes Remote Control Agent's login page. The password grants shell access."
 	note "Use --access local to skip public access."
 
 	# 1 ── installed? Only the host needs Tailscale. A person opening the
@@ -936,7 +981,7 @@ reachability() {
 		else
 			note "Tailscale's official installer may install packages and use sudo:"
 			note "  curl -fsSL https://tailscale.com/install.sh | sh"
-			note "tether downloads it first, then runs it from a temporary file."
+			note "The installer downloads it first, then runs it from a temporary file."
 			if ! confirm "Run it?"; then
 				step "Tailscale was not installed"
 				note "Run the command above, then re-run."
@@ -1011,7 +1056,7 @@ reachability() {
 	if [ -n "$host" ] && funnel_armed "$(tailscale serve status --json 2>/dev/null || true)" "$host"; then
 		note "Funnel is already configured for port $PORT."
 	else
-		step "Publish tether with Funnel"
+		step "Publish Remote Control Agent with Funnel"
 		note "  sudo tailscale funnel --yes --bg $PORT"
 		note "This public mapping survives reboot. Disable it with:"
 		note "  sudo tailscale funnel --bg off"
@@ -1026,7 +1071,7 @@ reachability() {
 		esac
 		if ! confirm "Publish now?"; then
 			step "Funnel remains off"
-			note "tether is installed for local use."
+			note "Remote Control Agent is installed for local use."
 			return 1
 		fi
 		step "Turning on Funnel"
@@ -1034,7 +1079,7 @@ reachability() {
 		# `--yes` answers Tailscale's local CLI confirmation; any account-level
 		# approval it needs remains Tailscale's own browser flow.
 		as_root tailscale funnel --yes --bg "$PORT" || {
-			note "Funnel failed. tether remains available on loopback."
+			note "Funnel failed. Remote Control Agent remains available on loopback."
 			return 1
 		}
 
@@ -1071,7 +1116,7 @@ reachability() {
 	already=0
 	if serving_as "$host"; then
 		already=1
-		note "tether is already serving for $host."
+		note "Remote Control Agent is already serving for $host."
 	fi
 
 	kind=$(service_kind)
@@ -1079,14 +1124,14 @@ reachability() {
 	if install_server_service "$kind" "$already"; then
 		service_installed=1
 	elif ! serving_as "$host"; then
-		step "Start tether for this login"
+		step "Start Remote Control Agent for this login"
 		if [ "$kind" = none ]; then
 			note "No launchd/systemd user service is available."
 		else
 			note "The background service was declined or failed."
 		fi
 		# The supported fallback changes no startup file and no system service.
-		nohup "$BIN_DIR/tether" serve --funnel --port "$PORT" >>"$log" 2>&1 </dev/null &
+		nohup "$BIN_DIR/rcagent" serve --funnel --port "$PORT" >>"$log" 2>&1 </dev/null &
 		note "Running until logout or reboot. Log: $log"
 	fi
 
@@ -1095,7 +1140,7 @@ reachability() {
 		sleep 1
 	done
 	serving_as "$host" || {
-		note "tether did not start for $host. See $log."
+		note "Remote Control Agent did not start for $host. See $log."
 		return 1
 	}
 	if ((service_installed)); then
@@ -1113,7 +1158,7 @@ reachability() {
 
 	step "Ready"
 	note "  $url"
-	note "Public link; sign in with the tether password."
+	note "Public link; sign in with the Remote Control Agent password."
 	note "Disable: sudo tailscale funnel --bg off"
 	note "Check:   tailscale funnel status"
 	return 0
@@ -1155,7 +1200,7 @@ main() {
 	case "$(uname -s)" in
 	Linux) OS=linux ;;
 	Darwin) OS=macos ;;
-	*) die "unsupported platform: $(uname -s). tether needs Linux or macOS." ;;
+	*) die "unsupported platform: $(uname -s). Remote Control Agent needs Linux or macOS." ;;
 	esac
 
 	# All of them, so a machine missing two takes one round trip rather than two.
@@ -1182,7 +1227,7 @@ main() {
 	if touch "$probe" 2>/dev/null; then
 		rm -f "$probe"
 	else
-		die "$bin_probe_dir is not writable, and $BIN_DIR is where the tether command goes. Fix its permissions and re-run."
+		die "$bin_probe_dir is not writable, and $BIN_DIR is where rcagent goes. Fix its permissions and re-run."
 	fi
 
 	# Running ./install.sh from inside a checkout installs *that* checkout, rather
@@ -1207,16 +1252,16 @@ main() {
 		# `|| true` because under `set -e` a failing substitution in a plain
 		# assignment exits the script there and then — offline, or on a repo with no
 		# release tag, that is a silent exit 1 with the message below never printed.
-		VERSION="${TETHER_VERSION:-$(latest_version || true)}"
+		VERSION="${RCAGENT_VERSION:-${TETHER_VERSION:-$(latest_version || true)}}"
 		[ -n "$VERSION" ] ||
-			die "could not work out the latest tether release from $REPO_URL. Set TETHER_VERSION=vX.Y.Z and re-run."
+			die "could not find the latest Remote Control Agent release. Set RCAGENT_VERSION=vX.Y.Z and re-run."
 	fi
 
 	if [ ! -e "$TARGET_DIR" ]; then
-		step "Cloning tether $VERSION into $TARGET_DIR"
+		step "Cloning Remote Control Agent $VERSION into $TARGET_DIR"
 		# Fail rather than hang on a credential prompt if this ever stops being public.
 		GIT_TERMINAL_PROMPT=0 git clone --branch "$VERSION" --depth 1 "$REPO_URL" "$TARGET_DIR" ||
-			die "could not clone $VERSION from $REPO_URL. If it is private, clone it yourself (gh repo clone galawaydude/tether \"$TARGET_DIR\") and re-run this script."
+			die "could not clone $VERSION from $REPO_URL. If it is private, clone it yourself (gh repo clone galawaydude/remote-control-agent \"$TARGET_DIR\") and re-run."
 	elif [ ! -e "$TARGET_DIR/.git" ]; then
 		die "$TARGET_DIR exists and is not a git checkout. Move it, or pass --dir <path>."
 	elif ((FROM_CHECKOUT)); then
@@ -1250,13 +1295,13 @@ main() {
 
 	if ! command -v tmux >/dev/null 2>&1; then
 		tmux_state=missing
-		note "tmux: not installed (tether needs $TMUX_MIN_MAJOR.$TMUX_MIN_MINOR or newer)"
+		note "tmux: not installed (Remote Control Agent needs $TMUX_MIN_MAJOR.$TMUX_MIN_MINOR or newer)"
 	elif tmux_version_ok "$(tmux -V)"; then
 		tmux_state=ok
 		note "$(tmux -V)"
 	else
 		tmux_state=old
-		note "$(tmux -V): too old, tether needs $TMUX_MIN_MAJOR.$TMUX_MIN_MINOR or newer"
+		note "$(tmux -V): too old; Remote Control Agent needs $TMUX_MIN_MAJOR.$TMUX_MIN_MINOR or newer"
 	fi
 
 	# node-pty ships prebuilds for darwin and win32 only, so a Linux `npm ci`
@@ -1391,7 +1436,7 @@ main() {
 	# calling the repo's own — a released tag has neither.
 	find node_modules/node-pty -type f -name spawn-helper -exec chmod +x {} + 2>/dev/null || true
 
-	step "Linking the tether command into $BIN_DIR"
+	step "Linking rcagent into $BIN_DIR"
 	# A symlink rather than `npm link`, which writes into npm's *global prefix* —
 	# root-owned whenever Node came from a distro package or a tarball, so it is an
 	# EACCES with a Node stack trace for an ordinary user, at the last step, after
@@ -1400,7 +1445,9 @@ main() {
 	# and Node resolves a symlink to its real path, so the checkout's own
 	# node_modules is found exactly as it was under `npm link`.
 	mkdir -p "$BIN_DIR" ||
-		die "could not create $BIN_DIR, which is where the tether command goes."
+		die "could not create $BIN_DIR, which is where the rcagent command goes."
+	ln -sf "$TARGET_DIR/server/dist/cli.js" "$BIN_DIR/rcagent"
+	# Compatibility for every existing script and user service.
 	ln -sf "$TARGET_DIR/server/dist/cli.js" "$BIN_DIR/tether"
 
 	# The one thing every check above leaves untested: whether a terminal can
@@ -1422,9 +1469,9 @@ main() {
 	if ! node -e "const p = require('node-pty').spawn(process.execPath, ['-e', ''], { cols: 80, rows: 24 });
 		setTimeout(() => { console.error('the process it started never exited'); process.exit(1); }, 20000);
 		p.onExit(({ exitCode, signal }) => process.exit(exitCode || signal ? 1 : 0));"; then
-		note "Terminal startup failed. tether is installed at $BIN_DIR/tether, but"
-		note "terminal view will not work. Re-run the installer after fixing node-pty."
-		die "tether cannot open a terminal on this machine."
+		note "Terminal startup failed. Remote Control Agent is installed at $BIN_DIR/rcagent,"
+		note "but terminal view will not work. Re-run after fixing node-pty."
+		die "Remote Control Agent cannot open a terminal on this machine."
 	fi
 
 	hash -r
@@ -1433,29 +1480,29 @@ main() {
 	# which nvm, fnm, volta and asdf all put ahead of it on PATH. `-ef` rather than
 	# a string compare, so a leftover pointing at *this* checkout — which runs the
 	# right thing — is not reported as a different install.
-	resolved=$(command -v tether || true)
-	if [ -n "$resolved" ] && [ "$resolved" -ef "$BIN_DIR/tether" ]; then
-		resolved="$BIN_DIR/tether"
+	resolved=$(command -v rcagent || true)
+	if [ -n "$resolved" ] && [ "$resolved" -ef "$BIN_DIR/rcagent" ]; then
+		resolved="$BIN_DIR/rcagent"
 	fi
 	case "$(path_message_state "$BIN_DIR" "$resolved" "$PATH")" in
 	later)
-		step "Another tether command comes first on PATH"
-		note "Installed: $BIN_DIR/tether"
+		step "Another rcagent command comes first on PATH"
+		note "Installed: $BIN_DIR/rcagent"
 		note "Current:   $resolved"
 		note "Remove the old command or move $BIN_DIR earlier on PATH."
 		exit 1
 		;;
 	absent)
-		step "Add tether to PATH"
+		step "Add rcagent to PATH"
 		note "Add this to your shell startup file:"
 		note "  export PATH=\"$BIN_DIR:\$PATH\""
-		if [ -n "$resolved" ]; then note "Current \`tether\`: $resolved"; fi
+		if [ -n "$resolved" ]; then note "Current \`rcagent\`: $resolved"; fi
 		note "The installer does not edit shell files."
 		exit 1
 		;;
 	esac
 
-	step "Done — tether is at $resolved"
+	step "Done — Remote Control Agent is at $resolved"
 
 	# Everything above installed tether. Public access is explicit in the option
 	# name and again at the consent prompt; local is a complete successful install
@@ -1467,11 +1514,11 @@ main() {
 	step "Ready for local use"
 	cat <<-EOF
 
-		  tether set-password
-		  tether serve
+		  rcagent set-password
+		  rcagent serve
 
 		Open http://127.0.0.1:$PORT. For a public browser link, re-run with
-		--access public. Anyone with the tether password has shell access.
+		--access public. Anyone with the Remote Control Agent password has shell access.
 	EOF
 }
 

@@ -26,9 +26,10 @@ import { join } from 'node:path';
 import type { ToolCallEvent } from '@tether/shared';
 
 /**
- * How long tether holds a proposed tool call waiting for the user to tap, in
- * milliseconds. `TETHER_PERMISSION_TIMEOUT` is in **seconds** because that is
- * how a person says it; `0` turns holding off entirely and leaves tether the
+ * How long Remote Control Agent holds a proposed tool call waiting for the user
+ * to tap, in milliseconds. `RCAGENT_PERMISSION_TIMEOUT` is in **seconds** because
+ * that is how a person says it; `TETHER_PERMISSION_TIMEOUT` remains an alias.
+ * `0` turns holding off entirely and leaves Remote Control Agent the
  * observer it was before this — a supported configuration, not a degraded one.
  *
  * One source of truth for three numbers that have to stay ordered (see
@@ -39,7 +40,7 @@ import type { ToolCallEvent } from '@tether/shared';
 export const DEFAULT_PERMISSION_TIMEOUT_MS = 20_000;
 
 export function permissionTimeoutMs(env = process.env): number {
-  const raw = env['TETHER_PERMISSION_TIMEOUT'];
+  const raw = env['RCAGENT_PERMISSION_TIMEOUT'] ?? env['TETHER_PERMISSION_TIMEOUT'];
   if (raw === undefined || raw.trim() === '') return DEFAULT_PERMISSION_TIMEOUT_MS;
   const seconds = Number(raw);
   // Not a number is the operator's typo, and silently holding for 20s when they

@@ -107,7 +107,7 @@ export type ConversationsOptions = {
   warn?: (message: string) => void;
   /** How often Claude Code's status file is re-read; 0 turns the poller off. */
   statusPollMs?: number;
-  /** Overrides `TETHER_PERMISSION_TIMEOUT`; 0 stops tether holding at all. */
+  /** Overrides `RCAGENT_PERMISSION_TIMEOUT`; 0 stops holding entirely. */
   permissionTimeoutMs?: number;
   /**
    * Awaited inside `#syncFromPane`, and nothing in production passes it. The
@@ -171,11 +171,11 @@ export function stderrWarn(): (message: string) => void {
     if (seen.size >= MAX_WARNINGS) {
       if (announcedSilence) return;
       announcedSilence = true;
-      process.stderr.write('tether: further transcript warnings suppressed\n');
+      process.stderr.write('rcagent: further transcript warnings suppressed\n');
       return;
     }
     seen.add(key);
-    process.stderr.write(`tether: ${message}\n`);
+    process.stderr.write(`rcagent: ${message}\n`);
   };
 }
 

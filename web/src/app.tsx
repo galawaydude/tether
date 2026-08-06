@@ -212,7 +212,7 @@ export function App() {
     };
   }, [loadSelected]);
 
-  if (authenticated === null) return <p class="centre muted">Loading tether…</p>;
+  if (authenticated === null) return <p class="centre muted">Loading Remote Control Agent…</p>;
   if (!authenticated) {
     return <Login onDone={() => void loadSelected()} />;
   }
@@ -265,7 +265,7 @@ export function App() {
         // The `<main>` of this shape when nothing is open: the right-hand pane is
         // the primary content either way, and the rail beside it is complementary.
         <main class="blank">
-          <p class="wordmark">tether</p>
+          <p class="wordmark">Remote Control Agent</p>
           <p class="muted">Pick a session on the left, or start a new one.</p>
         </main>
       )}
@@ -663,8 +663,8 @@ function Login({ onDone }: { onDone: () => void }) {
   return (
     <main class="centre">
       <form class="card" onSubmit={submit}>
-        <h1 class="wordmark">tether</h1>
-        <p class="tagline">Your agents, on your machine, from anywhere.</p>
+        <h1 class="wordmark">Remote Control Agent</h1>
+        <p class="tagline">Your coding agents, on your machine, from anywhere.</p>
         <label for="password">Password</label>
         <input
           id="password"
@@ -762,8 +762,8 @@ function Sessions({
   const remove = async (session: Session) => {
     if (
       !confirm(
-        `Remove “${session.title}” from tether?\n\n` +
-          `Its ${providerLabel(session.provider)} transcript stays on disk, but tether will no longer list or resume it.`,
+        `Remove “${session.title}” from Remote Control Agent?\n\n` +
+          `Its ${providerLabel(session.provider)} transcript stays on disk, but Remote Control Agent will no longer list or resume it.`,
       )
     )
       return;
@@ -792,7 +792,7 @@ function Sessions({
       inert={collapsed}
     >
       <header class="bar">
-        <h1 class="wordmark">tether</h1>
+        <h1 class="wordmark">RC Agent</h1>
         <div class="rail-actions">
           {rail && onCollapse !== undefined && (
             <button
@@ -967,11 +967,11 @@ function CodexHookNote() {
     <p class="note">
       Codex works here with no setup: the conversation, the terminal, and whether it is working or
       idle all come from files Codex already writes. Only the live “waiting for you” badge needs
-      more — a small script tether adds to your Codex hooks file, which Codex then asks you to trust
-      once. It appends one line to a log under tether’s own state directory and does nothing else.
-      Run <code>tether codex-hook install</code> on the machine to add it (it explains everything
-      first and backs the file up), or <code>tether codex-hook remove</code> to take it back out.
-      Skip it and you lose that badge and nothing else.
+      more — a small script Remote Control Agent adds to your Codex hooks file, which Codex then
+      asks you to trust once. It appends one line under the app’s private state directory and does
+      nothing else. Run <code>rcagent codex-hook install</code> on the machine to add it (it
+      explains everything first and backs the file up), or <code>rcagent codex-hook remove</code> to
+      remove it. Skip it and you lose that badge and nothing else.
     </p>
   );
 }

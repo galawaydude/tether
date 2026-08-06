@@ -162,7 +162,7 @@ test('what a command printed is capped like any other provider output', () => {
   });
   const text = events[0]?.kind === 'command' ? events[0].text : '';
   assert.ok(text.length < MAX_OUTPUT * 1.1, `uncapped at ${text.length} characters`);
-  assert.match(text, /truncated by tether/);
+  assert.match(text, /truncated by Remote Control Agent/);
 });
 
 test('a thinking block is presence, not content', () => {
@@ -217,7 +217,7 @@ test('a huge tool result is capped rather than replayed in full', () => {
   ]);
   const output = events[0]?.kind === 'tool_result' ? events[0].output : '';
   assert.ok(output.length < MAX_OUTPUT * 1.1);
-  assert.match(output, /truncated by tether]$/);
+  assert.match(output, /truncated by Remote Control Agent]$/);
 });
 
 test('a huge tool call input is capped the same way, with its shape kept', () => {
@@ -242,7 +242,7 @@ test('a huge tool call input is capped the same way, with its shape kept', () =>
   const input = events[0]?.kind === 'tool_call' ? (events[0].input as Record<string, string>) : {};
   assert.equal(input['file_path'], '/tmp/big.txt', 'the short fields are still there, unchanged');
   assert.ok(JSON.stringify(input).length < MAX_OUTPUT * 1.1);
-  assert.match(input['content'] ?? '', /truncated by tether]$/);
+  assert.match(input['content'] ?? '', /truncated by Remote Control Agent]$/);
 });
 
 test('two long fields of one input are each capped, not the second one starved', () => {
@@ -274,7 +274,7 @@ test('two long fields of one input are each capped, not the second one starved',
   for (const key of ['old_string', 'new_string']) {
     const text = input[key] ?? '';
     assert.ok(text.length > 1000, `${key} kept real content, not just a marker: ${text.length}`);
-    assert.match(text, /truncated by tether]$/, `${key} says that it was cut`);
+    assert.match(text, /truncated by Remote Control Agent]$/, `${key} says that it was cut`);
   }
   assert.ok(
     JSON.stringify(input).length < MAX_OUTPUT * 1.1,
@@ -422,7 +422,7 @@ test('a huge tool input is capped the same way the transcript’s is', () => {
   assert.equal(signal?.signal, 'pending');
   const input = signal.e.input as { content: string };
   assert.ok(input.content.length < MAX_OUTPUT * 2);
-  assert.match(input.content, /truncated by tether/);
+  assert.match(input.content, /truncated by Remote Control Agent/);
 });
 
 /**

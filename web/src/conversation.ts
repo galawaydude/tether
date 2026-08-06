@@ -525,7 +525,7 @@ export function sendBlocked(agent: SessionState, message: string, terminal: Stat
   if (terminal === 'gone')
     return 'The server no longer has this session. Nothing can reach it now.';
   if (terminal === 'failed')
-    return 'tether could not open a terminal for this session, so this has nowhere to go. The reason is in the server’s log.';
+    return 'Remote Control Agent could not open a terminal for this session, so this has nowhere to go. The reason is in the server’s log.';
   if (agent === 'waiting') return 'Answer the prompt in the terminal first.';
   if (message.length > MAX_TEXT) {
     return `Too long to send: ${message.length} characters, and the limit is ${MAX_TEXT}.`;

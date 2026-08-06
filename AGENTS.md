@@ -10,17 +10,32 @@ It is the result of verified empirical work — do not re-litigate the stack cho
 The Codex provider has its own empirical study next to it at
 `../tether-codex-spike/report.md`, with the binding hook-install decision in
 `../tether-codex-spike/decision-codex-hook-trust-install.md`.
-`README.md` carries the parts a user needs; the reports carry the reasoning.
+`README.md` is the landing page; `docs/` carries the user and security guides,
+`CONTRIBUTING.md` carries development/release/API/test detail, and the reports carry the
+reasoning.
 
 ## Commands and layout
 
-See the Development section of `README.md`. Every check is in root `package.json` scripts and
-CI runs those, plus a few steps that are not npm scripts; `.github/workflows/ci.yml` is the
-authoritative list. Everything README lists is runnable as-is, so a red CI is reproducible
-locally.
+See `CONTRIBUTING.md`. Every check is in root `package.json` scripts and CI runs those,
+plus installer, workflow and secret checks that are not npm scripts; `.github/workflows/ci.yml` is the
+authoritative list. CI has parallel Quality, Tests, End-to-end and Security jobs plus one
+stable `CI` aggregate check. External actions are full-SHA pinned; CodeQL runs separately on
+PRs, `main` and a weekly schedule. `release.yml` calls the same product CI workflow before it
+creates an exact `vX.Y.Z` tag on `main`, so an unvalidated tag never reaches the installer.
+Everything CONTRIBUTING lists is runnable locally.
 
 ## Sharp edges
 
+- **The product is Remote Control Agent; `rcagent` is the command.** It was formerly
+  tether, and the old identifiers are compatibility contracts rather than unfinished cleanup:
+  the `tether` command alias, `TETHER_*` environment aliases, `@tether/*` private workspace
+  scope, `tether` tmux socket/session prefix, `tether.conf`, `tether.sqlite`, hook header and
+  filenames, browser storage/cookie keys, and `dev.tether.server` service label all remain.
+  Existing installs keep `~/.local/share/tether` and `~/.local/state/tether`; new ones use
+  `remote-control-agent`, selected only when the old directory is absent. Moving a hook path,
+  state directory, tmux socket or service label loses live or durable work, so none is renamed
+  without a separate migration. User-facing copy says Remote Control Agent and new settings use
+  `RCAGENT_*`, with the old spelling as fallback.
 - **`shared/` is types only.** It emits `.d.ts` and no JavaScript, and its `prepare` script
   builds it on `npm ci` so `tsc --noEmit` works on a fresh clone. Import from it with
   `import type`; `verbatimModuleSyntax` enforces that.
@@ -79,12 +94,12 @@ locally.
 - **tmux 3.7 is a hard floor.** `tether.conf` sets `window-size manual`, and tmux
   before 3.7 sizes a not-yet-created window through a NULL pointer, so every detached
   `new-session` dies with `server exited unexpectedly`. Ubuntu 24.04 ships 3.4, hence
-  the source build in `.github/workflows/ci.yml`. That message from any tmux command
+  the source build in `.github/actions/setup-tmux/action.yml`. That message from any tmux command
   means the tmux on `PATH` is too old, not that the argv was wrong. `install.sh` builds
   the **same pinned release and checksum** for a user's machine, so those two constants
   now live in two files and must be bumped together. It is the repo's only shell script
   and is held to `shellcheck` and to its own `bash install.sh --self-test`, both of
-  which CI runs in one step before anything expensive, because nothing else in the
+  which the Quality job runs before its Node checks, because nothing else in the
   repo's checks looks at shell at all. What that self-test covers is every branch in
   the file that can be silently wrong: the version parsing (a `tmux 3.4` read as new
   enough is a session that dies at birth), the PATH message, every supported Linux
@@ -97,8 +112,8 @@ locally.
   README. A sentence it cannot back with something it actually checked is deleted rather
   than softened, because a caveat is itself new length and new claims. Two things about it that the script alone does not
   show. **It installs the highest `vX.Y.Z` tag, so merging to `main` ships nothing** —
-  a change reaches the public install line only when a release is cut (README's
-  Development → _Cutting a release_), and `install.sh` itself is the one exception,
+  a change reaches the public install line only when a release tag passes `release.yml`
+  (`CONTRIBUTING.md` → _Cutting a release_), and `install.sh` itself is the one exception,
   being fetched from `main` so that it is what knows how to find the current release.
   That exception is also a **constraint on the script**: it runs from `main` against a
   checkout at an older tag, so it may never call anything that exists only in newer code.
@@ -1106,8 +1121,8 @@ locally.
   rather than passed through, since pino throws on a level it does not know — and
   a value that fails that list says so on stderr, because a knob whose fallback
   is silent reads as a knob that does nothing, which is the fault this half
-  exists to end. It is documented where an operator will look for it: README's
-  security section and `tether serve --help`.
+  exists to end. It is documented where an operator will look for it:
+  `docs/security.md` and `tether serve --help`.
   The other half: `term-socket.ts` closed **every** failed attach as
   `CLOSE_NO_SESSION`, which the browser renders as "Session not found" — so a
   node-pty that would not spawn told a captain his work was gone, beside an
@@ -1150,7 +1165,7 @@ locally.
   `{"password": 123}` arrives as `"123"`. `buildServer` turns both off. Do not remove that
   `ajv.customOptions` block, and do not assume stock Fastify behaviour when reading the tests.
 - **`e2e/` asserts counts and geometry, not presence.** _What_ each spec covers is
-  listed once, in `README.md`'s Development section; this entry is only the rules a
+  listed once, in `CONTRIBUTING.md`'s end-to-end section; this entry is only the rules a
   spec must not break.
   - They drive the real `tether serve` (`e2e/serve.ts` calls the CLI's own `main`)
     inside a scratch `HOME`/state dir/tmux socket, with `e2e/stub-agent.ts` on `PATH`

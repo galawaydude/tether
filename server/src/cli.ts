@@ -46,18 +46,18 @@ const DEFAULT_HOST = '127.0.0.1';
 /** The off-loopback warning is not a one-off: it repeats for as long as it is true. */
 const WARN_INTERVAL_MS = 10 * 60 * 1000;
 
-const USAGE = `tether — self-hosted control plane for coding-agent sessions
+const USAGE = `Remote Control Agent — remote control for persistent coding agents
 
 Usage:
-  tether set-password [--if-unset] Set the single account's password (prompts; never echoes).
-                                   --if-unset leaves an existing one alone, for installers.
-  tether serve [options]           Run the server
-  tether ls                        List this machine's sessions, live and dead
-  tether new <dir> [options]       Start a session in <dir>
-  tether kill <id>                 Kill a session; <id> is any unambiguous id prefix
-  tether resume <id>               Resume a dead session, keeping its conversation
-  tether access status             Check the browser-only Funnel URL end to end
-  tether codex-hook <action>       Manage tether's Codex hook: status | install | remove
+  rcagent set-password [--if-unset] Set the single account's password (prompts; never echoes).
+                                    --if-unset leaves an existing one alone, for installers.
+  rcagent serve [options]           Run the server
+  rcagent ls                        List this machine's sessions, live and dead
+  rcagent new <dir> [options]       Start a session in <dir>
+  rcagent kill <id>                 Kill a session; <id> is any unambiguous id prefix
+  rcagent resume <id>               Resume a dead session, keeping its conversation
+  rcagent access status             Check the browser-only Funnel URL end to end
+  rcagent codex-hook <action>       Manage the Codex hook: status | install | remove
 
 Options for serve:
   --port <n>                       Port to listen on (default ${DEFAULT_PORT})
@@ -71,7 +71,7 @@ Options for serve:
   --allowed-host <name>            Extra hostname accepted in the Host header; repeatable.
                                    Needed for a Tailscale name or a reverse proxy.
   --trusted-proxy <ip|cidr>        Believe X-Forwarded-* from this peer; repeatable.
-  TETHER_LOG_LEVEL=<level>         Environment, not a flag: the server's log level, on
+  RCAGENT_LOG_LEVEL=<level>        Environment, not a flag: the server's log level, on
                                    stderr. Default warn — every failure, none of the
                                    request chatter; info adds the request log.
 
@@ -92,32 +92,32 @@ Options for new:
  */
 function codexHookExplanation(hooksPath: string, shimPath: string): string {
   return [
-    'tether is about to add one entry to your Codex hooks file:',
+    'Remote Control Agent is about to add one entry to your Codex hooks file:',
     '',
     `  file:    ${hooksPath}`,
     `  command: ${shimPath}`,
     `  events:  ${HOOK_EVENTS.join(', ')}`,
     '',
-    'That command is a script tether writes. On each of those events Codex runs it,',
-    'and it appends one JSON line to a log under tether’s own state directory.',
+    'That command is a script Remote Control Agent writes. Codex runs it on each',
+    'event, and it appends one JSON line under the app’s private state directory.',
     '',
-    'On PermissionRequest — and on no other event — it also asks tether, over',
-    'loopback, whether you have answered the prompt in tether yet, and waits for',
-    'you for as long as tether is configured to wait. It talks to nothing else and',
+    'On PermissionRequest — and on no other event — it also asks Remote Control',
+    'Agent over loopback whether you have answered the prompt, and waits for you',
+    'for as long as Remote Control Agent is configured to wait. It talks to nothing else and',
     'to nowhere else.',
     '',
-    'tether needs it for exactly two things: to know that a session is *waiting for',
-    'you*, and to let you answer that prompt from tether instead of the terminal.',
+    'Remote Control Agent needs it for two things: to know that a session is',
+    '*waiting for you*, and to let you answer outside the terminal.',
     'Everything else — the conversation, the terminal, working and idle — is read',
     'from files Codex already writes.',
     '',
     'The next time you start Codex it will ask you to review and trust this hook.',
     'Declining is a perfectly good answer: you lose the live “waiting” badge and',
     'the Approve/Deny buttons, the prompt is still there in the terminal where it',
-    'has always been, and tether will not ask you again.',
+    'has always been, and Remote Control Agent will not ask again.',
     '',
     'Your existing hooks file is backed up first, and existing entries are kept.',
-    'Undo any time with `tether codex-hook remove`.',
+    'Undo any time with `rcagent codex-hook remove`.',
   ].join('\n');
 }
 
@@ -155,8 +155,8 @@ async function codexHookCommand(argv: readonly string[]): Promise<number> {
     const { hooksPath, removed } = await removeHook(where);
     process.stdout.write(
       removed.length === 0
-        ? `tether’s hook was not in ${hooksPath}; nothing to remove.\n`
-        : `Removed tether’s hook from ${hooksPath} (${removed.join(', ')}).\n`,
+        ? `Remote Control Agent’s hook was not in ${hooksPath}; nothing to remove.\n`
+        : `Removed Remote Control Agent’s hook from ${hooksPath} (${removed.join(', ')}).\n`,
     );
     return 0;
   }
@@ -173,7 +173,7 @@ async function codexHookCommand(argv: readonly string[]): Promise<number> {
         ...(before.unreadable === undefined ? [] : [`problem:     ${before.unreadable}`]),
         `features.hooks: ${before.featureEnabled ? 'true' : 'false — Codex will not run any hook until this is set'}`,
         '',
-        'Without the hook tether still shows the conversation, the terminal, and',
+        'Without the hook Remote Control Agent still shows the conversation, terminal, and',
         'whether a session is working or idle, and a permission prompt is still',
         'answered in the terminal. The hook adds the live “waiting for you” badge',
         'and the Approve/Deny buttons, and nothing else.',
@@ -184,23 +184,23 @@ async function codexHookCommand(argv: readonly string[]): Promise<number> {
         ...(outdated(before)
           ? [
               '',
-              'This installation is out of date, in a way tether can see:',
+              'This installation is out of date, in a way Remote Control Agent can see:',
               // Two different facts, and only the first is about the script. The
               // second is tether declining to hold a turn the entry it can read
               // is not sized for — the script would carry an answer back fine.
               ...(before.shimCurrent
                 ? []
-                : ['  the hook script is one an older tether wrote, which cannot answer at all']),
+                : ['  the hook script is an older one that cannot answer at all']),
               ...(before.permissionTimeout === PERMISSION_TIMEOUT_SECONDS
                 ? []
                 : [
                     `  its PermissionRequest entry says timeout ${before.permissionTimeout ?? 'nothing'}, not ${PERMISSION_TIMEOUT_SECONDS},`,
-                    '  so tether will not hold a turn behind it',
+                    '  so Remote Control Agent will not hold a turn behind it',
                   ]),
               '',
-              'It still reports that a session is waiting for you; tether will not offer',
-              'Approve/Deny on it, and you answer in the terminal as before. Run',
-              '`tether codex-hook install` to update it. The conversation, the terminal',
+              'It still reports that a session is waiting for you, but offers no',
+              'Approve/Deny buttons; answer in the terminal as before. Run',
+              '`rcagent codex-hook install` to update it. The conversation and terminal',
               'and working/idle are unaffected either way.',
             ]
           : []),
@@ -219,7 +219,7 @@ async function codexHookCommand(argv: readonly string[]): Promise<number> {
     }
     if (result.added.length > 0) {
       process.stdout.write(
-        `Added tether’s hook to ${result.hooksPath} (${result.added.join(', ')}).\n`,
+        `Added Remote Control Agent’s hook to ${result.hooksPath} (${result.added.join(', ')}).\n`,
       );
     }
     // Said out loud because it costs the user something: Codex hashes each entry,
@@ -227,10 +227,10 @@ async function codexHookCommand(argv: readonly string[]): Promise<number> {
     if (result.updated.length > 0) {
       process.stdout.write(
         [
-          `Corrected the timeout on tether’s existing entry (${result.updated.join(', ')}).`,
+          `Corrected the timeout on Remote Control Agent’s existing entry (${result.updated.join(', ')}).`,
           'Codex will ask you to review that entry once more, because its contents',
-          'changed. This is a one-off: the values tether writes are fixed, so nothing',
-          'here follows a setting and nothing will ask you again.',
+          'changed. This is a one-off: the values Remote Control Agent writes are fixed,',
+          'so nothing here follows a setting and nothing will ask you again.',
         ].join('\n') + '\n',
       );
     }
@@ -245,7 +245,7 @@ async function codexHookCommand(argv: readonly string[]): Promise<number> {
         '  [features]',
         '  hooks = true',
         '',
-        'tether changes no setting in that file — it is also where Codex records',
+        'Remote Control Agent changes no setting there — Codex also records',
         'which hooks you have trusted. The one thing it ever writes there is a',
         'folder you chose to trust in the New session sheet, and it backs the file',
         'up first.',
@@ -260,7 +260,7 @@ export type ServeConfig = {
   port: number;
   allowedHosts: Set<string>;
   trustedProxies: string[];
-  /** Where a session may be started — home unless `TETHER_ALLOWED_ROOTS` widens it. */
+  /** Where a session may start — home unless `RCAGENT_ALLOWED_ROOTS` widens it. */
   allowedRoots: readonly string[];
   /** This machine's own `.ts.net` name, when `--funnel` asked Tailscale for it. */
   funnelHost?: string | undefined;
@@ -315,13 +315,13 @@ export function resolveServeConfig(args: ServeArgs, hasPassword: boolean): Serve
       throw new Error(
         'refusing to publish this machine on the internet: no password is set.\n' +
           `--funnel would put a shell behind https://${funnel}/ with nothing in front of it.\n` +
-          'Run `tether set-password` first.',
+          'Run `rcagent set-password` first.',
       );
     }
     if (!isLoopbackHost(host)) {
       throw new Error(
         `refusing to bind ${host}: no password is set, and binding off-loopback exposes a shell.\n` +
-          'Run `tether set-password` first.',
+          'Run `rcagent set-password` first.',
       );
     }
   }
@@ -344,7 +344,7 @@ export function resolveServeConfig(args: ServeArgs, hasPassword: boolean): Serve
 export function formatBanner(config: ServeConfig, hasPassword: boolean): string {
   const shown = config.host.includes(':') ? `[${config.host}]` : config.host;
   return [
-    `tether listening on http://${shown}:${config.port}`,
+    `Remote Control Agent listening on http://${shown}:${config.port}`,
     // First, above the settings, because on a Funnel run it is the address that
     // matters and the bind address is an implementation detail of it.
     ...(config.funnelHost === undefined
@@ -379,7 +379,7 @@ export function formatBanner(config: ServeConfig, hasPassword: boolean): string 
 export function offLoopbackWarning(config: ServeConfig): string | null {
   if (config.funnelHost !== undefined) {
     return [
-      `!! tether is on the public internet at https://${config.funnelHost}/`,
+      `!! Remote Control Agent is on the public internet at https://${config.funnelHost}/`,
       '!! Anyone who opens that address and knows the password gets a shell on this machine.',
       '!! The address is not a secret: its certificate is in the public transparency logs.',
       '!! `sudo tailscale funnel --bg off` takes it down.',
@@ -387,7 +387,7 @@ export function offLoopbackWarning(config: ServeConfig): string | null {
   }
   if (isLoopbackHost(config.host)) return null;
   return [
-    '!! tether is bound off-loopback and serves plain HTTP.',
+    '!! Remote Control Agent is bound off-loopback and serves plain HTTP.',
     '!! Anyone who reaches this port and knows the password gets a shell on this machine.',
     '!! Put it behind Tailscale, `ssh -L`, or a TLS reverse proxy — see README.',
   ].join('\n');
@@ -517,7 +517,8 @@ async function serve(
 // ── ls | new | kill: tether from a terminal, before any web UI exists ──
 
 /** Tests point this at their own tmux server; nothing else sets it. */
-const socket = process.env['TETHER_TMUX_SOCKET'] || DEFAULT_SOCKET;
+const socket =
+  process.env['RCAGENT_TMUX_SOCKET'] ?? process.env['TETHER_TMUX_SOCKET'] ?? DEFAULT_SOCKET;
 
 function fixed(value: string, width: number): string {
   return value.length > width ? `${value.slice(0, width - 1)}…` : value.padEnd(width);
