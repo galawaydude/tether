@@ -235,6 +235,9 @@ export function createTerminals(socket: string, historyLines = DEFAULT_HISTORY_L
       drop(session, entry);
       end(entry);
     });
+    // node-pty can deliver tmux's initial repaint before onData is registered.
+    // Ask again once the viewer is listening so the viewport cannot be lost.
+    if (initialReplay) await refreshClients(socket, session);
     return entry;
   }
 

@@ -66,8 +66,8 @@ const NEW = [
 ].join('\n');
 
 /** Where the stub opened its transcript: `<home>/.claude/projects/<cwd>/<id>.jsonl`. */
-function transcript(): { path: string; sessionId: string } {
-  const sanitised = realpathSync(project).replace(/[^a-zA-Z0-9]/g, '-');
+function transcript(cwd = project): { path: string; sessionId: string } {
+  const sanitised = realpathSync(cwd).replace(/[^a-zA-Z0-9]/g, '-');
   const dir = join(home, '.claude', 'projects', sanitised);
   const file = readdirSync(dir).find((name) => name.endsWith('.jsonl'));
   if (file === undefined) throw new Error(`no transcript under ${dir}`);
@@ -104,20 +104,28 @@ async function sideways(page: Page): Promise<number> {
   );
 }
 
-test('the conversation renders what an agent writes: markdown, a diff, and typed errors', async ({
-  page,
-}) => {
-  mkdirSync(project, { recursive: true });
-  await page.setViewportSize({ width: 360, height: 640 });
-
+async function openSession(page: Page, title = TITLE, cwd = project): Promise<void> {
   await page.goto('/');
   await page.getByLabel('Password').fill(process.env['TETHER_E2E_PASSWORD'] as string);
   await page.getByRole('button', { name: 'Sign in' }).click();
-
+  if (await page.getByRole('button', { name: title }).count()) {
+    await page.getByRole('button', { name: title }).click();
+    await expect(page.locator('header .chip:not([role])')).toHaveText('Idle');
+    return;
+  }
+  mkdirSync(cwd, { recursive: true });
   await page.getByRole('button', { name: 'New session' }).click();
-  await page.getByLabel('Working directory').fill(project);
-  await page.getByLabel('Title').fill(TITLE);
+  await page.getByLabel('Working directory').fill(cwd);
+  await page.getByLabel('Title').fill(title);
   await page.getByRole('button', { name: 'Start' }).click();
+  await expect(page.locator('header .chip:not([role])')).toHaveText('Idle');
+}
+
+test('the conversation renders what an agent writes: markdown, a diff, and typed errors', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 360, height: 640 });
+  await openSession(page);
 
   const conversation = page.locator('.conv');
   await expect(conversation.getByText(GREETING, { exact: true })).toHaveCount(1);
@@ -232,10 +240,7 @@ test('an answerable Edit card shows the change, wraps it, and keeps Approve reac
   page,
 }) => {
   await page.setViewportSize({ width: 360, height: 640 });
-  await page.goto('/');
-  await page.getByLabel('Password').fill(process.env['TETHER_E2E_PASSWORD'] as string);
-  await page.getByRole('button', { name: 'Sign in' }).click();
-  await page.getByRole('button', { name: TITLE }).click();
+  await openSession(page);
 
   const conversation = page.locator('.conv');
   await expect(conversation.getByText(GREETING, { exact: true })).toHaveCount(1);
@@ -331,19 +336,17 @@ test('an answerable Edit card shows the change, wraps it, and keeps Approve reac
 test('a lookalike character is named on the card, and Approve waits while Deny does not', async ({
   page,
 }) => {
+  const lookalikeProject = join(home, 'render-lookalike');
   await page.setViewportSize({ width: 360, height: 640 });
-  await page.goto('/');
-  await page.getByLabel('Password').fill(process.env['TETHER_E2E_PASSWORD'] as string);
-  await page.getByRole('button', { name: 'Sign in' }).click();
-  await page.getByRole('button', { name: TITLE }).click();
+  await openSession(page, 'rendering lookalikes', lookalikeProject);
 
   const conversation = page.locator('.conv');
   await expect(conversation.getByText(GREETING, { exact: true })).toHaveCount(1);
 
   const callId = 'toolu_render_confusable';
-  const { path, sessionId } = transcript();
+  const { path, sessionId } = transcript(lookalikeProject);
   const settings = JSON.parse(
-    readFileSync(join(project, '.claude', 'settings.local.json'), 'utf8'),
+    readFileSync(join(lookalikeProject, '.claude', 'settings.local.json'), 'utf8'),
   ) as { hooks: Record<string, { hooks: { command: string }[] }[]> };
   const command = settings.hooks['PreToolUse']?.[0]?.hooks[0]?.command as string;
 
@@ -357,7 +360,7 @@ test('a lookalike character is named on the card, and Approve waits while Deny d
     JSON.stringify({
       session_id: sessionId,
       transcript_path: path,
-      cwd: project,
+      cwd: lookalikeProject,
       hook_event_name: 'PreToolUse',
       permission_mode: 'default',
       tool_name: 'Bash',
