@@ -74,9 +74,9 @@ function transcript(cwd = project): { path: string; sessionId: string } {
   return { path: join(dir, file), sessionId: file.replace(/\.jsonl$/, '') };
 }
 
-function write(type: 'user' | 'assistant', content: readonly unknown[]): void {
+function write(type: 'user' | 'assistant', content: readonly unknown[], cwd = project): void {
   appendFileSync(
-    transcript().path,
+    transcript(cwd).path,
     `${JSON.stringify({
       type,
       uuid: randomUUID(),
@@ -87,14 +87,16 @@ function write(type: 'user' | 'assistant', content: readonly unknown[]): void {
   );
 }
 
-function call(id: string, name: string, input: unknown): void {
-  write('assistant', [{ type: 'tool_use', id, name, input }]);
+function call(id: string, name: string, input: unknown, cwd = project): void {
+  write('assistant', [{ type: 'tool_use', id, name, input }], cwd);
 }
 
-function result(id: string, content: string, failed = false): void {
-  write('user', [
-    { type: 'tool_result', tool_use_id: id, content, ...(failed ? { is_error: true } : {}) },
-  ]);
+function result(id: string, content: string, failed = false, cwd = project): void {
+  write(
+    'user',
+    [{ type: 'tool_result', tool_use_id: id, content, ...(failed ? { is_error: true } : {}) }],
+    cwd,
+  );
 }
 
 /** The page's own sideways scroll — the thing that may never happen, at any width. */
@@ -239,16 +241,17 @@ test('the conversation renders what an agent writes: markdown, a diff, and typed
 test('an answerable Edit card shows the change, wraps it, and keeps Approve reachable', async ({
   page,
 }) => {
+  const editProject = join(home, 'render-edit');
   await page.setViewportSize({ width: 360, height: 640 });
-  await openSession(page);
+  await openSession(page, 'rendering edits', editProject);
 
   const conversation = page.locator('.conv');
   await expect(conversation.getByText(GREETING, { exact: true })).toHaveCount(1);
 
   const callId = 'toolu_render_answerable';
-  const { path, sessionId } = transcript();
+  const { path, sessionId } = transcript(editProject);
   const settings = JSON.parse(
-    readFileSync(join(project, '.claude', 'settings.local.json'), 'utf8'),
+    readFileSync(join(editProject, '.claude', 'settings.local.json'), 'utf8'),
   ) as { hooks: Record<string, { hooks: { command: string }[] }[]> };
   const command = settings.hooks['PreToolUse']?.[0]?.hooks[0]?.command as string;
 
@@ -262,12 +265,12 @@ test('an answerable Edit card shows the change, wraps it, and keeps Approve reac
     JSON.stringify({
       session_id: sessionId,
       transcript_path: path,
-      cwd: project,
+      cwd: editProject,
       hook_event_name: 'PreToolUse',
       permission_mode: 'default',
       tool_name: 'Edit',
       tool_input: {
-        file_path: join(project, 'src/markdown.ts'),
+        file_path: join(editProject, 'src/markdown.ts'),
         old_string: OLD,
         new_string: NEW,
         // Not something the diff can draw, so an answerable card has to say it
@@ -305,13 +308,18 @@ test('an answerable Edit card shows the change, wraps it, and keeps Approve reac
   expect(said).toContain('"permissionDecision":"allow"');
 
   // And the transcript's own record supersedes the card rather than joining it.
-  call(callId, 'Edit', {
-    file_path: join(project, 'src/markdown.ts'),
-    old_string: OLD,
-    new_string: NEW,
-    replace_all: true,
-  });
-  result(callId, 'The file src/markdown.ts has been updated.');
+  call(
+    callId,
+    'Edit',
+    {
+      file_path: join(editProject, 'src/markdown.ts'),
+      old_string: OLD,
+      new_string: NEW,
+      replace_all: true,
+    },
+    editProject,
+  );
+  result(callId, 'The file src/markdown.ts has been updated.', false, editProject);
   await expect(card.locator('.tool-state')).toHaveText('✓');
   await shoot(page, '6-approved-edit');
 });
