@@ -2,7 +2,7 @@
   "name": "remote-control-agent",
   "version": "0.1.0",
   "private": true,
-  "description": "Remote control for persistent coding-agent sessions",
+  "description": "Remote control for persistent coding agents",
   "license": "MIT",
   "author": "galawaydude",
   "repository": {

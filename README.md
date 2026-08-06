@@ -4,14 +4,11 @@
 [![Latest release](https://img.shields.io/github/v/release/galawaydude/remote-control-agent)](https://github.com/galawaydude/remote-control-agent/releases/latest)
 [![License](https://img.shields.io/github/license/galawaydude/remote-control-agent)](LICENSE)
 
-**Run persistent Claude Code and OpenAI Codex sessions on your machine, then
-control them from a phone-friendly browser.**
+**Run persistent Claude Code and OpenAI Codex sessions on your machine, then control them from a phone-friendly browser.**
 
-Sessions run under your OS user in durable tmux processes. Provider credentials
-stay with the provider CLI on the host.
+Sessions run under your OS user in durable tmux processes. Provider credentials stay with the provider CLI on the host.
 
-Remote Control Agent was formerly **tether**. Existing state, sessions, hooks,
-services, `TETHER_*` settings and the `tether` command continue to work.
+Remote Control Agent was formerly **tether**. Existing state, sessions, hooks, services, `TETHER_*` settings and the `tether` command continue to work.
 
 ## Features
 
